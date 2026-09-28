@@ -19,6 +19,7 @@ private fun launcherVersion(): String = runCatching {
 
 fun main(args: Array<String>) = runBlocking {
     val logger: Logger = ConsoleLogger(minimumLevel = LogLevel.INFO)
+    logger.info("VibeCloud ${launcherVersion()} starting")
     val configPath = try {
         ConfigLocator.locate(args)
     } catch (failure: IllegalArgumentException) {

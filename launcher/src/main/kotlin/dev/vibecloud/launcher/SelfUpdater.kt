@@ -51,6 +51,7 @@ class SelfUpdater(
         }
         try {
             logger.info("Applying pending VibeCloud update from ${zip.fileName} ...")
+            val copiedLibFiles = mutableSetOf<String>()
             ZipInputStream(Files.newInputStream(zip)).use { stream ->
                 while (true) {
                     val entry: ZipEntry = stream.nextEntry ?: break
@@ -62,13 +63,25 @@ class SelfUpdater(
                         entry.name == "bridge.token" -> Unit // never touch the bridge secret
                         entry.name.startsWith("lib/") || entry.name.startsWith("bin/") ||
                             entry.name.startsWith("docs/") -> {
-                            Files.createDirectories(target.parent)
-                            Files.copy(stream, target, StandardCopyOption.REPLACE_EXISTING)
-                        }
+                                Files.createDirectories(target.parent)
+                                Files.copy(stream, target, StandardCopyOption.REPLACE_EXISTING)
+                                if (entry.name.startsWith("lib/")) copiedLibFiles += entry.name
+                            }
 
                         else -> Unit // services/, templates/, staging leftovers stay untouched
                     }
                     stream.closeEntry()
+                }
+            }
+            // Drop jars of the old release: the start scripts reference exact filenames, so
+            // stale versioned jars would only pile up in lib/ and mask which release is live.
+            val libDirectory = installRoot.resolve("lib")
+            if (Files.isDirectory(libDirectory)) {
+                Files.list(libDirectory).use { files ->
+                    files.filter(Files::isRegularFile)
+                        .map { "lib/" + it.fileName.toString() }
+                        .filter { it !in copiedLibFiles }
+                        .forEach { stale -> runCatching { Files.deleteIfExists(installRoot.resolve(stale)) } }
                 }
             }
             deleteQuietly(pendingDownloaded())
