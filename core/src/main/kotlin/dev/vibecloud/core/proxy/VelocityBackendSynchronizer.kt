@@ -171,6 +171,9 @@ internal object VelocityTomlBackendTable {
         // automatically drop them from existing proxy configs.
         val managedKeys = serverAddresses.keys + legacyGroupAliases + "try"
         val body = removeOldManagedBlock(lines.subList(sectionStart + 1, sectionEnd))
+        // Honor a user-chosen join order: an existing `try` that only references registered
+        // servers is preserved instead of being reset to the cloud's default choice.
+        val effectiveDefault = preservedTryValues(body, serverAddresses.keys) ?: listOf(defaultServer)
         val cleanedBody = removeManagedAssignments(body, managedKeys)
         while (cleanedBody.lastOrNull()?.isBlank() == true) cleanedBody.removeAt(cleanedBody.lastIndex)
 
@@ -179,7 +182,7 @@ internal object VelocityTomlBackendTable {
             serverAddresses.toSortedMap().forEach { (name, address) ->
                 add("${quote(name)} = ${quote(address)}")
             }
-            add("try = [${quote(defaultServer)}]")
+            add("try = [" + effectiveDefault.joinToString(", ") { quote(it) } + "]")
             add(END_MARKER)
         }
         val replacement = buildList {
@@ -206,6 +209,23 @@ internal object VelocityTomlBackendTable {
             Files.deleteIfExists(temp)
         }
         return true
+    }
+
+    /**
+     * Reads the current `try` value from the [servers] section and returns it when it is a
+     * non-empty list that only references registered servers — i.e. a join order worth keeping.
+     * Any other state (missing, empty, stale names) falls back to the cloud's default server.
+     */
+    private fun preservedTryValues(lines: List<String>, validNames: Set<String>): List<String>? {
+        for (line in lines) {
+            val match = assignment.matchEntire(line) ?: continue
+            if (assignmentKey(match) != "try") continue
+            val names = SERVER_NAME_LITERAL.findAll(match.groupValues[4])
+                .map { it.groupValues[1] }
+                .toList()
+            return names.takeIf { it.isNotEmpty() && names.all { name -> name in validNames } }
+        }
+        return null
     }
 
     private fun removeOldManagedBlock(lines: List<String>): MutableList<String> {

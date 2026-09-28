@@ -107,6 +107,64 @@ packets-per-second = -1
         }
     }
 
+    @Test
+    fun `sync preserves a user-set try order that references valid servers`() = runBlocking {
+        val root = Files.createTempDirectory("velocity-try-preserve-test")
+        try {
+            val proxyDirectory = root.resolve("services/proxy-1")
+            Files.createDirectories(proxyDirectory)
+            val config = proxyDirectory.resolve("velocity.toml")
+            Files.writeString(
+                config,
+                """[servers]
+lobby-1 = "127.0.0.1:25566"
+citybuild-1 = "127.0.0.1:25567"
+try = ["citybuild-1", "lobby-1"]
+""",
+            )
+            val now = Instant.now()
+            val proxy = service("proxy-1", "proxy", ServerType.VELOCITY, ServiceState.RUNNING, 25565, proxyDirectory, now)
+            val lobby = service("lobby-1", "lobby", ServerType.PAPER, ServiceState.RUNNING, 25566, root.resolve("services/lobby-1"), now)
+            val citybuild = service("citybuild-1", "citybuild", ServerType.PAPER, ServiceState.RUNNING, 25567, root.resolve("services/citybuild-1"), now)
+
+            VelocityBackendSynchronizer(SilentLogger()).synchronize({ listOf(proxy, lobby, citybuild) }) { true }
+
+            val updated = Files.readString(config)
+            // The cloud's own default would be lobby-1 (first running, alphabetical) — the
+            // user's citybuild-first order must win.
+            assertTrue(updated.contains("try = [\"citybuild-1\", \"lobby-1\"]"))
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `sync heals a try order referencing unknown servers`() = runBlocking {
+        val root = Files.createTempDirectory("velocity-try-heal-test")
+        try {
+            val proxyDirectory = root.resolve("services/proxy-1")
+            Files.createDirectories(proxyDirectory)
+            val config = proxyDirectory.resolve("velocity.toml")
+            Files.writeString(
+                config,
+                """[servers]
+lobby-1 = "127.0.0.1:25566"
+try = ["gone-1"]
+""",
+            )
+            val now = Instant.now()
+            val proxy = service("proxy-1", "proxy", ServerType.VELOCITY, ServiceState.RUNNING, 25565, proxyDirectory, now)
+            val lobby = service("lobby-1", "lobby", ServerType.PAPER, ServiceState.RUNNING, 25566, root.resolve("services/lobby-1"), now)
+
+            VelocityBackendSynchronizer(SilentLogger()).synchronize({ listOf(proxy, lobby) }) { true }
+
+            val updated = Files.readString(config)
+            assertTrue(updated.contains("try = [\"lobby-1\"]"), "stale names are replaced with the default")
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
     private fun service(
         name: String,
         group: String,
