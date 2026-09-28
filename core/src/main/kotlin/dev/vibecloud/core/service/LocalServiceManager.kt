@@ -14,8 +14,10 @@ import dev.vibecloud.api.service.Service
 import dev.vibecloud.api.service.ServiceManager
 import dev.vibecloud.api.service.ServiceState
 import dev.vibecloud.api.template.TemplateManager
+import dev.vibecloud.core.bridge.ServicePlayerTracker
 import dev.vibecloud.common.config.RuntimeSettings
 import dev.vibecloud.common.logging.Logger
+import dev.vibecloud.core.bridge.BridgeAgentInstaller
 import dev.vibecloud.core.port.PortAllocator
 import dev.vibecloud.core.process.ManagedProcess
 import dev.vibecloud.core.process.ProcessLaunchSpec
@@ -53,6 +55,8 @@ class LocalServiceManager(
     private val logger: Logger,
     private val lifecycleLock: ReentrantLock,
     private val onServicesChanged: suspend () -> Unit = {},
+    internal val bridgeTracker: ServicePlayerTracker? = null,
+    private val agentInstaller: BridgeAgentInstaller? = null,
 ) : ServiceManager {
     internal val console = ServiceConsoleManager()
     private val configRepairer = ServiceConfigRepairer(adapters, runtime, logger, forwardingProvider)
@@ -236,6 +240,10 @@ class LocalServiceManager(
                 }
             }
 
+            // Install the bridge agent (agent.jar + agent.properties) into backend services right
+            // before launch so freshly provisioned or wiped directories get current credentials.
+            agentInstaller?.install(starting)
+
             val token = UUID.randomUUID().toString()
             slot.processToken = token
             try {
@@ -248,6 +256,7 @@ class LocalServiceManager(
                         // Full console output is available via 'service screen <name>'; the cloud
                         // log stays clean with state transitions only.
                         console.record(starting.name, output.line)
+                        bridgeTracker?.onConsoleLine(starting.name, output.line)
                     },
                     onExit = { exitCode -> handleProcessExit(starting.name, token, exitCode) },
                 )
@@ -382,6 +391,7 @@ class LocalServiceManager(
     }
 
     private suspend fun stopInternal(slot: ServiceSlot) {
+        bridgeTracker?.clear(slot.service.name)
         var process: ManagedProcess? = null
         var token: String? = null
         var stoppingEvent: ServiceStoppingEvent? = null
@@ -554,6 +564,7 @@ class LocalServiceManager(
 
     private suspend fun handleProcessExit(name: String, token: String, exitCode: Int?) {
         val slot = slots[key(name)] ?: return
+        bridgeTracker?.clear(name)
         var crashedEvent: ServiceCrashedEvent? = null
         var stoppedEvent: ServiceStoppedEvent? = null
         slot.mutex.withLock {

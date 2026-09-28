@@ -19,6 +19,7 @@ class DesiredStateReconciler(
     private val services: ServiceManager,
     private val intervalMillis: Long,
     private val logger: Logger,
+    private val onCycle: suspend () -> Unit = {},
 ) {
     private val mutex = Mutex()
     private val retries = mutableMapOf<String, RetryState>()
@@ -28,6 +29,7 @@ class DesiredStateReconciler(
         if (job?.isActive == true) return
         job = scope.launch {
             while (isActive) {
+                onCycle()
                 reconcileOnce()
                 delay(intervalMillis.coerceAtLeast(1))
             }

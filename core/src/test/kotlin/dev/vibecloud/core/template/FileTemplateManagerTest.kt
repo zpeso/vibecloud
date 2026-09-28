@@ -188,6 +188,60 @@ forwarding-secret = "change-this-secret-before-public-use"
     }
 
     @Test
+    fun `group overlay folder is layered over the shared build template`() = runBlocking {
+        val root = Files.createTempDirectory("cloud-overlay-template-test")
+        try {
+            val templates = root.resolve("templates/paper/26.3")
+            val services = root.resolve("services")
+            Files.createDirectories(templates)
+            Files.writeString(templates.resolve("server.jar"), "test jar placeholder")
+            Files.writeString(templates.resolve("base.txt"), "from-build-template")
+            val overlay = root.resolve("templates/groups/lobby")
+            Files.createDirectories(overlay.resolve("plugins"))
+            Files.writeString(overlay.resolve("plugins/LobbyPlugin.jar"), "group plugin")
+            Files.writeString(overlay.resolve("base.txt"), "overridden-by-group")
+            val runtime = RuntimeSettings(
+                javaCommand = "java",
+                minMemoryMb = 512,
+                maxMemoryMb = 1024,
+                jvmArgs = emptyList(),
+                startupTimeout = Duration.ofSeconds(1),
+                shutdownTimeout = Duration.ofSeconds(1),
+                minecraftEulaAccepted = true,
+            )
+            val manager = FileTemplateManager(
+                templateRoot = root.resolve("templates"),
+                serviceRoot = services,
+                adapters = defaultServerAdapters(),
+                runtime = runtime,
+            )
+            val serviceDirectory = services.resolve("lobby-1")
+            Files.createDirectories(services)
+            val now = Instant.now()
+            val service = Service(
+                id = "id",
+                name = "lobby-1",
+                groupName = "LOBBY",
+                type = ServerType.PAPER,
+                version = "26.3",
+                state = ServiceState.CREATED,
+                port = 25567,
+                directory = serviceDirectory,
+                createdAt = now,
+                updatedAt = now,
+            )
+
+            manager.provision(service)
+
+            assertTrue(Files.isRegularFile(serviceDirectory.resolve("server.jar")))
+            assertEquals("overridden-by-group", Files.readString(serviceDirectory.resolve("base.txt")))
+            assertEquals("group plugin", Files.readString(serviceDirectory.resolve("plugins/LobbyPlugin.jar")))
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
     fun `upstream build downloads are verified and cached as reusable templates`() = runBlocking {
         val root = Files.createTempDirectory("cloud-download-template-test")
         val payload = "verified test jar".toByteArray(StandardCharsets.UTF_8)

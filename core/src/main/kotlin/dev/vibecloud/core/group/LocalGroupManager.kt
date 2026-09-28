@@ -18,6 +18,7 @@ class LocalGroupManager(
     private val groupHasServices: (String) -> Boolean,
     private val lifecycleLock: ReentrantLock,
     private val logger: Logger,
+    private val afterCreate: (Group) -> Unit = {},
 ) : GroupManager {
     private val groups = AtomicReference<Map<String, Group>>(validatedMap(initialGroups))
 
@@ -37,6 +38,7 @@ class LocalGroupManager(
         persist(updated.values.toList())
         groups.set(updated.toMap())
         logger.info("Created group '${group.name}' (${group.type.name} ${group.version})")
+        afterCreate(group)
     }
 
     override fun delete(name: String) = lifecycleLock.withLock {

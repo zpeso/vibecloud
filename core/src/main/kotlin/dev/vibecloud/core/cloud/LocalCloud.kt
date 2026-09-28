@@ -7,6 +7,7 @@ import dev.vibecloud.api.template.TemplateManager
 import dev.vibecloud.common.config.CloudConfig
 import dev.vibecloud.common.config.CloudConfigRepository
 import dev.vibecloud.common.logging.Logger
+import dev.vibecloud.core.bridge.BridgeManager
 import dev.vibecloud.core.event.CoroutineEventBus
 import dev.vibecloud.core.group.LocalGroupManager
 import dev.vibecloud.core.proxy.VelocityBackendSynchronizer
@@ -29,6 +30,7 @@ class LocalCloud internal constructor(
     private val scope: CoroutineScope,
     private val logger: Logger,
     private val velocityBackendSynchronizer: VelocityBackendSynchronizer,
+    private val bridge: BridgeManager,
 ) : Cloud {
     private val currentConfig = AtomicReference(initialConfig)
     private val stateReference = AtomicReference(CloudState.NEW)
@@ -49,6 +51,7 @@ class LocalCloud internal constructor(
         try {
             services.repairConfigurations()
             velocityBackendSynchronizer.synchronize(services::all, services::reloadProxyConfiguration)
+            bridge.start()
             reconciler.start()
             logger.info("Cloud is running")
         } catch (failure: Throwable) {
@@ -97,6 +100,7 @@ class LocalCloud internal constructor(
             try {
                 groups.closeAdmission()
                 reconciler.stop()
+                bridge.stop()
                 services.closeAdmissionAndDrain()
                 services.console.detach()
                 services.stopAll()

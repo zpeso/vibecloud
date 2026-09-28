@@ -4,6 +4,13 @@ import dev.vibecloud.api.cloud.Cloud
 import dev.vibecloud.api.server.ServerCatalog
 import dev.vibecloud.common.config.CloudConfigRepository
 import dev.vibecloud.common.logging.Logger
+import dev.vibecloud.core.bridge.BridgeAgentInstaller
+import dev.vibecloud.core.bridge.BridgeAgentRegistry
+import dev.vibecloud.core.bridge.BridgeHttpServer
+import dev.vibecloud.core.bridge.BridgeManager
+import dev.vibecloud.core.bridge.BridgeTokenStore
+import dev.vibecloud.core.bridge.JsonWriter
+import dev.vibecloud.core.bridge.ServicePlayerTracker
 import dev.vibecloud.core.event.CoroutineEventBus
 import dev.vibecloud.core.group.LocalGroupManager
 import dev.vibecloud.core.port.PortRangeAllocator
@@ -34,6 +41,12 @@ class CloudBootstrap(
         val config = repository.loadOrCreate()
         Files.createDirectories(config.directories.templates)
         Files.createDirectories(config.directories.services)
+        // Keep per-group overlay folders visible out of the box: templates/groups/<group>/ is
+        // layered on top of the shared build template during provisioning. Folders are cheap;
+        // an overlay only takes effect when the matching group actually exists.
+        config.groups.forEach { group ->
+            Files.createDirectories(config.directories.templates.resolve("groups").resolve(group.name))
+        }
 
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         try {
@@ -65,6 +78,61 @@ class CloudBootstrap(
                 },
                 lifecycleLock = lifecycleLock,
                 logger = logger,
+                afterCreate = { group ->
+                    runCatching {
+                        Files.createDirectories(config.directories.templates.resolve("groups").resolve(group.name))
+                    }.onFailure {
+                        logger.warn("Could not create template overlay folder for group '${group.name}': ${it.message}")
+                    }
+                },
+            )
+            // Local HTTP bridge: backend agents report here; plugins read live cloud state here.
+            val bridgeTokenStore = BridgeTokenStore(
+                configFile.parent?.resolve("bridge.token") ?: Path.of("bridge.token"),
+                logger,
+            )
+            // Generate the token eagerly so the file exists right after the first start and can be
+            // distributed to plugins/tools before any service runs.
+            if (config.bridge.enabled) bridgeTokenStore.obtain()
+            val bridgeRegistry = BridgeAgentRegistry { config.bridge.offlineTimeout }
+            val bridgeTracker = ServicePlayerTracker()
+            val bridgeServer = BridgeHttpServer(
+                cloudView = object : BridgeHttpServer.CloudView {
+                    override fun services() = serviceManagerReference.get()?.all().orEmpty().toList()
+                    override fun groupCount() = groupManager.all().size
+                    override fun snapshotGroups() = groupManager.all().joinToString(",") { group ->
+                        JsonWriter.obj(
+                            "name" to JsonWriter.str(group.name),
+                            "type" to JsonWriter.str(group.type.name),
+                            "version" to JsonWriter.str(group.version),
+                            "static" to JsonWriter.bool(group.static),
+                            "min-services" to JsonWriter.num(group.minServices),
+                            "max-services" to JsonWriter.num(group.maxServices),
+                            "always-running-services" to JsonWriter.num(group.alwaysRunningServices),
+                        )
+                    }
+                },
+                tokenStore = bridgeTokenStore,
+                registry = bridgeRegistry,
+                tracker = bridgeTracker,
+                settings = config.bridge,
+                logger = logger,
+            )
+            val bridgeManager = BridgeManager(bridgeServer, bridgeRegistry, bridgeTracker, config.bridge, logger)
+            val agentInstaller = BridgeAgentInstaller(
+                settings = config.bridge,
+                tokenStore = bridgeTokenStore,
+                cloudUrl = {
+                    if (!config.bridge.enabled) {
+                        null
+                    } else {
+                        val host = if (config.bridge.bindAddress == "0.0.0.0") "127.0.0.1" else config.bridge.bindAddress
+                        val port = bridgeServer.boundPort()
+                        if (port <= 0) null else "http://$host:$port"
+                    }
+                },
+                agentJarResolver = BridgeAgentInstaller.defaultAgentJarResolver(configFile.parent),
+                logger = logger,
             )
             val templateManager = FileTemplateManager(
                 templateRoot = config.directories.templates,
@@ -92,6 +160,8 @@ class CloudBootstrap(
                         velocityBackendSynchronizer.synchronize(manager::all, manager::reloadProxyConfiguration)
                     }
                 },
+                bridgeTracker = bridgeTracker,
+                agentInstaller = agentInstaller,
             )
             serviceManagerReference.set(serviceManager)
 
@@ -101,6 +171,7 @@ class CloudBootstrap(
                 services = serviceManager,
                 intervalMillis = config.reconciliation.interval.toMillis(),
                 logger = logger,
+                onCycle = { bridgeManager.reconcile(serviceManager.all()) },
             )
             return LocalCloud(
                 groups = groupManager,
@@ -114,6 +185,7 @@ class CloudBootstrap(
                 scope = scope,
                 logger = logger,
                 velocityBackendSynchronizer = velocityBackendSynchronizer,
+                bridge = bridgeManager,
             )
         } catch (failure: Throwable) {
             scope.cancel()

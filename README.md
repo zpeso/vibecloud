@@ -14,9 +14,7 @@ future growth, while the default implementation remains easy to operate.
 - Coroutines **1.11.0**, SnakeYAML **2.7**
 
 Minecraft 26.1+ / Paper currently requires Java 25. Older templates may have different requirements; the controller uses
-the configured Java executable for every service.
-
-## Build and run
+the configured Java executable for every service.## Build and run
 
 Install a JDK 25, then from this directory:
 
@@ -26,11 +24,31 @@ Install a JDK 25, then from this directory:
 ./launcher/build/install/vibecloud/bin/vibecloud
 ```
 
-Compile/package and test in separate Gradle invocations on memory-constrained hosts; this keeps the Kotlin compiler and
-test worker from peaking together.
+Compile/package and test in separate Gradle invocations on memory-constrained hosts; this keeps the Kotlin compiler and test worker from peaking together.
 
-On Windows, use `launcher\build\install\vibecloud\bin\vibecloud.bat`. You can also run during development with
-`./gradlew :launcher:run`.
+On Windows, use `launcher\build\install\vibecloud\bin\vibecloud.bat`. You can also run during development with `./gradlew :launcher:run`.
+
+### Production release
+
+Build a self-contained archive:
+
+```bash
+./gradlew :launcher:releaseZip
+# → build/dist/vibecloud-<version>.zip
+```
+
+The zip layout is location-independent — extract it anywhere:
+
+```text
+vibecloud/
+├── bin/vibecloud(.bat)   start scripts
+├── lib/                  runtime jars
+├── config.yml            initial configuration
+├── README.md
+└── LICENSE
+```
+
+The launcher finds `config.yml` in this order: `--config <path>` argument → current working directory → `VIBECLOUD_HOME` environment variable → next to the installation (derived from the launcher jar location). `templates/`, `services/`, and `forwarding.secret` are created or resolved **relative to the config file**, so the extracted folder is fully self-contained and can be moved or copied between machines. Run `bin/vibecloud(.bat)` from any working directory; the scripts also accept `VIBECLOUD_OPTS` for JVM flags (e.g. `set VIBECLOUD_OPTS=-Xmx1g`).
 
 The launcher reads `config.yml` from its current working directory (or `--config /path/to/config.yml`). The example
 groups pin exact PaperMC builds but start with zero desired services; the first `service create` will fetch the JAR if
@@ -56,8 +74,26 @@ and verifies the JAR before creating the group. The group version stores the pin
 The downloader caches builds under `templates/<type>/<pinned-build-key>/server.jar`. Existing prepared local templates
 can also be selected from the wizard. Velocity/Bungee-compatible templates get starter configs when absent; configure
 backend addresses, secrets, authentication, and firewall rules before public use. Each service receives a recursive copy
-in `services/`, and port settings are rewritten for that service. Existing worlds remain when a process stops; delete a
-service only when you intend to remove its data.
+in `services/`, and port settings are rewritten for that service. For static services, existing worlds remain when a
+process stops; delete a service only when you intend to remove its data.
+
+### Group overlays and non-static services
+
+Template folders are keyed by **server type and build**, not by group name: a `lobby` group pinned to `paper-26.2-129`
+provisions from `templates/paper/paper-26.2-129/`, and a `proxy` group pinned to `velocity-4.0.0-6` from
+`templates/velocity/velocity-4.0.0-6/`. Groups sharing the same pinned build also share that cached template.
+
+To give a group its own plugins and configs, use the overlay folder at `templates/groups/<group>/` (for example
+`templates/groups/lobby/` or `templates/groups/proxy/`). These folders are created automatically for every configured
+group on cloud startup and whenever a group is created via CLI, so they are easy to find. They are copied **on top
+of** the shared build template
+during every provisioning: overlay files at the same path replace the template's copy, everything else is inherited.
+Drop `plugins/`, `world/` seeds, or preconfigured config files there.
+
+Non-static groups (`static: false`) are fully template-based: before every start the service directory is deleted and
+re-provisioned from the build template + group overlay, and the cloud re-applies its managed files (`eula.txt`,
+`server.properties` port/online-mode, proxy forwarding). Worlds, logs, and any files created at runtime never survive a
+restart — only the service's identity (name, port, record) persists. Static groups keep their directories between stops.
 
 ## Proxy wiring (forwarding and online-mode)
 
@@ -77,6 +113,29 @@ When the cloud manages a network, it applies a consistent proxy setup automatica
 
 This controller only assigns ports and does not infer firewall rules. Review the generated service configurations and
 host firewall before exposing ports publicly.
+
+## Bridge (live player counts and programmatic access)
+
+The bridge is a small local HTTP endpoint plus an agent plugin that connect your Minecraft servers to the cloud:
+
+- The endpoint listens on `bridge.bind-address:bridge.port` (default `127.0.0.1:25580`) and is protected by a shared
+  token generated at `bridge.token` next to `config.yml`.
+- On every backend service start, the cloud automatically installs the bundled `VibeCloud-Agent.jar` (from `lib/`)
+  into the service's `plugins/` folder and writes `plugins/VibeCloud/agent.properties` with the service identity and
+  token. Proxies are skipped. You never place the agent into templates.
+- The agent reports the exact online player roster every `heartbeat-interval-seconds`. For services without an agent,
+  the cloud derives an estimate from console join/leave lines.
+- Any plugin or tool can query the status with the agent token:
+
+```text
+curl -H "Authorization: Bearer <bridge.token>" http://127.0.0.1:25580/bridge/status
+```
+
+The JSON document contains `totals.players-online`, per-service `state`, `port`, `agent-online`, `players-online`,
+and the `players` name list. See `docs/API.md` for using the bundled `VibeCloudClient` from Kotlin/Java code, e.g. to
+show network-wide player counts inside your lobby plugin.
+
+Keep the endpoint on localhost; if you must expose it, put an authenticated TLS reverse proxy in front of it.
 
 ## EULA and network safety
 
@@ -174,6 +233,7 @@ local template. For Spigot, prepare a BuildTools template locally. Service names
 api/       Public immutable domain models, group/service/template/catalog APIs, lifecycle events
 common/    Safe YAML configuration and structured console logging
 core/      Group/service managers, live server catalogs/downloads, adapters, ports, process lifecycle, reconciler
+bridge/    Paper agent plugin (auto-installed into services) and the VibeCloudClient SDK
 launcher/  Composition root and guided CLI
 ```
 
@@ -184,3 +244,6 @@ interfaces so distribution metadata, artifact acquisition, and later remote-node
 
 The controller is a single-node process manager, not a network control plane. Run it under a dedicated OS account, keep
 templates and service directories writable only by that account, and back up service data before upgrades or deletion.
+
+To use VibeCloud programmatically — embedding the controller, listing groups/services, start/stop from your own code,
+or reacting to lifecycle events — see [docs/API.md](docs/API.md).

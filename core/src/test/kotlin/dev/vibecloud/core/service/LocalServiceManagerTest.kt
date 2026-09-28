@@ -121,6 +121,94 @@ class LocalServiceManagerTest {
         }
     }
 
+    @Test
+    fun `non-static service is wiped back to template content on every start`() = runBlocking {
+        val root = Files.createTempDirectory("non-static-service-test")
+        val logger = SilentLogger()
+        val events = RecordingEventBus()
+        val adapters = defaultServerAdapters()
+        val lifecycleLock = ReentrantLock()
+        val managerReference = AtomicReference<LocalServiceManager?>(null)
+        val group = Group(
+            name = "lobby",
+            type = ServerType.PAPER,
+            version = "1.0",
+            minServices = 0,
+            maxServices = 2,
+            alwaysRunningServices = 0,
+            static = false,
+        )
+        val groupManager = LocalGroupManager(
+            initialGroups = listOf(group),
+            supportedType = adapters::supports,
+            persist = {},
+            groupHasServices = { name -> managerReference.get()?.hasServicesForGroup(name) == true },
+            lifecycleLock = lifecycleLock,
+            logger = logger,
+        )
+        val templateDirectory = root.resolve("templates/paper/1.0")
+        val serviceDirectory = root.resolve("services")
+        Files.createDirectories(templateDirectory)
+        Files.writeString(templateDirectory.resolve("server.jar"), "test-only placeholder")
+        val runtime = RuntimeSettings(
+            javaCommand = "java",
+            minMemoryMb = 128,
+            maxMemoryMb = 256,
+            jvmArgs = emptyList(),
+            startupTimeout = Duration.ofSeconds(2),
+            shutdownTimeout = Duration.ofSeconds(1),
+            minecraftEulaAccepted = true,
+        )
+        val processManager = FakeProcessManager()
+        val ports = PortRangeAllocator(30000..30010, isBindable = { true })
+        val serviceManager = LocalServiceManager(
+            groupManager = groupManager,
+            serviceDirectory = serviceDirectory,
+            templateManager = FileTemplateManager(root.resolve("templates"), serviceDirectory, adapters, runtime),
+            portAllocator = ports,
+            processManager = processManager,
+            adapters = adapters,
+            runtime = runtime,
+            events = events,
+            logger = logger,
+            lifecycleLock = lifecycleLock,
+        )
+        managerReference.set(serviceManager)
+
+        try {
+            val created = serviceManager.create("lobby")
+            assertFalse(created.static, "service inherits the group's non-static template mode")
+
+            serviceManager.start(created.name)
+            assertEquals(ServiceState.RUNNING, serviceManager.get(created.name)?.state)
+
+            // Player-generated runtime data that must not survive a restart of a non-static service.
+            Files.createDirectories(created.directory.resolve("worlds/overworld"))
+            Files.createDirectories(created.directory.resolve("logs"))
+            Files.writeString(created.directory.resolve("worlds/overworld/level.dat"), "player progress")
+            Files.writeString(created.directory.resolve("logs/latest.log"), "old run")
+
+            serviceManager.restart(created.name)
+            assertEquals(ServiceState.RUNNING, serviceManager.get(created.name)?.state)
+            assertFalse(
+                Files.exists(created.directory.resolve("worlds")),
+                "world data must be erased before every non-static start",
+            )
+            assertFalse(
+                Files.exists(created.directory.resolve("logs")),
+                "old logs must be erased before every non-static start",
+            )
+            assertTrue(Files.isRegularFile(created.directory.resolve("server.jar")), "template content is restored")
+            assertTrue(
+                Files.readString(created.directory.resolve("server.properties")).contains("server-port="),
+                "cloud-managed config (port) is re-applied after the wipe",
+            )
+            assertTrue(!serviceManager.get(created.name)!!.static, "service stays non-static after restart")
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
     private class FakeProcessManager : ProcessManager {
         var latest: FakeManagedProcess? = null
 

@@ -88,6 +88,7 @@ class CloudConfigRepository(configFile: Path) {
             val portsMap = asStringMap(rootMap["ports"], "ports")
             val runtimeMap = asStringMap(rootMap["runtime"], "runtime")
             val reconciliationMap = asStringMap(rootMap["reconciliation"], "reconciliation")
+            val bridgeMap = asStringMap(rootMap["bridge"], "bridge")
             val groupsMap = asStringMap(rootMap["groups"], "groups")
 
             val runtime = RuntimeSettings(
@@ -131,6 +132,14 @@ class CloudConfigRepository(configFile: Path) {
                 reconciliation = ReconciliationSettings(
                     Duration.ofSeconds(reconciliationMap.long("interval-seconds", 5L)),
                 ),
+                bridge = BridgeSettings(
+                    enabled = bridgeMap.boolean("enabled", true),
+                    port = bridgeMap.int("port", 25580),
+                    bindAddress = bridgeMap.string("bind-address", "127.0.0.1"),
+                    heartbeatInterval = Duration.ofSeconds(bridgeMap.long("heartbeat-interval-seconds", 5L)),
+                    offlineTimeout = Duration.ofSeconds(bridgeMap.long("offline-timeout-seconds", 20L)),
+                    agentJar = bridgeMap.string("agent-jar", ""),
+                ),
                 groups = groups,
             )
         } catch (failure: ConfigurationException) {
@@ -171,6 +180,13 @@ class CloudConfigRepository(configFile: Path) {
                 ),
                 "reconciliation" to linkedMapOf(
                     "interval-seconds" to config.reconciliation.interval.seconds,
+                ),
+                "bridge" to linkedMapOf(
+                    "enabled" to config.bridge.enabled,
+                    "port" to config.bridge.port,
+                    "bind-address" to config.bridge.bindAddress,
+                    "heartbeat-interval-seconds" to config.bridge.heartbeatInterval.seconds,
+                    "offline-timeout-seconds" to config.bridge.offlineTimeout.seconds,
                 ),
                 "groups" to linkedMapOf<String, Any>(),
             )

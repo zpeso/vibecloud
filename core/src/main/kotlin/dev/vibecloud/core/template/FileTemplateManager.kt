@@ -256,6 +256,15 @@ connection_throttle: 4000
 
         try {
             copyTemplate(source, service.directory)
+            // Group overlay layer: templates/groups/<group>/ is copied on top of the shared build
+            // template so each group can ship its own plugins and configs while the jar cache and
+            // auto-installed builds stay shared between all groups of the same type + version.
+            // Non-static services are wiped before this runs, so the result is always exactly
+            // build template (base) + group overlay (top) + adapter-managed files — never more.
+            val overlay = groupOverlayDirectory(service.groupName)
+            if (Files.isDirectory(overlay, LinkOption.NOFOLLOW_LINKS)) {
+                copyTemplate(overlay, service.directory, overwrite = true)
+            }
             adapters.get(service.type).configure(
                 service,
                 service.directory,
@@ -269,7 +278,24 @@ connection_throttle: 4000
         }
     }
 
-    private fun copyTemplate(source: Path, destination: Path) {
+    /**
+     * Resolves the optional group overlay folder `templates/groups/<group>/` for the given group
+     * name. Group names are normalized case-insensitively; path-traversal names are rejected.
+     */
+    private fun groupOverlayDirectory(groupName: String): Path {
+        val sanitized = groupName.trim().lowercase(Locale.ROOT)
+        require(
+            sanitized.isNotEmpty() && sanitized != "." && sanitized != ".." &&
+                    !sanitized.contains('/') && !sanitized.contains('\\'),
+        ) { "Invalid group name for template overlay: '$groupName'" }
+        val overlay = templateRoot.resolve("groups").resolve(sanitized).normalize()
+        if (!overlay.startsWith(templateRoot)) {
+            throw TemplateException("Group overlay path escapes configured template root: $overlay")
+        }
+        return overlay
+    }
+
+    private fun copyTemplate(source: Path, destination: Path, overwrite: Boolean = false) {
         Files.walkFileTree(source, object : SimpleFileVisitor<Path>() {
             override fun preVisitDirectory(dir: Path, attrs: BasicFileAttributes): FileVisitResult {
                 if (Files.isSymbolicLink(dir)) {
@@ -287,7 +313,11 @@ connection_throttle: 4000
                 }
                 val target = destination.resolve(source.relativize(file).toString()).normalize()
                 if (!target.startsWith(destination)) throw TemplateException("Template entry escapes destination: $file")
-                Files.copy(file, target)
+                if (overwrite) {
+                    Files.copy(file, target, StandardCopyOption.REPLACE_EXISTING)
+                } else {
+                    Files.copy(file, target)
+                }
                 return FileVisitResult.CONTINUE
             }
         })
