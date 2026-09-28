@@ -14,6 +14,8 @@ import dev.vibecloud.api.service.Service
 import dev.vibecloud.api.service.ServiceManager
 import dev.vibecloud.api.service.ServiceState
 import dev.vibecloud.api.template.TemplateManager
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import dev.vibecloud.core.bridge.ServicePlayerTracker
 import dev.vibecloud.common.config.RuntimeSettings
 import dev.vibecloud.common.logging.Logger
@@ -397,10 +399,14 @@ class LocalServiceManager(
             logger.info("Stopping ${slot.service.name} because its start operation was cancelled")
         }
         if (shouldTerminate) {
-            val exitCode = process.terminate(adapter.gracefulStopCommand, runtime.shutdownTimeout)
+            // A cancelled start means the process never became ready; it may not even process
+            // console input yet, so waiting the full shutdown grace would only stall the cloud
+            // stop. Short grace, then force.
+            val grace = Duration.ofSeconds(minOf(5L, runtime.shutdownTimeout.seconds))
+            val exitCode = process.terminate(adapter.gracefulStopCommand, grace)
             if (process.isRunning) {
                 process.destroyForcibly()
-                process.awaitExit(Duration.ofSeconds(10))
+                process.awaitExit(Duration.ofSeconds(5))
             }
             if (process.isRunning) {
                 logger.error("Cancelled service process ${slot.service.name} is still alive (pid ${process.pid})")
@@ -518,23 +524,29 @@ class LocalServiceManager(
     }
 
     override suspend fun stopAll() {
+        // Stop everything in parallel so one slow/stuck service cannot stretch the shutdown
+        // by its whole grace period; the overall bound stays a single max stop duration.
         val currentServices = all().sortedByDescending { it.name }
-        currentServices.forEach { service ->
-            val slot = slots[key(service.name)] ?: return@forEach
-            var attempt = 0
-            do {
-                try {
-                    stopInternal(slot)
-                } catch (failure: Exception) {
-                    logger.error(
-                        "Could not stop service ${service.name} during cloud shutdown: ${failure.message}",
-                        failure
-                    )
+        coroutineScope {
+            currentServices.map { service ->
+                launch {
+                    val slot = slots[key(service.name)] ?: return@launch
+                    var attempt = 0
+                    do {
+                        try {
+                            stopInternal(slot)
+                        } catch (failure: Exception) {
+                            logger.error(
+                                "Could not stop service ${service.name} during cloud shutdown: ${failure.message}",
+                                failure
+                            )
+                        }
+                        attempt++
+                    } while (attempt < 2 && hasRunningProcess(slot))
+                    if (hasRunningProcess(slot)) {
+                        logger.error("Service ${service.name} may remain orphaned because its process could not be terminated")
+                    }
                 }
-                attempt++
-            } while (attempt < 2 && hasRunningProcess(slot))
-            if (hasRunningProcess(slot)) {
-                logger.error("Service ${service.name} may remain orphaned because its process could not be terminated")
             }
         }
     }

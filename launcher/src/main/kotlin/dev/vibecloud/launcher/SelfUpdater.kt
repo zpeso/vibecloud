@@ -44,7 +44,7 @@ class SelfUpdater(
     /** Applied before config load: replaces lib/bin/docs from the staged zip, then deletes staging. */
     fun applyPendingUpdate() {
         if (!Files.isDirectory(pendingDirectory)) return
-        val zip = pendingDirectory.resolve(zipName())
+        val zip = stagedZip()
         if (!Files.isRegularFile(zip)) {
             deleteQuietly(pendingDirectory)
             return
@@ -81,6 +81,13 @@ class SelfUpdater(
 
     /** Checks GitHub for a newer release and stages its zip. Safe to call on every start. */
     fun checkAndStage() {
+        if (currentVersion == UNKNOWN_VERSION) {
+            logger.warn(
+                "Release version unknown (no version stamp in this installation); " +
+                        "skipping the update check. Re-deploy a full release zip to fix this.",
+            )
+            return
+        }
         val release = try {
             latestRelease()
         } catch (failure: Exception) {
@@ -92,7 +99,7 @@ class SelfUpdater(
         if (!isNewer(latest, currentVersion)) return
         try {
             Files.createDirectories(pendingDirectory)
-            val zip = pendingDirectory.resolve(zipName())
+            val zip = stagedZip()
             val request = HttpRequest.newBuilder(URI.create(release.zipUrl))
                 .timeout(Duration.ofSeconds(60))
                 .GET()
@@ -102,17 +109,26 @@ class SelfUpdater(
                 HttpResponse.BodyHandlers.ofFile(zip),
             )
             logger.info(
-                "VibeCloud $latest is available (running $currentVersion). The update was staged and applies on " +
-                        "the next restart of the cloud.",
+                "VibeCloud $latest is available (running $currentVersion). It was staged and applies on the " +
+                        "next restart of the cloud — restart once more to finish updating.",
             )
         } catch (failure: Exception) {
             logger.warn("Update download failed (continuing with $currentVersion): ${failure.message}")
         }
     }
 
-    private fun pendingDownloaded(): Path = pendingDirectory.resolve(zipName())
+    private fun pendingDownloaded(): Path = stagedZip()
 
-    private fun zipName(): String = "vibecloud-$currentVersion.zip"
+    /**
+     * Fixed staging filename. Deliberately NOT version-dependent: the staging run and the
+     * applying run are different processes with different versions, so the name must not
+     * depend on either.
+     */
+    private fun stagedZip(): Path = pendingDirectory.resolve("update.zip")
+
+    private companion object {
+        const val UNKNOWN_VERSION = "0.0.0"
+    }
 
     private fun latestRelease(): Release? {
         val request = HttpRequest.newBuilder()

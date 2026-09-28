@@ -66,9 +66,14 @@ fun main(args: Array<String>) = runBlocking {
     } catch (failure: Exception) {
         logger.error("Cloud stopped after an error: ${failure.message}", failure)
     } finally {
+        // Detach log routing from the terminal first: during shutdown the interactive reader is
+        // gone, so logs must flow through the plain stdout sink again.
+        (logger as? ConsoleLogger)?.sink = null
         interactive.close()
+        logger.info("Shutting down the cloud — stopping services...")
         shutdownAction()
         runCatching { Runtime.getRuntime().removeShutdownHook(shutdownHook) }
+        logger.info("Goodbye.")
     }
 }
 
