@@ -1,0 +1,301 @@
+package dev.vibecloud.core.proxy
+
+import dev.vibecloud.api.server.ServerType
+import dev.vibecloud.api.service.Service
+import dev.vibecloud.api.service.ServiceState
+import dev.vibecloud.common.logging.Logger
+import dev.vibecloud.core.server.ProxyForwarding
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.io.IOException
+import java.nio.charset.StandardCharsets
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.StandardCopyOption
+import java.util.*
+
+/** Keeps Velocity's backend table in step with provisioned Paper/Spigot services. */
+internal class VelocityBackendSynchronizer(
+    private val logger: Logger,
+    private val forwardingProvider: () -> ProxyForwarding? = { null },
+) {
+    private val mutex = Mutex()
+    private val pendingReloads = mutableSetOf<String>()
+
+    suspend fun synchronize(
+        services: () -> Collection<Service>,
+        reloadProxy: suspend (String) -> Boolean,
+    ) = mutex.withLock {
+        val allServices = services().toList()
+        val backends = allServices.filter { it.type == ServerType.PAPER || it.type == ServerType.SPIGOT }
+        val servers = backendEntries(backends)
+        val defaultServer = backends.sortedWith(backendPreference).firstNotNullOfOrNull { service ->
+            service.name.takeIf { it in servers }
+        } ?: servers.keys.first()
+        val proxyServices = allServices.filter { it.type == ServerType.VELOCITY }
+        val proxyNames = proxyServices.mapTo(mutableSetOf()) { it.name }
+        pendingReloads.retainAll(proxyNames)
+
+        proxyServices.forEach { proxy ->
+            val config = proxy.directory.resolve("velocity.toml")
+            if (!Files.isRegularFile(config)) {
+                logger.warn("Cannot sync Velocity backends for ${proxy.name}: missing config $config")
+                return@forEach
+            }
+            forwardingProvider()?.let { forwarding -> repairForwardingSecretFile(proxy, forwarding) }
+            try {
+                val changed = VelocityTomlBackendTable.update(
+                    config = config,
+                    serverAddresses = servers,
+                    defaultServer = defaultServer,
+                    legacyGroupAliases = backends.mapTo(mutableSetOf()) { it.groupName },
+                )
+                val needsReload = changed || proxy.name in pendingReloads
+                if (changed) {
+                    logger.info("Updated ${servers.size} Velocity backend route(s) in $config")
+                    pendingReloads += proxy.name
+                }
+                if (needsReload && proxy.state == ServiceState.RUNNING) {
+                    if (reloadProxy(proxy.name)) {
+                        pendingReloads -= proxy.name
+                        logger.info("Reloaded backend configuration for Velocity proxy ${proxy.name}")
+                    } else {
+                        logger.warn("Could not send a configuration reload to ${proxy.name}; changes will apply at its next start")
+                    }
+                }
+            } catch (failure: CancellationException) {
+                throw failure
+            } catch (failure: Exception) {
+                logger.warn("Could not sync Velocity backend config $config: ${failure.message}", failure)
+            }
+        }
+    }
+
+    /** Writes the shared forwarding secret if the proxy's secret file is missing or has drifted. */
+    private fun repairForwardingSecretFile(proxy: Service, forwarding: ProxyForwarding) {
+        val secretFile = proxy.directory.resolve("forwarding.secret")
+        try {
+            val current = if (Files.isRegularFile(secretFile)) {
+                Files.readString(secretFile, StandardCharsets.UTF_8).trim()
+            } else {
+                null
+            }
+            if (current != forwarding.secret) {
+                Files.writeString(secretFile, forwarding.secret, StandardCharsets.UTF_8)
+            }
+        } catch (failure: Exception) {
+            logger.warn("Could not write forwarding secret for ${proxy.name}: ${failure.message}", failure)
+        }
+    }
+
+    /**
+     * One entry per backend service instance. Group aliases are intentionally NOT registered:
+     * an alias and its primary instance resolve to the same address, so Velocity lists the same
+     * server twice and switching between them triggers a duplicate-login kick on the backend.
+     */
+    private fun backendEntries(backends: List<Service>): Map<String, String> {
+        val entries = linkedMapOf<String, String>()
+        backends.sortedWith(compareBy<Service> { it.name }).forEach { service ->
+            if (SERVER_NAME.matches(service.name)) {
+                entries[service.name] = "127.0.0.1:${service.port}"
+            } else {
+                logger.warn("Skipping backend service '${service.name}' because it is not a valid Velocity server name")
+            }
+        }
+        if (entries.isEmpty()) {
+            // Retain a valid, familiar default while no backend services have been provisioned yet.
+            entries["lobby"] = "127.0.0.1:25566"
+        }
+        return entries.toSortedMap()
+    }
+
+    private companion object {
+        val SERVER_NAME = Regex("[A-Za-z0-9_-]{1,64}")
+        val backendPreference = compareBy<Service> {
+            when (it.state) {
+                ServiceState.RUNNING -> 0
+                ServiceState.STARTING, ServiceState.CREATED -> 1
+                ServiceState.STOPPING -> 2
+                ServiceState.STOPPED -> 3
+                ServiceState.CRASHED -> 4
+            }
+        }.thenBy(Service::name)
+    }
+}
+
+/** Small line-oriented editor for Velocity's [servers] TOML table; unrelated settings stay intact. */
+internal object VelocityTomlBackendTable {
+    private const val BEGIN_MARKER = "# BEGIN VibeCloud managed backends"
+    private const val END_MARKER = "# END VibeCloud managed backends"
+    private val sectionHeader = Regex("^\\s*\\[([^]]+)]\\s*(?:#.*)?$")
+    private val assignment = Regex("^\\s*(?:\"([^\"]+)\"|'([^']+)'|([A-Za-z0-9_-]+))\\s*=\\s*(.*)$")
+
+    @Throws(IOException::class)
+    fun update(
+        config: Path,
+        serverAddresses: Map<String, String>,
+        defaultServer: String,
+        legacyGroupAliases: Set<String> = emptySet(),
+    ): Boolean {
+        require(serverAddresses.isNotEmpty()) { "At least one Velocity backend entry is required" }
+        require(defaultServer in serverAddresses) { "Default Velocity server '$defaultServer' is not registered" }
+        val source = Files.readString(config, StandardCharsets.UTF_8)
+        // Auto-heal configs provisioned before cloud-managed forwarding existed: an absent
+        // [forced-hosts] table makes Velocity fall back to sample hosts and refuse to start, and an
+        // inline secret keeps proxies from sharing the cloud-managed secret file.
+        val normalized = VelocityConfigNormalizer.ensureForcedHostsSection(
+            VelocityConfigNormalizer.applyForwardingSecretFile(source),
+        )
+        if (normalized != source) {
+            VelocityConfigNormalizer.writeAtomically(config, normalized)
+        }
+        val newline = if ("\r\n" in normalized) "\r\n" else "\n"
+        val trailingNewline = normalized.endsWith('\n') || normalized.endsWith('\r')
+        val lines = normalized.lineSequence().toMutableList()
+        while (lines.lastOrNull()?.isEmpty() == true) lines.removeAt(lines.lastIndex)
+        var sectionStart = lines.indexOfFirst { line ->
+            sectionHeader.matchEntire(line)?.groupValues?.get(1) == "servers"
+        }
+        if (sectionStart < 0) {
+            while (lines.lastOrNull()?.isBlank() == true) lines.removeAt(lines.lastIndex)
+            if (lines.isNotEmpty()) lines += ""
+            lines += "[servers]"
+            sectionStart = lines.lastIndex
+        }
+        val sectionEnd = (sectionStart + 1 until lines.size).firstOrNull { index ->
+            sectionHeader.matches(lines[index])
+        } ?: lines.size
+        // Group aliases written by older cloud versions are treated as managed so upgrades
+        // automatically drop them from existing proxy configs.
+        val managedKeys = serverAddresses.keys + legacyGroupAliases + "try"
+        val body = removeOldManagedBlock(lines.subList(sectionStart + 1, sectionEnd))
+        val cleanedBody = removeManagedAssignments(body, managedKeys)
+        while (cleanedBody.lastOrNull()?.isBlank() == true) cleanedBody.removeAt(cleanedBody.lastIndex)
+
+        val generated = buildList {
+            add(BEGIN_MARKER)
+            serverAddresses.toSortedMap().forEach { (name, address) ->
+                add("${quote(name)} = ${quote(address)}")
+            }
+            add("try = [${quote(defaultServer)}]")
+            add(END_MARKER)
+        }
+        val replacement = buildList {
+            addAll(lines.subList(0, sectionStart + 1))
+            addAll(cleanedBody)
+            if (isNotEmpty() && last().isNotBlank()) add("")
+            addAll(generated)
+            if (sectionEnd < lines.size) add("")
+            addAll(lines.subList(sectionEnd, lines.size))
+        }
+        val cleanedReplacement = removeDanglingExampleForcedHosts(replacement)
+        val updated = cleanedReplacement.joinToString(newline) + if (trailingNewline) newline else ""
+        if (updated == normalized) return false
+
+        val temp = Files.createTempFile(config.parent, ".velocity-sync-", ".tmp")
+        try {
+            Files.writeString(temp, updated, StandardCharsets.UTF_8)
+            try {
+                Files.move(temp, config, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+            } catch (_: AtomicMoveNotSupportedException) {
+                Files.move(temp, config, StandardCopyOption.REPLACE_EXISTING)
+            }
+        } finally {
+            Files.deleteIfExists(temp)
+        }
+        return true
+    }
+
+    private fun removeOldManagedBlock(lines: List<String>): MutableList<String> {
+        val result = mutableListOf<String>()
+        var insideManagedBlock = false
+        lines.forEach { line ->
+            when (line.trim()) {
+                BEGIN_MARKER -> insideManagedBlock = true
+                END_MARKER -> insideManagedBlock = false
+                else -> if (!insideManagedBlock) result += line
+            }
+        }
+        return result
+    }
+
+    private fun removeManagedAssignments(lines: List<String>, keys: Set<String>): MutableList<String> {
+        val result = mutableListOf<String>()
+        var index = 0
+        while (index < lines.size) {
+            val line = lines[index]
+            val match = assignment.matchEntire(line)
+            val key = match?.groupValues?.drop(1)?.firstOrNull(String::isNotEmpty)
+            if (key !in keys) {
+                result += line
+                index++
+                continue
+            }
+            val value = match?.groupValues?.get(4).orEmpty()
+            index++
+            if ('[' in value && ']' !in value) {
+                while (index < lines.size && ']' !in lines[index]) index++
+                if (index < lines.size) index++
+            }
+        }
+        return result
+    }
+
+    private fun removeDanglingExampleForcedHosts(lines: List<String>): List<String> {
+        val validServerNames = sectionKeys(lines, "servers") - "try"
+        val sectionStart = lines.indexOfFirst { line ->
+            sectionHeader.matchEntire(line)?.groupValues?.get(1) == "forced-hosts"
+        }
+        if (sectionStart < 0) return lines
+        val sectionEnd = (sectionStart + 1 until lines.size).firstOrNull { index ->
+            sectionHeader.matches(lines[index])
+        } ?: lines.size
+        val result = lines.toMutableList()
+        var index = sectionStart + 1
+        while (index < sectionEnd) {
+            val match = assignment.matchEntire(lines[index])
+            val host = match?.let(::assignmentKey)
+            val isSampleHost = host != null && host.lowercase(Locale.ROOT) in SAMPLE_HOSTS
+            val value = match?.groupValues?.get(4).orEmpty()
+            val valueLines = mutableListOf(lines[index])
+            var next = index + 1
+            if (isSampleHost && '[' in value && ']' !in value) {
+                while (next < sectionEnd) {
+                    valueLines += lines[next]
+                    if (']' in lines[next++]) break
+                }
+            }
+            if (isSampleHost) {
+                val targets = SERVER_NAME_LITERAL.findAll(valueLines.joinToString("\\n"))
+                    .map { it.groupValues[1] }
+                    .toList()
+                if (targets.isNotEmpty() && targets.any { it !in validServerNames }) {
+                    repeat(next - index) { result[index + it] = "" }
+                }
+            }
+            index = next.coerceAtLeast(index + 1)
+        }
+        return result
+    }
+
+    private fun sectionKeys(lines: List<String>, section: String): Set<String> {
+        val start = lines.indexOfFirst { line -> sectionHeader.matchEntire(line)?.groupValues?.get(1) == section }
+        if (start < 0) return emptySet()
+        val end = (start + 1 until lines.size).firstOrNull { sectionHeader.matches(lines[it]) } ?: lines.size
+        return (start + 1 until end).mapNotNull { index ->
+            assignment.matchEntire(lines[index])?.let(::assignmentKey)
+        }.toSet()
+    }
+
+    private fun assignmentKey(match: MatchResult): String =
+        listOf(match.groupValues[1], match.groupValues[2], match.groupValues[3]).first(String::isNotEmpty)
+
+    private fun quote(value: String): String = "\"" + value
+        .replace("\\", "\\\\")
+        .replace("\"", "\\\"") + "\""
+
+    private val SAMPLE_HOSTS = setOf("factions.example.com", "minigames.example.com")
+    private val SERVER_NAME_LITERAL = Regex("[\\\"']([A-Za-z0-9_-]+)[\\\"']")
+}

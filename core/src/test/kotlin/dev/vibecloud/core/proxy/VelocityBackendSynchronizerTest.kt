@@ -1,0 +1,134 @@
+package dev.vibecloud.core.proxy
+
+import dev.vibecloud.api.server.ServerType
+import dev.vibecloud.api.service.Service
+import dev.vibecloud.api.service.ServiceState
+import dev.vibecloud.common.logging.LogLevel
+import dev.vibecloud.common.logging.Logger
+import kotlinx.coroutines.runBlocking
+import java.nio.file.Files
+import java.time.Instant
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
+
+class VelocityBackendSynchronizerTest {
+    @Test
+    fun `sync registers one backend per service instance and removes legacy group aliases`() = runBlocking {
+        val root = Files.createTempDirectory("velocity-backend-sync-test")
+        try {
+            val proxyDirectory = root.resolve("services/proxy-1")
+            Files.createDirectories(proxyDirectory)
+            val config = proxyDirectory.resolve("velocity.toml")
+            Files.writeString(
+                config,
+                """config-version = "2.9"
+[servers]
+lobby = "127.0.0.1:25566"
+lobby-1 = "127.0.0.1:25566"
+citybuild = "127.0.0.1:25567"
+try = ["lobby"]
+manual = "127.0.0.1:25570"
+
+[forced-hosts]
+"factions.example.com" = ["factions"]
+"minigames.example.com" = ["minigames"]
+"lobby.example.com" = ["lobby"]
+
+[packet-limiter]
+packets-per-second = -1
+""",
+            )
+            val now = Instant.now()
+            val proxy =
+                service("proxy-1", "proxy", ServerType.VELOCITY, ServiceState.RUNNING, 25565, proxyDirectory, now)
+            val lobby = service(
+                "lobby-1",
+                "lobby",
+                ServerType.PAPER,
+                ServiceState.RUNNING,
+                25566,
+                root.resolve("services/lobby-1"),
+                now
+            )
+            val citybuild = service(
+                "citybuild-1",
+                "citybuild",
+                ServerType.PAPER,
+                ServiceState.CREATED,
+                25567,
+                root.resolve("services/citybuild-1"),
+                now
+            )
+            val synchronizer = VelocityBackendSynchronizer(SilentLogger())
+            var reloadCount = 0
+
+            synchronizer.synchronize({ listOf(proxy, lobby, citybuild) }) { name ->
+                assertEquals("proxy-1", name)
+                reloadCount++
+                true
+            }
+
+            var updated = Files.readString(config)
+            assertTrue(updated.contains("\"lobby-1\" = \"127.0.0.1:25566\""))
+            assertTrue(updated.contains("\"citybuild-1\" = \"127.0.0.1:25567\""))
+            assertTrue(updated.contains("try = [\"lobby-1\"]"))
+            assertTrue(updated.contains("manual = \"127.0.0.1:25570\""))
+            assertFalse(
+                updated.contains("\"lobby\" ="),
+                "legacy group alias must be removed: it duplicates lobby-1's address"
+            )
+            assertFalse(
+                updated.contains("\"citybuild\" ="),
+                "legacy group alias must be removed: it duplicates citybuild-1's address"
+            )
+            assertFalse(updated.contains("factions.example.com"), "stale generated sample host routes are removed")
+            assertFalse(updated.contains("minigames.example.com"), "stale generated sample host routes are removed")
+            assertTrue(updated.contains("lobby.example.com"), "valid forced-host routes are preserved")
+            assertTrue(updated.contains("[packet-limiter]"))
+            assertEquals(1, reloadCount)
+
+            synchronizer.synchronize({ listOf(proxy, lobby) }) { reloadCount++; true }
+            updated = Files.readString(config)
+            assertFalse(updated.contains("citybuild-1"))
+            assertTrue(updated.contains("\"lobby-1\" = \"127.0.0.1:25566\""))
+            assertEquals(2, reloadCount)
+
+            val changedAgain = VelocityTomlBackendTable.update(
+                config,
+                mapOf("lobby-1" to "127.0.0.1:25566"),
+                "lobby-1",
+                legacyGroupAliases = setOf("lobby", "citybuild"),
+            )
+            assertFalse(changedAgain, "the generated table should be idempotent")
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    private fun service(
+        name: String,
+        group: String,
+        type: ServerType,
+        state: ServiceState,
+        port: Int,
+        directory: java.nio.file.Path,
+        createdAt: Instant,
+    ) = Service(
+        id = name,
+        name = name,
+        groupName = group,
+        type = type,
+        version = "test",
+        state = state,
+        port = port,
+        directory = directory,
+        createdAt = createdAt,
+        updatedAt = createdAt,
+    )
+
+    private class SilentLogger : Logger {
+        override fun log(level: LogLevel, message: String, cause: Throwable?) = Unit
+    }
+}

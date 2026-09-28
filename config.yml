@@ -1,0 +1,36 @@
+# Group settings are reconciled continuously. Build keys pin exact upstream artifacts.
+directories:
+  templates: templates
+  services: services
+
+ports:
+  start: 25565
+  end: 25664
+
+runtime:
+  java-command: java
+  min-memory-mb: 512
+  max-memory-mb: 2048
+  jvm-args: [ ]
+  startup-timeout-seconds: 180
+  shutdown-timeout-seconds: 30
+  # The controller writes this choice to every Paper/Spigot service's eula.txt.
+  # Read the Minecraft EULA (https://www.minecraft.net/eula) before keeping this enabled.
+  eula-accepted: true
+
+reconciliation:
+  interval-seconds: 5
+
+groups:
+  lobby:
+    type: PAPER
+    version: "paper-26.2-129"
+    min-services: 0
+    max-services: 5
+    always-running-services: 0
+  proxy:
+    type: VELOCITY
+    version: "velocity-4.0.0-6"
+    min-services: 0
+    max-services: 2
+    always-running-services: 0

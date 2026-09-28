@@ -1,0 +1,9 @@
+.gradle/
+**/build/
+services/
+templates/*/*/
+!templates/README.md
+.idea/
+*.iml
+.DS_Store
+.kotlin/
