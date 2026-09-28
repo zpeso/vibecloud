@@ -270,6 +270,18 @@ class LocalServiceManager(
             // injected on their next start.
             agentInstaller?.install(starting)
 
+            // Fail fast on a busy port: a server that cannot bind exits with a generic "exited
+            // before ready" crash loop, which is miserable to diagnose. Any listener on the
+            // assigned port at this point is foreign (e.g. an orphaned server from a previous
+            // cloud process), because this slot holds no running process.
+            if (isPortInUse(starting.port)) {
+                val reason = "Port ${starting.port} is already in use by another process " +
+                        "(likely an orphaned server from a previous cloud run) — stop that process first"
+                recordCrashLocked(slot, null, reason)
+                startFailure = ServiceStartException("Cannot start ${starting.name}: $reason")
+                return@withLock
+            }
+
             val token = UUID.randomUUID().toString()
             slot.processToken = token
             try {
@@ -490,6 +502,16 @@ class LocalServiceManager(
      * pristine copy — the defining behavior of non-static (template-based) services. Runs before
      * launch so crash-restarts and restarts all get a fresh environment.
      */
+    /** True when something accepts TCP connections on [port] on the loopback interface. */
+    private fun isPortInUse(port: Int): Boolean = try {
+        java.net.Socket().use { socket ->
+            socket.connect(java.net.InetSocketAddress("127.0.0.1", port), 250)
+            true
+        }
+    } catch (_: Exception) {
+        false
+    }
+
     private suspend fun reProvisionFromTemplate(service: Service) {
         withContext(Dispatchers.IO + kotlinx.coroutines.NonCancellable) {
             runCatching { deleteRecursively(service.directory) }
