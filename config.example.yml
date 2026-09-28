@@ -34,16 +34,19 @@ bridge:
   heartbeat-interval-seconds: 5
   offline-timeout-seconds: 20
 
-groups:
-  lobby:
-    type: PAPER
-    version: "paper-26.2-129"
-    min-services: 0
-    max-services: 5
-    always-running-services: 0
-  proxy:
-    type: VELOCITY
-    version: "velocity-4.0.0-6"
-    min-services: 0
-    max-services: 2
-    always-running-services: 0
+# A fresh install starts with ZERO groups and services — a clean, empty cloud.
+# Create everything with `group create` (guided wizard) and `service create` in the console.
+# Example of what a configured groups block looks like afterwards:
+# groups:
+#   lobby:
+#     type: PAPER
+#     version: "paper-26.2-129"
+#     min-services: 0
+#     max-services: 5
+#     always-running-services: 0
+#   proxy:
+#     type: VELOCITY
+#     version: "velocity-4.0.0-6"
+#     min-services: 0
+#     max-services: 2
+#     always-running-services: 0

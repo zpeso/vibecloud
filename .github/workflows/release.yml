@@ -23,11 +23,13 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
+      # gradlew is committed from Windows without the executable bit; always go
+      # through bash so this can never break CI regardless of file mode.
       - name: Test
-        run: ./gradlew test
+        run: bash gradlew test
 
       - name: Build release zip
-        run: ./gradlew :launcher:releaseZip
+        run: bash gradlew :launcher:releaseZip
 
       - name: Attach zip to GitHub Release
         uses: softprops/action-gh-release@v2
