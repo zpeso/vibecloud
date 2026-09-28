@@ -15,10 +15,37 @@ import org.jline.utils.AttributedStyle
  * in the loop instead of killing the cloud.
  */
 class InteractiveConsole(private val cloud: Cloud) : AutoCloseable {
-    private val terminal: Terminal = TerminalBuilder.builder()
-        .system(true)
-        .dumb(true)
-        .build()
+    private val terminal: Terminal = buildTerminal()
+
+    /**
+     * Terminal construction with graceful degradation. The first attempt is the full interactive
+     * terminal; if the environment is hostile (screen with an exotic/absent TERM can make JLine's
+     * dumb-terminal capability loading throw an NPE), retries pin a type whose capabilities ship
+     * inside the JLine jar, and finally fall back to a plain stdin/stdout terminal. The cloud must
+     * never crash because the console looks wrong.
+     */
+    private fun buildTerminal(): Terminal {
+        val attempts = listOf(
+            "full interactive terminal" to {
+                TerminalBuilder.builder().system(true).dumb(true).build()
+            },
+            "terminal with pinned type" to {
+                TerminalBuilder.builder().system(true).dumb(true).type("dumb").build()
+            },
+            "plain stdin/stdout terminal" to {
+                TerminalBuilder.builder().dumb(true).type("dumb")
+                    .streams(System.`in`, System.out).build()
+            },
+        )
+        attempts.forEach { (description, build) ->
+            try {
+                return build()
+            } catch (failure: Throwable) {
+                System.err.println("[console] $description unavailable: ${failure.message}")
+            }
+        }
+        throw IllegalStateException("No usable terminal could be created")
+    }
 
     private var cachedReader: LineReader? = null
 
