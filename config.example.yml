@@ -1,0 +1,49 @@
+# Group settings are reconciled continuously. Build keys pin exact upstream artifacts.
+# Per-group content lives in optional overlay folders: templates/groups/<group>/ is copied on
+# top of the shared build template at provisioning (e.g. templates/groups/lobby/, templates/groups/proxy/).
+directories:
+  templates: templates
+  services: services
+
+ports:
+  start: 25565
+  end: 25664
+
+runtime:
+  java-command: java
+  min-memory-mb: 512
+  max-memory-mb: 2048
+  jvm-args: [ ]
+  startup-timeout-seconds: 180
+  shutdown-timeout-seconds: 30
+  # The controller writes this choice to every Paper/Spigot service's eula.txt.
+  # Read the Minecraft EULA (https://www.minecraft.net/eula) before keeping this enabled.
+  eula-accepted: true
+
+reconciliation:
+  interval-seconds: 5
+
+# Local HTTP bridge: backend agent plugins report live player rosters here, and plugins can read
+# the cloud status (groups, services, players) from code. Agents are installed automatically into
+# every backend service; the shared token is generated at bridge.token next to this file.
+# Keep bind-address at 127.0.0.1 unless you front the endpoint with an authenticated proxy.
+bridge:
+  enabled: true
+  port: 25580
+  bind-address: "127.0.0.1"
+  heartbeat-interval-seconds: 5
+  offline-timeout-seconds: 20
+
+groups:
+  lobby:
+    type: PAPER
+    version: "paper-26.2-129"
+    min-services: 0
+    max-services: 5
+    always-running-services: 0
+  proxy:
+    type: VELOCITY
+    version: "velocity-4.0.0-6"
+    min-services: 0
+    max-services: 2
+    always-running-services: 0

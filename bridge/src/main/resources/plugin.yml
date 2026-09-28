@@ -1,0 +1,6 @@
+name: VibeCloud-Agent
+version: '${version}'
+main: dev.vibecloud.bridge.agent.VibeCloudAgentPlugin
+api-version: '1.13'
+description: Reports live player rosters from this server to the VibeCloud bridge.
+authors: [VibeCloud]
