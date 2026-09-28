@@ -21,9 +21,12 @@ import java.util.concurrent.atomic.AtomicBoolean
  * plugins on backends (and external tools) GET the cloud status with live player counts.
  *
  * Endpoints (all JSON):
- *  - `GET /bridge/status`   → cloud status; requires the agent token by default
- *  - `GET /bridge/services` → alias of `/bridge/status`
- *  - `POST /bridge/heartbeat` → agent heartbeat; requires `Authorization: Bearer <token>`
+ *  - `GET  /bridge/status`   → cloud status; requires the agent token
+ *  - `GET  /bridge/services` → alias of `/bridge/status`
+ *  - `POST /bridge/heartbeat` → agent heartbeat; requires `Authorization: Bearer <token>`;
+ *    the response carries queued player/service commands for that service
+ *  - `POST /bridge/players`  → queue a player action (`message`, `kick`, `transfer`)
+ *  - `POST /bridge/services/command` → queue a console command for one service
  *
  * The server binds to `bridge.bind-address` (default `127.0.0.1`) — it is a local control surface,
  * not a public API. Use a reverse proxy with TLS and its own authentication to expose it.
@@ -52,6 +55,10 @@ class BridgeHttpServer(
 
     private val started = AtomicBoolean(false)
     private var server: HttpServer? = null
+    private val backingQueue = BridgeCommandQueue()
+
+    /** Pending player/service commands, drained by the agents' heartbeats. */
+    internal val commandQueue: BridgeCommandQueue get() = backingQueue
 
     fun start() {
         if (!started.compareAndSet(false, true)) return
@@ -64,6 +71,8 @@ class BridgeHttpServer(
             created.createContext("/bridge/status") { exchange -> handleStatus(exchange) }
             created.createContext("/bridge/services") { exchange -> handleStatus(exchange) }
             created.createContext("/bridge/heartbeat") { exchange -> handleHeartbeat(exchange) }
+            created.createContext("/bridge/players") { exchange -> handlePlayerAction(exchange) }
+            created.createContext("/bridge/services/command") { exchange -> handleServiceAction(exchange) }
             created.start()
             server = created
             if (!settings.bindAddress.isLoopbackAddress()) {
@@ -162,13 +171,179 @@ class BridgeHttpServer(
                 logger.info("Bridge agent of ${serviceName} connected (v${fields["agent-version"]?.trim().orEmpty()})")
             }
             tracker.applyAgentReport(serviceName, players)
-            respond(exchange, 204, "")
+            // Piggyback queued commands for this service on the heartbeat response. The agent
+            // executes them on the server's main thread and reports back on the next beat.
+            val commands = backingQueue.drain(serviceId)
+            if (commands.isEmpty()) {
+                respond(exchange, 204, "")
+            } else {
+                respond(exchange, 200, commandsJson(commands))
+                logger.info(
+                    "Dispatched ${commands.size} command(s) to $serviceName " +
+                        "via heartbeat (${commands.joinToString(",") { it.type }})",
+                )
+            }
         } catch (failure: IOException) {
             logger.debug("Bridge heartbeat failed: ${failure.message}")
         } finally {
             exchange.close()
         }
     }
+
+    /**
+     * `POST /bridge/players` — queues a player action for the service the player is on. The
+     * queue is served by the agent's next heartbeat (typically within one interval), so an
+     * action for a player who just left is dropped instead of erroring.
+     */
+    private fun handlePlayerAction(exchange: HttpExchange) {
+        try {
+            if (exchange.requestMethod != "POST") {
+                respond(exchange, 405, errorJson("method not allowed"))
+                return
+            }
+            if (!requireToken(exchange)) {
+                respond(exchange, 401, errorJson("missing or invalid bridge token"))
+                return
+            }
+            val body = readBodyCapped(exchange)
+            if (body == null) {
+                respond(exchange, 413, errorJson("payload too large"))
+                return
+            }
+            val fields = parseBody(body)
+            val playerName = fields["player"]?.trim().orEmpty()
+            val action = fields["action"]?.trim().orEmpty()
+            if (playerName.isEmpty() || action.isEmpty()) {
+                respond(exchange, 400, errorJson("requires 'player' and 'action'"))
+                return
+            }
+            val command: BridgeCommand = when (action) {
+                "message" -> {
+                    val lines = fields["lines"]?.trim().orEmpty()
+                    if (lines.isEmpty()) {
+                        respond(exchange, 400, errorJson("'message' requires 'lines'"))
+                        return
+                    }
+                    BridgeCommand(
+                        id = backingQueue.nextId(),
+                        type = "message",
+                        playerName = playerName,
+                        payload = mapOf("lines" to lines),
+                    )
+                }
+                "kick" -> BridgeCommand(
+                    id = backingQueue.nextId(),
+                    type = "kick",
+                    playerName = playerName,
+                    payload = mapOf("reason" to fields["reason"]?.trim().orEmpty().ifEmpty { "Kicked by the cloud" }),
+                )
+                "transfer" -> {
+                    val target = fields["target"]?.trim().orEmpty()
+                    if (target.isEmpty()) {
+                        respond(exchange, 400, errorJson("'transfer' requires 'target'"))
+                        return
+                    }
+                    // Accept an exact service name or "<group>#" to pick the group's first
+                    // running service; resolve now so the agent receives a concrete name.
+                    val targetService = resolveServiceName(target)
+                    if (targetService == null) {
+                        respond(exchange, 404, errorJson("unknown target service '$target'"))
+                        return
+                    }
+                    BridgeCommand(
+                        id = backingQueue.nextId(),
+                        type = "transfer",
+                        playerName = playerName,
+                        payload = mapOf("target" to targetService),
+                    )
+                }
+                else -> {
+                    respond(exchange, 400, errorJson("unknown player action '$action'"))
+                    return
+                }
+            }
+            val target = cloudView.services().firstOrNull { service ->
+                service.state == ServiceState.RUNNING &&
+                    tracker.playerNames(service.name).any { it.equals(playerName, ignoreCase = true) }
+            }
+            if (target == null) {
+                respond(exchange, 404, errorJson("player '$playerName' is not online"))
+                return
+            }
+            backingQueue.enqueue(target.id, command)
+            respond(exchange, 202, JsonWriter.obj("queued" to JsonWriter.bool(true)))
+        } catch (failure: IOException) {
+            logger.debug("Bridge player action failed: ${failure.message}")
+        } finally {
+            exchange.close()
+        }
+    }
+
+    /** `POST /bridge/services/command` — queues a console command for one service. */
+    private fun handleServiceAction(exchange: HttpExchange) {
+        try {
+            if (exchange.requestMethod != "POST") {
+                respond(exchange, 405, errorJson("method not allowed"))
+                return
+            }
+            if (!requireToken(exchange)) {
+                respond(exchange, 401, errorJson("missing or invalid bridge token"))
+                return
+            }
+            val body = readBodyCapped(exchange)
+            if (body == null) {
+                respond(exchange, 413, errorJson("payload too large"))
+                return
+            }
+            val fields = parseBody(body)
+            val service = fields["service"]?.trim().orEmpty()
+            val action = fields["action"]?.trim().orEmpty()
+            val commandLine = fields["command"]?.trim().orEmpty()
+            if (service.isEmpty() || action != "command" || commandLine.isEmpty()) {
+                respond(exchange, 400, errorJson("requires 'service', 'action=command' and 'command'"))
+                return
+            }
+            val known = cloudView.services().firstOrNull { it.name.equals(service, ignoreCase = true) }
+            if (known == null) {
+                respond(exchange, 404, errorJson("unknown service '$service'"))
+                return
+            }
+            val command = BridgeCommand(
+                id = backingQueue.nextId(),
+                type = "command",
+                playerName = null,
+                payload = mapOf("command" to commandLine),
+            )
+            backingQueue.enqueue(known.id, command)
+            respond(exchange, 202, JsonWriter.obj("queued" to JsonWriter.bool(true)))
+        } catch (failure: IOException) {
+            logger.debug("Bridge service command failed: ${failure.message}")
+        } finally {
+            exchange.close()
+        }
+    }
+
+    /** Resolves a transfer target: exact service name, or `<group>#` for the group's first running service. */
+    private fun resolveServiceName(target: String): String? {
+        val services = cloudView.services().filter { it.state == ServiceState.RUNNING }
+        services.firstOrNull { it.name.equals(target, ignoreCase = true) }?.let { return it.name }
+        if (target.endsWith("#")) {
+            val group = target.removeSuffix("#")
+            return services.firstOrNull { it.groupName.equals(group, ignoreCase = true) }?.name
+        }
+        return null
+    }
+
+    private fun commandsJson(commands: List<BridgeCommand>): String = JsonWriter.arr(
+        commands.map { command ->
+            JsonWriter.obj(
+                "id" to JsonWriter.num(command.id.toInt()),
+                "type" to JsonWriter.str(command.type),
+                "player" to (command.playerName?.let { JsonWriter.str(it) } ?: "null"),
+                *command.payload.map { (key, value) -> key to JsonWriter.str(value) }.toTypedArray(),
+            )
+        },
+    )
 
     private fun liveValues(service: Service, now: Instant): LiveValues = when (service.state) {
         ServiceState.RUNNING -> {

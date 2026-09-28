@@ -17,6 +17,7 @@ class BridgeManager(
     private val logger: Logger,
 ) {
     private val running = AtomicReference(false)
+    private val commandQueue = server.commandQueue
 
     fun start() {
         if (!running.compareAndSet(false, true)) return
@@ -39,6 +40,7 @@ class BridgeManager(
 
     /** Called from reconciliation to expire agents that stopped sending heartbeats. */
     fun reconcile(services: Collection<Service>) {
+        commandQueue.retain(services.map { it.id }.toSet())
         val now = java.time.Instant.now()
         registry.staleIds(now).forEach { staleId ->
             val report = registry.all().firstOrNull { it.serviceId == staleId }

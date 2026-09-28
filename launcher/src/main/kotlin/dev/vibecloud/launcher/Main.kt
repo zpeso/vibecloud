@@ -9,6 +9,13 @@ import kotlinx.coroutines.runBlocking
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.Properties
+
+/** Release version of the running launcher, stamped into version.properties by the build. */
+private fun launcherVersion(): String = runCatching {
+    Properties().apply { javaClass.getResourceAsStream("/version.properties")?.use(::load) }
+        .getProperty("version", "0.0.0")
+}.getOrDefault("0.0.0")
 
 fun main(args: Array<String>) = runBlocking {
     val logger: Logger = ConsoleLogger(minimumLevel = LogLevel.INFO)
@@ -18,6 +25,11 @@ fun main(args: Array<String>) = runBlocking {
         logger.error(failure.message ?: "Invalid command-line arguments")
         return@runBlocking
     }
+    // Self-update: apply a staged update from the previous run, then look for a newer release.
+    // Both are best-effort; an offline root server just skips the check.
+    val selfUpdater = SelfUpdater(logger, configPath, launcherVersion())
+    selfUpdater.applyPendingUpdate()
+    selfUpdater.checkAndStage()
     val cloud = try {
         CloudBootstrap(logger).create(configPath)
     } catch (failure: Exception) {

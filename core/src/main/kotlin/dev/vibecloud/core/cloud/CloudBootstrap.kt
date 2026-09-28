@@ -133,6 +133,12 @@ class CloudBootstrap(
                 },
                 agentJarResolver = BridgeAgentInstaller.defaultAgentJarResolver(configFile.parent),
                 logger = logger,
+                advertisedHost = { config.bridge.advertisedHost.trim().takeIf { it.isNotEmpty() } },
+                servicePorts = {
+                    serviceManagerReference.get()?.all().orEmpty()
+                        .filter { it.state == dev.vibecloud.api.service.ServiceState.RUNNING }
+                        .associate { it.name to it.port }
+                },
             )
             val templateManager = FileTemplateManager(
                 templateRoot = config.directories.templates,

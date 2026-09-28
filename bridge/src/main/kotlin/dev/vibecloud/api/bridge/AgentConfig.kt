@@ -16,6 +16,10 @@ data class AgentConfig(
     val groupName: String,
     val token: String,
     val heartbeatIntervalSeconds: Int,
+    /** Host clients should be transferred to for cross-server movement (may be blank). */
+    val advertisedHost: String = "",
+    /** Service name → port, for resolving transfer targets. */
+    val targets: Map<String, String> = emptyMap(),
 ) {
     val heartbeatInterval: java.time.Duration
         get() = java.time.Duration.ofSeconds(heartbeatIntervalSeconds.toLong())
@@ -46,6 +50,12 @@ data class AgentConfig(
                     .toIntOrNull()
                     ?.coerceAtLeast(1)
                     ?: 5,
+                advertisedHost = properties.getProperty("advertised-host", "").trim(),
+                targets = properties.stringPropertyNames()
+                    .filter { it.startsWith("target.") && it.endsWith(".port") }
+                    .associate { key ->
+                        key.removePrefix("target.").removeSuffix(".port") to properties.getProperty(key, "")
+                    },
             )
         }
 

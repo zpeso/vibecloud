@@ -89,6 +89,7 @@ class CloudStatus(
     val onlineServices: Int,
     val totalPlayersOnline: Int,
     val services: List<ServiceStatus>,
+    val groups: List<GroupStatus>,
     val rawJson: String,
 )
 
@@ -102,6 +103,37 @@ class ServiceStatus(
     val agentOnline: Boolean,
     val playersOnline: Int?,
     val players: List<String>,
+)
+
+/** Per-group entry of the status document. */
+class GroupStatus(
+    val name: String,
+    val type: String,
+    val version: String,
+    val static: Boolean,
+    val minServices: Int,
+    val maxServices: Int,
+    val alwaysRunningServices: Int,
+)
+
+/** Wire names of the actions dispatched to backend agents (see `/bridge/players`, `/bridge/services`). */
+enum class CloudCommandType(internal val wireName: String) {
+    MESSAGE("message"),
+    KICK("kick"),
+    TRANSFER("transfer"),
+    COMMAND("command"),
+}
+
+internal fun ServiceStatus.toCloudService(cloud: VibeCloud): CloudService = CloudService(
+    cloud = cloud,
+    name = name,
+    group = group,
+    type = type,
+    state = state,
+    port = port,
+    agentOnline = agentOnline,
+    playersOnline = playersOnline,
+    players = players,
 )
 
 /** Minimal JSON reader for the status document (no third-party dependencies). */
@@ -135,12 +167,29 @@ internal object CloudStatusParser {
                     .filter { it.isNotEmpty() },
             )
         }.toList()
+        val groupsJson = arrayField(json, "groups")
+        val groups = Regex("\\{[^{}]*}").findAll(groupsJson).map { entry ->
+            val fields = mutableMapOf<String, String>()
+            STRING_FIELD.findAll(entry.value).forEach { fields[it.groupValues[1]] = unescape(it.groupValues[2]) }
+            NUMBER_FIELD.findAll(entry.value).forEach { fields.putIfAbsent(it.groupValues[1], it.groupValues[2]) }
+            BOOL_FIELD.findAll(entry.value).forEach { fields.putIfAbsent(it.groupValues[1], it.groupValues[2]) }
+            GroupStatus(
+                name = fields["name"].orEmpty(),
+                type = fields["type"].orEmpty(),
+                version = fields["version"].orEmpty(),
+                static = fields["static"] == "true",
+                minServices = fields["min-services"]?.toIntOrNull() ?: 0,
+                maxServices = fields["max-services"]?.toIntOrNull() ?: 0,
+                alwaysRunningServices = fields["always-running-services"]?.toIntOrNull() ?: 0,
+            )
+        }.toList()
         return CloudStatus(
             groupCount = totals["groups"]?.toIntOrNull() ?: 0,
             serviceCount = totals["services"]?.toIntOrNull() ?: 0,
             onlineServices = totals["online"]?.toIntOrNull() ?: 0,
             totalPlayersOnline = totals["players-online"]?.toIntOrNull() ?: 0,
             services = services,
+            groups = groups,
             rawJson = json,
         )
     }

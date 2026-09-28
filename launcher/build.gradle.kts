@@ -56,6 +56,15 @@ application {
     applicationDefaultJvmArgs = listOf("--enable-native-access=ALL-UNNAMED")
 }
 
+// Stamp the release version into the launcher so the self-updater knows what it is running.
+tasks.processResources {
+    val props = mapOf("version" to project.version.toString())
+    inputs.properties(props)
+    filesMatching("version.properties") {
+        expand(props)
+    }
+}
+
 // Self-contained release archive: config, secret, scripts, libs at the top level so the extracted
 // folder is the working root and can be moved anywhere (paths resolve relative to config.yml).
 val runtimeConfigDir = layout.buildDirectory.dir("runtime-config").get().asFile

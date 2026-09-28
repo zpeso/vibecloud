@@ -222,16 +222,62 @@ Every request needs `Authorization: Bearer <token>` where the token is the conte
 file like a password: it grants read access to the whole cloud status. The endpoint binds to `127.0.0.1` by default;
 only expose it through an authenticated TLS reverse proxy.
 
-### Moving players between services
+### The VibeCloud facade (recommended entry point)
 
-Player routing stays with the proxy: backends behind a Velocity proxy already have modern forwarding wired up, and
-the proxy knows every backend from the cloud-synced `velocity.toml`. Use Velocity/BungeeCord plugin messaging from
-your plugins to connect players to a target service.
+`dev.vibecloud.api.bridge.VibeCloud` is the one object you interact with. Call `VibeCloud.forService()` once during
+plugin startup (reads the agent config the cloud installs), then use `VibeCloud.instance` anywhere:
+
+```kotlin
+import dev.vibecloud.api.bridge.VibeCloud
+import dev.vibecloud.api.bridge.CloudPlayerNotFoundException
+
+class NetworkMessenger : Listener {
+    private val cloud get() = VibeCloud.instance
+
+    fun broadcastExcept(sender: String, message: String) {
+        // Call from an async thread - every provider call is an HTTP request.
+        cloud.players().all()
+            .filter { it.name != sender }
+            .forEach { it.sendMessage("§b[Network] §f$message") }
+    }
+
+    fun sendToLobby(playerName: String) {
+        val player = cloud.players().findByName(playerName) ?: return
+        val lobby = cloud.services().findByGroup("lobby").firstOrNull() ?: return
+        player.connect(lobby)
+    }
+
+    fun kickCheater(name: String) {
+        val player = cloud.players().findByName(name) ?: return
+        player.kick("§cYou were removed from the network.")
+    }
+
+    fun restartCitybuild() {
+        cloud.services().findByGroup("citybuild").forEach { it.executeCommand("say Restarting in 10s") }
+    }
+}
+```
+
+Actions run through the cloud: the command is queued for the target service's agent and executed on that server's
+main thread within one heartbeat interval (default 5s). `player.connect(...)` uses Paper's transfer packet
+(1.20.5+ clients, proxy-less networks): set `bridge.advertised-host` in `config.yml` to the machine's reachable IP
+so agents know where to send clients. On proxy networks, prefer routing through the proxy.
+
+### The raw client (still available)
+
+`VibeCloudClient` stays as the low-level transport. `VibeCloudClient.forService()` is deprecated in favor of
+`VibeCloud.forService()`; the facade also exposes `status()` for the full document.
+
+### Authentication
+
+Every request needs `Authorization: Bearer <token>` where the token is the contents of `bridge.token`. Treat that
+file like a password: it grants read access to the whole cloud status (and command dispatch on the write endpoints).
+The endpoint binds to `127.0.0.1` by default; only expose it through an authenticated TLS reverse proxy.
 
 ## What the API does not do (yet)
 
-- **Sending players to a service from the cloud.** Player routing belongs to the proxy or to plugin messaging; the
-  cloud's job is the process and its port.
+- **Proxy-network player routing.** `connect` uses Paper's transfer packet; behind Velocity/BungeeCord, route via
+  the proxy as before.
 - **Remote nodes.** `Cloud` manages local processes; multi-node scheduling is future work behind the same interfaces.
 - **Persistence hooks.** Non-static services are wiped on start by design; store durable data outside
   `services/<name>/` (or use static groups).

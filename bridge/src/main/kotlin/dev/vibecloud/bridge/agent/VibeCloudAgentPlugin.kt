@@ -1,6 +1,8 @@
 package dev.vibecloud.bridge.agent
 
 import dev.vibecloud.api.bridge.AgentConfig
+import org.bukkit.Bukkit
+import org.bukkit.entity.Player
 import org.bukkit.plugin.java.JavaPlugin
 import java.net.URI
 import java.net.URLEncoder
@@ -18,8 +20,9 @@ import java.util.concurrent.TimeUnit
 
 /**
  * The VibeCloud agent that runs inside every backend server. Periodically POSTs the online player
- * roster to the cloud's bridge endpoint so any plugin in the network can read exact, up-to-date
- * player counts via the [dev.vibecloud.api.bridge.VibeCloudClient].
+ * roster to the cloud's bridge endpoint and receives queued cloud commands (player
+ * message/kick/transfer and console commands) in the response, which it executes on the server's
+ * main thread.
  *
  * The cloud installs this plugin and its `agent.properties` automatically on service start; if
  * the file is missing (server started outside the cloud), the plugin disables itself quietly.
@@ -28,6 +31,7 @@ class VibeCloudAgentPlugin : JavaPlugin() {
     private var config: AgentConfig? = null
     private var executor: ScheduledExecutorService? = null
     private var heartbeatTask: ScheduledFuture<*>? = null
+    private var lastCommandId: Long = 0
     private val http: HttpClient = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(3))
         .build()
@@ -85,32 +89,103 @@ class VibeCloudAgentPlugin : JavaPlugin() {
     }
 
     private fun sendHeartbeat() {
-        val config = this.config ?: return
+        val current = this.config ?: return
         try {
             val names = server.onlinePlayers.map { it.name }
             val form = formEncode(
-                "service-id" to config.serviceId,
-                "service-name" to config.serviceName,
+                "service-id" to current.serviceId,
+                "service-name" to current.serviceName,
                 "players" to names.joinToString(","),
                 "max-players" to server.maxPlayers.toString(),
-                "agent-version" to pluginMeta.version,
+                "agent-version" to description.version,
             )
             val request = HttpRequest.newBuilder()
-                .uri(URI.create("${config.cloudUrl}/bridge/heartbeat"))
+                .uri(URI.create("${current.cloudUrl}/bridge/heartbeat"))
                 .timeout(Duration.ofSeconds(3))
-                .header("Authorization", "Bearer ${config.token}")
+                .header("Authorization", "Bearer ${current.token}")
                 .header("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
                 .POST(HttpRequest.BodyPublishers.ofString(form))
                 .build()
-            http.send(request, HttpResponse.BodyHandlers.discarding())
+            val response = http.send(request, HttpResponse.BodyHandlers.ofString())
+            if (response.statusCode() == 200) {
+                executeCommands(CloudCommandParser.parse(response.body()))
+            }
         } catch (failure: Exception) {
             getLogger().warning("Heartbeat failed: ${failure.message}")
         }
     }
 
-    private fun formEncode(vararg fields: Pair<String, String>): String = fields.joinToString("&") { (key, value) ->
-        URLEncoder.encode(key, StandardCharsets.UTF_8) + "=" + URLEncoder.encode(value, StandardCharsets.UTF_8)
+    // -- command execution (always on the Bukkit main thread) -----------------
+
+    private fun executeCommands(commands: List<CloudCommand>) {
+        val fresh = commands.filter { it.id > lastCommandId }
+        if (fresh.isEmpty()) return
+        Bukkit.getScheduler().runTask(this, Runnable { fresh.forEach(::executeCommand) })
     }
+
+    private fun executeCommand(command: CloudCommand) {
+        if (command.id <= lastCommandId) return
+        lastCommandId = command.id
+        when (command.type) {
+            "message" -> {
+                val lines = command.payload["lines"].orEmpty()
+                val player = command.playerName?.let(::findPlayer)
+                if (player != null && lines.isNotEmpty()) {
+                    lines.split('\n').forEach { line -> player.sendMessage(line) }
+                }
+            }
+
+            "kick" -> {
+                val player = command.playerName?.let(::findPlayer)
+                if (player != null) {
+                    player.kickPlayer(command.payload["reason"]?.takeIf { it.isNotEmpty() } ?: "Kicked by the cloud")
+                }
+            }
+
+            "transfer" -> {
+                val player = command.playerName?.let(::findPlayer)
+                val target = command.payload["target"].orEmpty()
+                if (player != null && target.isNotEmpty()) {
+                    val address = config?.advertisedHost.orEmpty()
+                    if (address.isEmpty()) {
+                        getLogger().warning(
+                            "Transfer for ${player.name} skipped: no advertised host. " +
+                                    "Set bridge.advertised-host in config.yml (or leave transfers unused).",
+                        )
+                        return
+                    }
+                    val port = config?.targets?.get(target)?.toIntOrNull()
+                    if (port == null) {
+                        getLogger().warning("Transfer for ${player.name} skipped: unknown target service '$target'")
+                        return
+                    }
+                    try {
+                        // Paper's transfer packet (proxy-less cross-server movement, 1.20.5+).
+                        player.transfer(address, port)
+                        getLogger().info("Transferred ${player.name} to $target ($address:$port)")
+                    } catch (failure: UnsupportedOperationException) {
+                        getLogger().warning("Transfer not supported by this client/server: ${failure.message}")
+                    }
+                }
+            }
+
+            "command" -> {
+                val line = command.payload["command"].orEmpty()
+                if (line.isNotEmpty()) {
+                    Bukkit.dispatchCommand(Bukkit.getConsoleSender(), line)
+                }
+            }
+        }
+    }
+
+    private fun findPlayer(name: String): Player? =
+        Bukkit.getPlayerExact(name)
+            ?: Bukkit.getOnlinePlayers().firstOrNull { it.name.equals(name, ignoreCase = true) }
+
+    private fun formEncode(vararg fields: Pair<String, String>): String =
+        fields.joinToString("&") { (key, value) ->
+            URLEncoder.encode(key, StandardCharsets.UTF_8) + "=" + URLEncoder.encode(value, StandardCharsets.UTF_8)
+        }
 
     private companion object {
         const val HEARTBEAT_DELAY_SECONDS = 2L

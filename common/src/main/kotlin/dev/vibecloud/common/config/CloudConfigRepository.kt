@@ -139,6 +139,7 @@ class CloudConfigRepository(configFile: Path) {
                     heartbeatInterval = Duration.ofSeconds(bridgeMap.long("heartbeat-interval-seconds", 5L)),
                     offlineTimeout = Duration.ofSeconds(bridgeMap.long("offline-timeout-seconds", 20L)),
                     agentJar = bridgeMap.string("agent-jar", ""),
+                    advertisedHost = bridgeMap.string("advertised-host", ""),
                 ),
                 groups = groups,
             )
@@ -187,6 +188,7 @@ class CloudConfigRepository(configFile: Path) {
                     "bind-address" to config.bridge.bindAddress,
                     "heartbeat-interval-seconds" to config.bridge.heartbeatInterval.seconds,
                     "offline-timeout-seconds" to config.bridge.offlineTimeout.seconds,
+                    "advertised-host" to config.bridge.advertisedHost,
                 ),
                 "groups" to linkedMapOf<String, Any>(),
             )
