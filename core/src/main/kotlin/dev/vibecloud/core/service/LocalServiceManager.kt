@@ -543,6 +543,19 @@ class LocalServiceManager(
 
     override fun all(): Collection<Service> = slots.values.map { it.service }.sortedBy { it.name }
 
+    /**
+     * Writes [command] to the named running service's console (stdin). Used by the bridge to
+     * dispatch commands (e.g. the proxy's `send <player> <server>` for player transfers).
+     */
+    suspend fun sendConsoleCommand(name: String, command: String): Boolean {
+        val slot = slots[key(name)] ?: return false
+        val process = slot.mutex.withLock {
+            if (slot.service.state != ServiceState.RUNNING) return@withLock null
+            slot.process?.takeIf { it.isRunning }
+        } ?: return false
+        return process.sendCommand(command)
+    }
+
     internal suspend fun reloadProxyConfiguration(name: String): Boolean {
         val slot = slots[key(name)] ?: return false
         val reloadCommand = adapters.get(slot.service.type).configurationReloadCommand ?: return false

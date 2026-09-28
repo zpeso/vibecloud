@@ -258,10 +258,10 @@ class NetworkMessenger : Listener {
 }
 ```
 
-Actions run through the cloud: the command is queued for the target service's agent and executed on that server's
-main thread within one heartbeat interval (default 5s). `player.connect(...)` uses Paper's transfer packet
-(1.20.5+ clients, proxy-less networks): set `bridge.advertised-host` in `config.yml` to the machine's reachable IP
-so agents know where to send clients. On proxy networks, prefer routing through the proxy.
+Actions run through the cloud: message/kick are queued for the target service's agent and executed on that server's
+main thread within one heartbeat interval (default 5s). `player.connect(...)` is dispatched through the proxy's
+console (`send <player> <server>`), so it works with every client version and needs no configuration - it just
+requires a running proxy service.
 
 ### The raw client (still available)
 
@@ -276,8 +276,7 @@ The endpoint binds to `127.0.0.1` by default; only expose it through an authenti
 
 ## What the API does not do (yet)
 
-- **Proxy-network player routing.** `connect` uses Paper's transfer packet; behind Velocity/BungeeCord, route via
-  the proxy as before.
+- **Proxy-less player transfers.** `connect` needs a running proxy service (it uses the proxy's `send` command);
 - **Remote nodes.** `Cloud` manages local processes; multi-node scheduling is future work behind the same interfaces.
 - **Persistence hooks.** Non-static services are wiped on start by design; store durable data outside
   `services/<name>/` (or use static groups).

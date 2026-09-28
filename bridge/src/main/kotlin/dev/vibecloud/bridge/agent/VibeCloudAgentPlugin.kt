@@ -143,30 +143,9 @@ class VibeCloudAgentPlugin : JavaPlugin() {
             }
 
             "transfer" -> {
-                val player = command.playerName?.let(::findPlayer)
-                val target = command.payload["target"].orEmpty()
-                if (player != null && target.isNotEmpty()) {
-                    val address = config?.advertisedHost.orEmpty()
-                    if (address.isEmpty()) {
-                        getLogger().warning(
-                            "Transfer for ${player.name} skipped: no advertised host. " +
-                                    "Set bridge.advertised-host in config.yml (or leave transfers unused).",
-                        )
-                        return
-                    }
-                    val port = config?.targets?.get(target)?.toIntOrNull()
-                    if (port == null) {
-                        getLogger().warning("Transfer for ${player.name} skipped: unknown target service '$target'")
-                        return
-                    }
-                    try {
-                        // Paper's transfer packet (proxy-less cross-server movement, 1.20.5+).
-                        player.transfer(address, port)
-                        getLogger().info("Transferred ${player.name} to $target ($address:$port)")
-                    } catch (failure: UnsupportedOperationException) {
-                        getLogger().warning("Transfer not supported by this client/server: ${failure.message}")
-                    }
-                }
+                // Player transfers run through the proxy's console (cloud-side `send` command);
+                // this agent never handles them directly.
+                getLogger().fine("Ignoring transfer command ${command.id} (handled by the proxy)")
             }
 
             "command" -> {

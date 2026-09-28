@@ -67,16 +67,17 @@ class CloudPlayerProvider internal constructor(private val cloud: VibeCloud) {
     )
 
     /**
-     * Connects (transfers) the player to another service. Works proxy-less via Paper's
-     * transfer packet when the cloud's `bridge.advertised-host` is set; on proxy networks the
-     * player is instead connected by the proxy agent. If the target service is unknown or the
-     * player left, the command is dropped.
+     * Connects (transfers) the player to another service. The cloud dispatches the transfer
+     * through the proxy's console (`send <player> <server>`), so it works with every client
+     * version and needs no extra configuration. Requires a running proxy service; accepts a
+     * service name or a `<group>#` target to pick the group's first running service. Throws
+     * [IOException] when no proxy is running or the target does not exist.
      */
     fun connect(player: CloudPlayer, target: CloudService) {
         connect(player, target.name)
     }
 
-    /** Connects the player to the service with the given name. */
+    /** Connects the player to the service (or `<group>#`) with the given name. */
     fun connect(player: CloudPlayer, targetService: String) = sendPlayerAction(
         player, CloudCommandType.TRANSFER, "target" to targetService,
     )

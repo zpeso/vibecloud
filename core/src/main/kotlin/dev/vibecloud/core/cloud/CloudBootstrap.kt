@@ -27,6 +27,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import java.nio.file.Files
 import java.nio.file.Path
+import kotlinx.coroutines.runBlocking
 import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.locks.ReentrantLock
 
@@ -112,6 +113,11 @@ class CloudBootstrap(
                         )
                     }.let { "[$it]" } // wrap as a proper JSON array
                 },
+                // The bridge dispatches console commands (proxy `send ...` transfers, agent
+                // commands) through the service manager's stdin writer.
+                sendConsoleCommand = { serviceName, command ->
+                    runBlocking { serviceManagerReference.get()?.sendConsoleCommand(serviceName, command) == true }
+                },
                 tokenStore = bridgeTokenStore,
                 registry = bridgeRegistry,
                 tracker = bridgeTracker,
@@ -133,12 +139,6 @@ class CloudBootstrap(
                 },
                 agentJarResolver = BridgeAgentInstaller.defaultAgentJarResolver(configFile.parent),
                 logger = logger,
-                advertisedHost = { config.bridge.advertisedHost.trim().takeIf { it.isNotEmpty() } },
-                servicePorts = {
-                    serviceManagerReference.get()?.all().orEmpty()
-                        .filter { it.state == dev.vibecloud.api.service.ServiceState.RUNNING }
-                        .associate { it.name to it.port }
-                },
             )
             val templateManager = FileTemplateManager(
                 templateRoot = config.directories.templates,

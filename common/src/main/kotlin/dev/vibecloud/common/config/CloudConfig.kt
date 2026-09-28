@@ -82,11 +82,6 @@ data class BridgeSettings(
     val offlineTimeout: Duration = Duration.ofSeconds(20),
     /** Optional explicit path to the agent plugin jar; defaults to the copy bundled in the distribution. */
     val agentJar: String = "",
-    /**
-     * Host written into agent configs as the target for player transfers (Paper transfer
-     * packet). Should be the machine's public/reachable IP; blank disables transfers.
-     */
-    val advertisedHost: String = "",
 ) {
     init {
         require(port in 0..65535) { "bridge.port must be within 0..65535 (0 = random free port)" }

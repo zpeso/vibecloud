@@ -39,6 +39,8 @@ class BridgeHttpServer(
     private val settings: BridgeSettings,
     private val logger: Logger,
     private val clock: Clock = Clock.systemUTC(),
+    /** Writes a console command to a running service (stdin), used for proxy `send` transfers. */
+    private val sendConsoleCommand: (serviceName: String, command: String) -> Boolean = { _, _ -> false },
 ) {
     /** Read-only projection of the cloud, implemented by the composition root. */
     interface CloudView {
@@ -244,18 +246,20 @@ class BridgeHttpServer(
                         return
                     }
                     // Accept an exact service name or "<group>#" to pick the group's first
-                    // running service; resolve now so the agent receives a concrete name.
+                    // running service; resolve now so the proxy receives a concrete name.
                     val targetService = resolveServiceName(target)
                     if (targetService == null) {
                         respond(exchange, 404, errorJson("unknown target service '$target'"))
                         return
                     }
-                    BridgeCommand(
-                        id = backingQueue.nextId(),
-                        type = "transfer",
-                        playerName = playerName,
-                        payload = mapOf("target" to targetService),
-                    )
+                    // Version-independent transfer via the proxy console — no client transfer
+                    // packet, no advertised host, works on every client version.
+                    if (!dispatchTransfer(playerName, targetService)) {
+                        respond(exchange, 501, errorJson("no running proxy; transfers need a proxy service"))
+                        return
+                    }
+                    respond(exchange, 200, JsonWriter.obj("transferred" to JsonWriter.bool(true)))
+                    return
                 }
                 else -> {
                     respond(exchange, 400, errorJson("unknown player action '$action'"))
@@ -323,7 +327,10 @@ class BridgeHttpServer(
         }
     }
 
-    /** Resolves a transfer target: exact service name, or `<group>#` for the group's first running service. */
+    /**
+     * Resolves a transfer target: exact service name, or `<group>#` for the group's first
+     * running service.
+     */
     private fun resolveServiceName(target: String): String? {
         val services = cloudView.services().filter { it.state == ServiceState.RUNNING }
         services.firstOrNull { it.name.equals(target, ignoreCase = true) }?.let { return it.name }
@@ -332,6 +339,19 @@ class BridgeHttpServer(
             return services.firstOrNull { it.groupName.equals(group, ignoreCase = true) }?.name
         }
         return null
+    }
+
+    /**
+     * Player transfer without the client transfer packet (which needs 1.20.5+ clients): the
+     * command goes to the proxy's console — `send <player> <server>` — so it works for every
+     * client version and needs no per-service configuration. Returns false when no proxy is
+     * running (transfers are not possible on proxy-less networks).
+     */
+    private fun dispatchTransfer(playerName: String, targetService: String): Boolean {
+        val proxy = cloudView.services().firstOrNull {
+            it.type.isProxy && it.state == ServiceState.RUNNING
+        } ?: return false
+        return sendConsoleCommand(proxy.name, "send $playerName $targetService")
     }
 
     private fun commandsJson(commands: List<BridgeCommand>): String = JsonWriter.arr(
