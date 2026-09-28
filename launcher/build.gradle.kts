@@ -39,6 +39,17 @@ val syncAgentJar = tasks.register<Copy>("syncAgentJar") {
 }
 tasks.named("installDist") { finalizedBy(syncAgentJar) }
 
+// Linux-friendly alias: the Gradle unix start script is generated without an extension, which is
+// easy to miss next to vibecloud.bat. Ship the identical script as vibecloud.sh too.
+val addLinuxScript = tasks.register<Copy>("addLinuxScript") {
+    group = "distribution"
+    description = "Publishes the unix start script additionally as bin/vibecloud.sh."
+    dependsOn(tasks.named("installDist"))
+    from(File(installRoot, "bin/vibecloud"))
+    into(File(installRoot, "bin"))
+    rename { "vibecloud.sh" }
+}
+
 application {
     applicationName = "vibecloud"
     mainClass.set("dev.vibecloud.launcher.MainKt")
@@ -65,11 +76,20 @@ tasks.register<Zip>("releaseZip") {
     dependsOn(tasks.named("installDist"))
     dependsOn(runtimeConfig)
     dependsOn(syncAgentJar)
+    dependsOn(addLinuxScript)
     from(rootProject.file("README.md"))
     from(rootProject.file("LICENSE"))
     from(rootProject.file("docs/API.md")) { into("docs") }
     from(runtimeConfigDir)
     from(installRoot) {
-        exclude("**/simple-cloud*", "**/config.yml")
+        exclude("**/simple-cloud*", "**/config.yml", "bin/**")
+    }
+    // Start scripts must keep their executable bit: unzip on Linux restores the Unix mode
+    // stored in the zip, so store bin/ as 0755 (Windows filesystems lose it otherwise).
+    from(installRoot) {
+        include("bin/**")
+        // Store the start scripts with the executable bit so `unzip` on Linux restores them as
+        // runnable (Windows filesystems cannot represent the bit, so it must be set here).
+        filePermissions { unix("rwxr-xr-x") } // 0755
     }
 }

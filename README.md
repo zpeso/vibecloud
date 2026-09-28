@@ -53,7 +53,7 @@ The zip layout is location-independent — extract it anywhere:
 
 ```text
 vibecloud/
-├── bin/vibecloud(.bat)   start scripts
+├── bin/vibecloud(.sh/.bat)   start scripts (stored executable in the zip)
 ├── lib/                  runtime jars
 ├── config.yml            initial configuration
 ├── README.md
