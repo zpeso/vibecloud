@@ -45,13 +45,23 @@ class BridgeAgentInstaller(
         }
         val agentJar = agentJarResolver()
         if (agentJar == null || !Files.isRegularFile(agentJar)) {
-            logger.debug("No bridge agent jar available; skipping agent installation for ${service.name}")
+            // Warn (once per process) so a missing agent jar is diagnosable — it is the reason
+            // player counts would stay at zero.
+            if (missingJarWarned.compareAndSet(false, true)) {
+                logger.warn(
+                    "No bridge agent jar found (looked for lib/$AGENT_JAR_NAME next to the installation); " +
+                            "services will not report player counts",
+                )
+            }
             return
         }
         val pluginsDirectory = service.directory.resolve("plugins")
         Files.createDirectories(pluginsDirectory)
         val targetJar = pluginsDirectory.resolve(AGENT_JAR_NAME)
-        if (!Files.isRegularFile(targetJar)) {
+        // Keep the agent up to date: replace it whenever the bundled jar differs (size is a
+        // reliable discriminator here because we build and ship this jar ourselves).
+        val outdated = !Files.isRegularFile(targetJar) || Files.size(targetJar) != Files.size(agentJar)
+        if (outdated) {
             Files.copy(agentJar, targetJar, StandardCopyOption.REPLACE_EXISTING)
             logger.info("Installed VibeCloud agent plugin into ${service.name}")
         }
@@ -72,6 +82,8 @@ class BridgeAgentInstaller(
 
     companion object {
         const val AGENT_JAR_NAME = "VibeCloud-Agent.jar"
+
+        private val missingJarWarned = java.util.concurrent.atomic.AtomicBoolean(false)
 
         /**
          * Default lookup order for the bundled agent jar: an explicit `agent/` folder next to the

@@ -30,12 +30,24 @@ On Windows, use `launcher\build\install\vibecloud\bin\vibecloud.bat`. You can al
 
 ### Production release
 
-Build a self-contained archive:
+One command does everything — tests, zip, version bump, commit, tag, push:
+
+```bash
+./gradlew release -Prelease=0.2.0
+```
+
+This runs the full test suite, builds `build/dist/vibecloud-0.2.0.zip`, commits all pending
+changes as `Release 0.2.0`, tags `v0.2.0` and pushes both. The pushed tag triggers GitHub
+Actions (`.github/workflows/release.yml`), which attaches the zip to the GitHub Release and
+kicks JitPack so the published API artifacts are rebuilt from the same tag — no extra steps.
+
+Manual alternative (no push, no bump):
 
 ```bash
 ./gradlew :launcher:releaseZip
 # → build/dist/vibecloud-<version>.zip
 ```
+
 
 The zip layout is location-independent — extract it anywhere:
 

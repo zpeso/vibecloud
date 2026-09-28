@@ -21,6 +21,13 @@ data class AgentConfig(
         get() = java.time.Duration.ofSeconds(heartbeatIntervalSeconds.toLong())
 
     companion object {
+        /**
+         * The config directory inside a server's `plugins/` folder that the cloud manages. The
+         * Bukkit data folder must match this name (plugin.yml `name: VibeCloud`) so the agent and
+         * `VibeCloudClient.forService()` read the same file the cloud writes.
+         */
+        const val CONFIG_DIRECTORY = "VibeCloud"
+
         fun load(file: Path): AgentConfig {
             val properties = Properties()
             try {

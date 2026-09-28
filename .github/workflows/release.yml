@@ -1,0 +1,43 @@
+name: Release
+
+# Triggered by pushing a vX.Y.Z tag (the `release` Gradle task does this).
+# Runs the test suite, builds the release zip, attaches it to a GitHub Release,
+# and kicks JitPack so the published API artifacts are rebuilt from this tag.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Test
+        run: ./gradlew test
+
+      - name: Build release zip
+        run: ./gradlew :launcher:releaseZip
+
+      - name: Attach zip to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/dist/vibecloud-*.zip
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+
+      - name: Kick JitPack (API artifacts)
+        run: |
+          curl -fsSL --max-time 300 \
+            "https://jitpack.io/com/github/zpeso/vibecloud/${GITHUB_REF_NAME}/build.log" \
+            -o /dev/null || echo "JitPack poll ended — it still builds lazily on first resolve."
