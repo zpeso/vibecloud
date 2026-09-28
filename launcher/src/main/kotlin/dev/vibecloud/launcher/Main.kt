@@ -11,15 +11,32 @@ import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.Properties
 
-/** Release version of the running launcher, stamped into version.properties by the build. */
-private fun launcherVersion(): String = runCatching {
-    Properties().apply { javaClass.getResourceAsStream("/version.properties")?.use(::load) }
-        .getProperty("version", "0.0.0")
-}.getOrDefault("0.0.0")
+/**
+ * Release version of the running launcher. Read from the launcher jar's own filename first
+ * (`launcher-<version>.jar` — set by the release build), with the stamped `version.properties`
+ * as fallback. Returning the jar location alongside lets the startup log reveal exactly which
+ * file the process is running from — the key to diagnosing stale-copy confusion.
+ */
+private fun launcherVersion(): Pair<String, String?> {
+    val jarPath = runCatching {
+        object {}.javaClass.protectionDomain.codeSource?.location?.toURI()?.path
+    }.getOrNull()
+    val fromJarName = jarPath?.let { path ->
+        Regex("launcher-([0-9]+\\.[0-9]+\\.[0-9]+[^/]*)\\.jar$").find(path)?.groupValues?.get(1)
+    }
+    if (fromJarName != null) return fromJarName to jarPath
+    val stamped = runCatching {
+        Properties().apply { object {}.javaClass.getResourceAsStream("/version.properties")?.use(::load) }
+            .getProperty("version", "")
+            .takeIf { it.isNotBlank() && it != "0.0.0" && !it.startsWith("$") }
+    }.getOrNull()
+    return (stamped ?: "0.0.0") to jarPath
+}
 
 fun main(args: Array<String>) = runBlocking {
     val logger: Logger = ConsoleLogger(minimumLevel = LogLevel.INFO)
-    logger.info("VibeCloud ${launcherVersion()} starting")
+    val (launcherVersion, launcherJar) = launcherVersion()
+    logger.info("VibeCloud $launcherVersion starting" + (launcherJar?.let { " (launcher jar: $it)" } ?: ""))
     val configPath = try {
         ConfigLocator.locate(args)
     } catch (failure: IllegalArgumentException) {
@@ -28,7 +45,7 @@ fun main(args: Array<String>) = runBlocking {
     }
     // Self-update: apply a staged update from the previous run, then look for a newer release.
     // Both are best-effort; an offline root server just skips the check.
-    val selfUpdater = SelfUpdater(logger, configPath, launcherVersion())
+    val selfUpdater = SelfUpdater(logger, configPath, launcherVersion)
     selfUpdater.applyPendingUpdate()
     selfUpdater.checkAndStage()
     val cloud = try {
