@@ -56,6 +56,22 @@ application {
     applicationDefaultJvmArgs = listOf("--enable-native-access=ALL-UNNAMED")
 }
 
+// Pin the start scripts' classpath to the lib/ wildcard instead of exact jar names: after a
+// self-update replaces jars, an old script would otherwise reference deleted versions and the
+// launcher could silently start from a stale installation. 'lib/*' always loads what is there.
+tasks.named<org.gradle.api.tasks.application.CreateStartScripts>("startScripts") {
+    doLast {
+        val unix: java.io.File = unixScript
+        unix.writeText(
+            unix.readText().replace(Regex("CLASSPATH=\\\$APP_HOME/lib/.*")) { "CLASSPATH=\$APP_HOME/lib/*" },
+        )
+        val windows: java.io.File = windowsScript
+        windows.writeText(
+            windows.readText().replace(Regex("set CLASSPATH=.*")) { "set CLASSPATH=%APP_HOME%\\lib\\*" },
+        )
+    }
+}
+
 // Stamp the release version into the launcher so the self-updater knows what it is running.
 tasks.processResources {
     val props = mapOf("version" to project.version.toString())
