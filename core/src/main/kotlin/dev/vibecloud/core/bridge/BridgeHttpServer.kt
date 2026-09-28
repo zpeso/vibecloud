@@ -66,6 +66,12 @@ class BridgeHttpServer(
             created.createContext("/bridge/heartbeat") { exchange -> handleHeartbeat(exchange) }
             created.start()
             server = created
+            if (!settings.bindAddress.isLoopbackAddress()) {
+                logger.warn(
+                    "The bridge endpoint binds to ${settings.bindAddress} — it is NOT protected against " +
+                            "network access beyond the bearer token. Prefer 127.0.0.1 behind an authenticated proxy.",
+                )
+            }
             logger.info("Bridge endpoint listening on ${settings.bindAddress}:${created.address.port}")
         } catch (failure: IOException) {
             started.set(false)
@@ -115,7 +121,11 @@ class BridgeHttpServer(
                 respond(exchange, 401, errorJson("missing or invalid bridge token"))
                 return
             }
-            val body = exchange.requestBody.readBytes().toString(StandardCharsets.UTF_8)
+            val body = readBodyCapped(exchange)
+            if (body == null) {
+                respond(exchange, 413, errorJson("heartbeat payload too large"))
+                return
+            }
             val fields = parseBody(body)
             val serviceName = fields["service-name"]?.trim().orEmpty()
             val serviceId = fields["service-id"]?.trim().orEmpty()
@@ -136,7 +146,9 @@ class BridgeHttpServer(
                 ?.split(',')
                 ?.map { it.trim() }
                 ?.filter { it.isNotEmpty() }
+                ?.take(MAX_PLAYER_NAMES)
                 .orEmpty()
+            val firstHeartbeat = registry.lastHeartbeat(serviceId) == null
             registry.heartbeat(
                 serviceId = serviceId,
                 serviceName = serviceName,
@@ -146,6 +158,9 @@ class BridgeHttpServer(
                 maxPlayers = fields["max-players"]?.trim()?.toIntOrNull() ?: 0,
                 now = Instant.now(clock),
             )
+            if (firstHeartbeat) {
+                logger.info("Bridge agent of ${serviceName} connected (v${fields["agent-version"]?.trim().orEmpty()})")
+            }
             tracker.applyAgentReport(serviceName, players)
             respond(exchange, 204, "")
         } catch (failure: IOException) {
@@ -248,6 +263,13 @@ class BridgeHttpServer(
         return tokenStore.matches(candidate)
     }
 
+    /** Reads the request body, rejecting payloads beyond [MAX_BODY_BYTES] instead of buffering them. */
+    private fun readBodyCapped(exchange: HttpExchange): String? {
+        val buffer = exchange.requestBody.readNBytes(MAX_BODY_BYTES + 1)
+        if (buffer.size > MAX_BODY_BYTES) return null
+        return buffer.toString(StandardCharsets.UTF_8)
+    }
+
     private fun respond(exchange: HttpExchange, status: Int, body: String) {
         val bytes = body.toByteArray(StandardCharsets.UTF_8)
         exchange.responseHeaders.set("Content-Type", "application/json; charset=utf-8")
@@ -260,6 +282,11 @@ class BridgeHttpServer(
     private companion object {
         const val BACKLOG = 16
         const val WORKER_THREADS = 4
+        const val MAX_BODY_BYTES = 64 * 1024
+        const val MAX_PLAYER_NAMES = 500
+
+        private fun String.isLoopbackAddress(): Boolean =
+            this == "127.0.0.1" || this == "localhost" || this == "::1"
 
         val STRING_FIELD_REGEX = Regex("\"([A-Za-z0-9_-]+)\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"")
         val STRING_REGEX = Regex("\"((?:[^\"\\\\]|\\\\.)*)\"")

@@ -16,6 +16,15 @@ dependencies {
     implementation(project(":core"))
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
     implementation("org.jline:jline:3.29.0")
+
+    testImplementation(kotlin("test-junit5"))
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
+    testRuntimeOnly("org.junit.jupiter:junit-jupiter-engine:5.13.4")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher:1.13.4")
+}
+
+tasks.test {
+    useJUnitPlatform()
 }
 
 // The bridge agent jar ships inside the distribution (lib/) so the controller can auto-install it

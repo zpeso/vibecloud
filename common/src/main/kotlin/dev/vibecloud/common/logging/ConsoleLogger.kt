@@ -22,10 +22,14 @@ class ConsoleLogger(
         val target = if (level.ordinal >= LogLevel.WARN.ordinal) stderr else stdout
         val line = "[${LocalTime.now().format(timeFormat)} ${level.name}] $message"
         synchronized(lock) {
-            sink?.let {
-                it(line)
+            // Deliberate if/else: a `sink?.let {} ?: run {}` chain would fall through to the raw
+            // stream whenever the lambda's last expression evaluates to null (e.g. a trailing
+            // `cause?.printStackTrace()` without a throwable), printing every line twice.
+            val handler = sink
+            if (handler != null) {
+                handler(line)
                 cause?.printStackTrace()
-            } ?: run {
+            } else {
                 target.println(line)
                 cause?.printStackTrace(target)
                 target.flush()

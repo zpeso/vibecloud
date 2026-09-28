@@ -238,10 +238,34 @@ class LocalServiceManager(
                     )
                     return@withLock
                 }
+            } else {
+                // Static services keep their data, but template updates (new plugin in the group
+                // overlay, updated jar) must still reach them. Merge-copy the template over the
+                // directory when its fingerprint changed; worlds and plugin data survive.
+                try {
+                    val fingerprint = templateManager.templateFingerprint(
+                        starting.type,
+                        starting.version,
+                        starting.groupName,
+                    )
+                    val lastApplied = slot.appliedTemplateFingerprint
+                    if (fingerprint != lastApplied) {
+                        templateManager.updateFromTemplate(starting)
+                        slot.appliedTemplateFingerprint = fingerprint
+                        if (lastApplied != null) {
+                            logger.info("Updated ${starting.name} from changed template")
+                        }
+                    }
+                } catch (failure: Exception) {
+                    // A failed refresh must not block a normal start of a working service.
+                    logger.warn("Could not refresh ${starting.name} from template: ${failure.message}")
+                }
             }
 
             // Install the bridge agent (agent.jar + agent.properties) into backend services right
-            // before launch so freshly provisioned or wiped directories get current credentials.
+            // before launch so freshly provisioned, wiped, or template-refreshed directories get
+            // current credentials — and so services provisioned before the agent existed get it
+            // injected on their next start.
             agentInstaller?.install(starting)
 
             val token = UUID.randomUUID().toString()
@@ -730,5 +754,9 @@ class LocalServiceManager(
         var processToken: String? = null
         var expectedExitState: ServiceState? = null
         var exitReason: String? = null
+
+        /** Fingerprint of the template last merged into this static service (refresh optimization). */
+        @Volatile
+        var appliedTemplateFingerprint: String? = null
     }
 }

@@ -1,0 +1,8 @@
+# JitPack build configuration (https://jitpack.io/#USER/vibecloud)
+# JitPack images ship several JDKs; the Gradle toolchain (Java 25) is provisioned automatically
+# because settings.gradle.kts applies the foojay-resolver plugin.
+before_install:
+  - sdk install java 21.0.4-tem
+  - sdk use java 21.0.4-tem
+install:
+  - ./gradlew publishToMavenLocal

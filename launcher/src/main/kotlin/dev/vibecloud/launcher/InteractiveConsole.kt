@@ -24,13 +24,7 @@ class InteractiveConsole(private val cloud: Cloud) : AutoCloseable {
 
     /** Prints a line above the active input and redraws the prompt; safe from any thread. */
     fun printAbove(line: String) {
-        val reader = cachedReader
-        if (reader != null) {
-            reader.printAbove(line)
-        } else {
-            terminal.writer().println(line)
-            terminal.writer().flush()
-        }
+        reader().printAbove(line)
     }
 
     /** Reads one command line at the main prompt. Returns null on EOF (Ctrl+D). */

@@ -226,27 +226,7 @@ connection_throttle: 4000
     }
 
     override suspend fun provision(service: Service) = withContext(Dispatchers.IO) {
-        var source = templateRoot
-            .resolve(service.type.templateKey)
-            .resolve(service.version)
-            .normalize()
-        if (!source.startsWith(templateRoot)) {
-            throw TemplateException("Template path escapes configured template root: $source")
-        }
-        if (!Files.isDirectory(source, LinkOption.NOFOLLOW_LINKS)) {
-            val upstreamBuild = serverCatalog?.build(service.type, service.version)
-            if (upstreamBuild != null) {
-                install(upstreamBuild)
-                source = templateRoot.resolve(service.type.templateKey).resolve(upstreamBuild.key).normalize()
-            }
-        }
-        if (!Files.isDirectory(source, LinkOption.NOFOLLOW_LINKS)) {
-            throw TemplateException("Missing template for ${service.type.name} ${service.version}: $source")
-        }
-        val jar = source.resolve("server.jar")
-        if (!Files.isRegularFile(jar, LinkOption.NOFOLLOW_LINKS)) {
-            throw TemplateException("Template is missing server.jar: $jar")
-        }
+        val source = resolveTemplateSource(service)
         if (service.directory != serviceRoot && !service.directory.startsWith(serviceRoot)) {
             throw TemplateException("Service directory escapes configured services root: ${service.directory}")
         }
@@ -293,6 +273,76 @@ connection_throttle: 4000
             throw TemplateException("Group overlay path escapes configured template root: $overlay")
         }
         return overlay
+    }
+
+    override fun templateFingerprint(type: ServerType, version: String, groupName: String): String {
+        val buildTemplate = templateRoot.resolve(type.templateKey).resolve(version)
+        val overlay = groupOverlayDirectory(groupName)
+        val digest = MessageDigest.getInstance("SHA-256")
+        listOf(buildTemplate, overlay).forEach { root ->
+            if (!Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS)) return@forEach
+            Files.walkFileTree(root, object : SimpleFileVisitor<Path>() {
+                override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
+                    digest.update(root.relativize(file).toString().toByteArray())
+                    digest.update(attrs.lastModifiedTime().toMillis().toString().toByteArray())
+                    digest.update(attrs.size().toString().toByteArray())
+                    return FileVisitResult.CONTINUE
+                }
+
+                override fun preVisitDirectory(dir: Path, attrs: BasicFileAttributes): FileVisitResult {
+                    digest.update(root.relativize(dir).toString().toByteArray())
+                    return FileVisitResult.CONTINUE
+                }
+            })
+        }
+        digest.update(("$type|$version|$groupName").toByteArray())
+        return digest.digest().joinToString("") { byte -> "%02x".format(byte) }
+    }
+
+    override suspend fun updateFromTemplate(service: Service) = withContext(Dispatchers.IO) {
+        val source = resolveTemplateSource(service)
+        if (!Files.isDirectory(service.directory, LinkOption.NOFOLLOW_LINKS)) {
+            provision(service)
+            return@withContext
+        }
+        copyTemplate(source, service.directory, overwrite = true)
+        val overlay = groupOverlayDirectory(service.groupName)
+        if (Files.isDirectory(overlay, LinkOption.NOFOLLOW_LINKS)) {
+            copyTemplate(overlay, service.directory, overwrite = true)
+        }
+        // Re-apply cloud-managed files on top (port, forwarding, eula may have changed).
+        adapters.get(service.type).configure(
+            service,
+            service.directory,
+            runtime.minecraftEulaAccepted,
+            forwardingProvider(),
+        )
+    }
+
+    /** Resolves the build template directory, auto-installing a pinned catalog build if missing. */
+    private suspend fun resolveTemplateSource(service: Service): Path {
+        var source = templateRoot
+            .resolve(service.type.templateKey)
+            .resolve(service.version)
+            .normalize()
+        if (!source.startsWith(templateRoot)) {
+            throw TemplateException("Template path escapes configured template root: $source")
+        }
+        if (!Files.isDirectory(source, LinkOption.NOFOLLOW_LINKS)) {
+            val upstreamBuild = serverCatalog?.build(service.type, service.version)
+            if (upstreamBuild != null) {
+                install(upstreamBuild)
+                source = templateRoot.resolve(service.type.templateKey).resolve(upstreamBuild.key).normalize()
+            }
+        }
+        if (!Files.isDirectory(source, LinkOption.NOFOLLOW_LINKS)) {
+            throw TemplateException("Missing template for ${service.type.name} ${service.version}: $source")
+        }
+        val jar = source.resolve("server.jar")
+        if (!Files.isRegularFile(jar, LinkOption.NOFOLLOW_LINKS)) {
+            throw TemplateException("Template is missing server.jar: $jar")
+        }
+        return source
     }
 
     private fun copyTemplate(source: Path, destination: Path, overwrite: Boolean = false) {

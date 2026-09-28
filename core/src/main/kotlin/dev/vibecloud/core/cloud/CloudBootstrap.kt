@@ -110,7 +110,7 @@ class CloudBootstrap(
                             "max-services" to JsonWriter.num(group.maxServices),
                             "always-running-services" to JsonWriter.num(group.alwaysRunningServices),
                         )
-                    }
+                    }.let { "[$it]" } // wrap as a proper JSON array
                 },
                 tokenStore = bridgeTokenStore,
                 registry = bridgeRegistry,
