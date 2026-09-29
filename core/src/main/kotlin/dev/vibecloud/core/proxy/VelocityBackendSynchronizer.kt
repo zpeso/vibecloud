@@ -168,12 +168,17 @@ internal object VelocityTomlBackendTable {
             sectionHeader.matches(lines[index])
         } ?: lines.size
         // Group aliases written by older cloud versions are treated as managed so upgrades
-        // automatically drop them from existing proxy configs.
+        // automatically drop them from existing proxy configs. `try` is listed for symmetry —
+        // its names are always regenerated, but its VALUE is read from the raw section below.
         val managedKeys = serverAddresses.keys + legacyGroupAliases + "try"
-        val body = removeOldManagedBlock(lines.subList(sectionStart + 1, sectionEnd))
+        // Capture the raw section BEFORE removeOldManagedBlock strips anything: users edit
+        // `try` inside the managed block (that is where the cloud writes it), so the preserved
+        // value must be read from the untouched lines.
+        val rawSection = lines.subList(sectionStart + 1, sectionEnd)
+        val body = removeOldManagedBlock(rawSection)
         // Honor a user-chosen join order: an existing `try` that only references registered
         // servers is preserved instead of being reset to the cloud's default choice.
-        val effectiveDefault = preservedTryValues(body, serverAddresses.keys) ?: listOf(defaultServer)
+        val effectiveDefault = preservedTryValues(rawSection, serverAddresses.keys) ?: listOf(defaultServer)
         val cleanedBody = removeManagedAssignments(body, managedKeys)
         while (cleanedBody.lastOrNull()?.isBlank() == true) cleanedBody.removeAt(cleanedBody.lastIndex)
 
@@ -182,6 +187,8 @@ internal object VelocityTomlBackendTable {
             serverAddresses.toSortedMap().forEach { (name, address) ->
                 add("${quote(name)} = ${quote(address)}")
             }
+            // Keep the preserved order verbatim; regenerating alphabetically would silently
+            // reorder a user-chosen join priority.
             add("try = [" + effectiveDefault.joinToString(", ") { quote(it) } + "]")
             add(END_MARKER)
         }
@@ -212,9 +219,10 @@ internal object VelocityTomlBackendTable {
     }
 
     /**
-     * Reads the current `try` value from the [servers] section and returns it when it is a
-     * non-empty list that only references registered servers — i.e. a join order worth keeping.
-     * Any other state (missing, empty, stale names) falls back to the cloud's default server.
+     * Reads the current `try` value from the [servers] section (including inside the managed
+     * block) and returns it when it is a non-empty list that only references registered servers
+     * — i.e. a join order worth keeping. Any other state (missing, empty, stale names) falls
+     * back to the cloud's default server.
      */
     private fun preservedTryValues(lines: List<String>, validNames: Set<String>): List<String>? {
         for (line in lines) {

@@ -139,6 +139,50 @@ try = ["citybuild-1", "lobby-1"]
     }
 
     @Test
+    fun `sync preserves a user-set try order written inside the managed block`() = runBlocking {
+        val root = Files.createTempDirectory("velocity-try-inside-block-test")
+        try {
+            val proxyDirectory = root.resolve("services/proxy-1")
+            Files.createDirectories(proxyDirectory)
+            val config = proxyDirectory.resolve("velocity.toml")
+            // Mirrors a real deployed file: the cloud writes `try` INSIDE the managed block,
+            // so users editing it there (e.g. `try = ["lobby-1"]`) must not lose the edit
+            // when the block is stripped and regenerated.
+            Files.writeString(
+                config,
+                """config-version = "2.9"
+[servers]
+# BEGIN VibeCloud managed backends
+"citybuild-1" = "127.0.0.1:25567"
+"lobby-1" = "127.0.0.1:25566"
+try = ["lobby-1"]
+# END VibeCloud managed backends
+""",
+            )
+            val now = Instant.now()
+            val proxy = service("proxy-1", "proxy", ServerType.VELOCITY, ServiceState.RUNNING, 25565, proxyDirectory, now)
+            val lobby = service("lobby-1", "lobby", ServerType.PAPER, ServiceState.RUNNING, 25566, root.resolve("services/lobby-1"), now)
+            val citybuild = service("citybuild-1", "citybuild", ServerType.PAPER, ServiceState.RUNNING, 25567, root.resolve("services/citybuild-1"), now)
+            val synchronizer = VelocityBackendSynchronizer(SilentLogger())
+
+            synchronizer.synchronize({ listOf(proxy, lobby, citybuild) }) { true }
+
+            val updated = Files.readString(config)
+            // The cloud's own default would be citybuild-1 (first running, alphabetical) —
+            // the user's lobby-first order must win even though it sat inside the block.
+            assertTrue(updated.contains("try = [\"lobby-1\"]"), "user-edited try inside the managed block must survive")
+            assertFalse(updated.contains("try = [\"citybuild-1\"]"), "the cloud default must not overwrite the user's order")
+
+            // And the result must be stable: a second sync must not touch the file again.
+            var reloaded = false
+            synchronizer.synchronize({ listOf(proxy, lobby, citybuild) }) { reloaded = true; true }
+            assertFalse(reloaded, "a no-change sync must not trigger another proxy reload")
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
     fun `sync heals a try order referencing unknown servers`() = runBlocking {
         val root = Files.createTempDirectory("velocity-try-heal-test")
         try {
