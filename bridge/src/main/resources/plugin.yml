@@ -1,7 +1,18 @@
 name: VibeCloud
 version: '${version}'
 main: dev.vibecloud.bridge.agent.VibeCloudAgentPlugin
-api-version: '1.13'
-description: Reports live player rosters from this server to the VibeCloud bridge.
+description: Reports live player rosters from this server to the VibeCloud bridge and provides the /cloud command.
 authors: [VibeCloud]
 load: STARTUP
+
+commands:
+  cloud:
+    description: Manage the VibeCloud network (info, services, players).
+    usage: /cloud <info|groups|services|service|players|send|msg|cmd|start|stop|restart|delete>
+    permission: minetropia.cloud
+    permission-message: You do not have permission to use /cloud.
+
+permissions:
+  minetropia.cloud:
+    description: Allows using the /cloud command.
+    default: op

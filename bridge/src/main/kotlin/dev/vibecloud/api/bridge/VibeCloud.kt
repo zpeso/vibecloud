@@ -55,6 +55,76 @@ class VibeCloud private constructor(
     @Throws(IOException::class)
     fun status(): CloudStatus = get("/bridge/status") { CloudStatusParser.parse(it) }
 
+    /**
+     * Runs a cloud command server-side — the same surface that powers the in-game `/cloud`
+     * command — and returns the response lines. The cloud is the authority: lifecycle actions
+     * (`start`/`stop`/`restart`/`delete`), listings and player actions behave exactly like the
+     * cloud console's `service ...` commands.
+     *
+     * ```kotlin
+     * VibeCloud.instance.executeCloudCommand("info")
+     * VibeCloud.instance.executeCloudCommand("restart", "citybuild-1")
+     * ```
+     *
+     * @throws IOException on transport errors, a rejected token, or an unknown subcommand.
+     */
+    @JvmOverloads
+    @Throws(IOException::class)
+    fun executeCloudCommand(args: List<String> = emptyList()): List<String> = postCloud(args, complete = false)
+
+    /**
+     * Tab-completion suggestions for a partial `/cloud` argument list, resolved server-side so
+     * suggestions always match the cloud's actual command set and live service/player names.
+     */
+    @Throws(IOException::class)
+    fun completeCloudCommand(args: List<String>): List<String> = postCloud(args, complete = true)
+
+    private fun postCloud(args: List<String>, complete: Boolean): List<String> {
+        val form = buildString {
+            args.forEachIndexed { index, arg ->
+                if (index > 0) append('&')
+                append("arg=").append(urlEncode(arg))
+            }
+            if (args.isNotEmpty()) append('&')
+            append("mode=").append(if (complete) "complete" else "execute")
+        }
+        return post("/bridge/cloud", form) { body ->
+            parseStringArray(body, if (complete) "suggestions" else "lines")
+        }
+    }
+
+    private fun urlEncode(value: String): String =
+        java.net.URLEncoder.encode(value, Charsets.UTF_8).replace("+", "%20")
+
+    private fun parseStringArray(json: String, key: String): List<String> {
+        val keyMatch = Regex("\"$key\"\\s*:\\s*\\[").find(json) ?: return emptyList()
+        val start = keyMatch.range.last
+        var depth = 0
+        for (index in start until json.length) {
+            when (json[index]) {
+                '[' -> depth++
+                ']' -> {
+                    depth--
+                    if (depth == 0) {
+                        val inner = json.substring(start + 1, index)
+                        if (inner.isBlank()) return emptyList()
+                        return Regex("\"((?:[^\"\\\\]|\\\\.)*)\"").findAll(inner)
+                            .map { unescapeJson(it.groupValues[1]) }
+                            .toList()
+                    }
+                }
+            }
+        }
+        return emptyList()
+    }
+
+    private fun unescapeJson(value: String): String = value
+        .replace("\\\"", "\"")
+        .replace("\\\\", "\\")
+        .replace("\\n", "\n")
+        .replace("\\r", "\r")
+        .replace("\\t", "\t")
+
     // -- transport -----------------------------------------------------------
 
     internal fun <T> get(path: String, parse: (String) -> T): T = send(request("GET", path), parse)

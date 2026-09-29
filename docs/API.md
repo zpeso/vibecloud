@@ -263,6 +263,35 @@ main thread within one heartbeat interval (default 5s). `player.connect(...)` is
 console (`send <player> <server>`), so it works with every client version and needs no configuration - it just
 requires a running proxy service.
 
+### The /cloud command (in-game console)
+
+Every server running the agent gets a `/cloud` command (permission `minetropia.cloud`, default: op). It executes
+server-side — the cloud is the authority — so subcommands, lifecycle actions and completions behave exactly like the
+interactive console:
+
+```text
+/cloud info                      Cloud overview: running/starting/crashed counts, players online
+/cloud groups                    Group table (type, version, desired/max/provisioned)
+/cloud services                  Service table (group, state, type, port)
+/cloud service <name>            Details for one service
+/cloud players                   Rosters per service
+/cloud send <player> <target>    Transfer a player (service or group#) via the proxy console
+/cloud msg <player> <text>       Send a chat message to a player
+/cloud cmd <service> <command>   Run a console command on a service
+/cloud start|stop|restart|delete <service>   Lifecycle
+```
+
+Tab completion is resolved by the cloud too (subcommands, service names, online players), so suggestions always
+match the live state. Plugins can run the same surface programmatically:
+
+```kotlin
+val lines = VibeCloud.instance.executeCloudCommand("services")   // full response text
+val subs = VibeCloud.instance.completeCloudCommand(listOf("start", ""))  // tab-completion suggestions
+```
+
+HTTP surface: `POST /bridge/cloud` with repeated `arg` fields, optional `player` (caller, for logs) and
+`mode=execute` (default) or `mode=complete`; responds `{"lines":[...]}` or `{"suggestions":[...]}`.
+
 ### The raw client (still available)
 
 `VibeCloudClient` stays as the low-level transport. `VibeCloudClient.forService()` is deprecated in favor of

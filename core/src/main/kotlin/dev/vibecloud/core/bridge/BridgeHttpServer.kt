@@ -27,6 +27,9 @@ import java.util.concurrent.atomic.AtomicBoolean
  *    the response carries queued player/service commands for that service
  *  - `POST /bridge/players`  → queue a player action (`message`, `kick`, `transfer`)
  *  - `POST /bridge/services/command` → queue a console command for one service
+ *  - `POST /bridge/cloud`    → run a cloud command (the in-game `/cloud` command); form fields:
+ *    repeated `arg` (the argument list, excluding `/cloud`), optional `player` (caller), and
+ *    `mode=complete` for tab-completion suggestions instead of execution
  *
  * The server binds to `bridge.bind-address` (default `127.0.0.1`) — it is a local control surface,
  * not a public API. Use a reverse proxy with TLS and its own authentication to expose it.
@@ -41,6 +44,8 @@ class BridgeHttpServer(
     private val clock: Clock = Clock.systemUTC(),
     /** Writes a console command to a running service (stdin), used for proxy `send` transfers. */
     private val sendConsoleCommand: (serviceName: String, command: String) -> Boolean = { _, _ -> false },
+    /** Executes the in-game `/cloud` command server-side; null disables the endpoint. */
+    private val cloudCommands: () -> BridgeCloudCommands? = { null },
 ) {
     /** Read-only projection of the cloud, implemented by the composition root. */
     interface CloudView {
@@ -75,6 +80,7 @@ class BridgeHttpServer(
             created.createContext("/bridge/heartbeat") { exchange -> handleHeartbeat(exchange) }
             created.createContext("/bridge/players") { exchange -> handlePlayerAction(exchange) }
             created.createContext("/bridge/services/command") { exchange -> handleServiceAction(exchange) }
+            created.createContext("/bridge/cloud") { exchange -> handleCloudCommand(exchange) }
             created.start()
             server = created
             if (!settings.bindAddress.isLoopbackAddress()) {
@@ -283,7 +289,61 @@ class BridgeHttpServer(
         }
     }
 
-    /** `POST /bridge/services/command` — queues a console command for one service. */
+    /**
+     * `POST /bridge/cloud` — runs a cloud command (the in-game `/cloud` command) with the
+     * cloud itself as the authority. Body is form-encoded with repeated `arg` fields (the
+     * argument list, excluding `/cloud`), an optional `player` (the caller, for logs), and an
+     * optional `mode=complete` to request tab-completion suggestions instead of execution.
+     * Responds `200` with `{"lines":[...]}` or `{"suggestions":[...]}`.
+     */
+    private fun handleCloudCommand(exchange: HttpExchange) {
+        try {
+            if (exchange.requestMethod != "POST") {
+                respond(exchange, 405, errorJson("method not allowed"))
+                return
+            }
+            if (!requireToken(exchange)) {
+                respond(exchange, 401, errorJson("missing or invalid bridge token"))
+                return
+            }
+            val commands = cloudCommands()
+            if (commands == null) {
+                respond(exchange, 501, errorJson("the cloud command surface is disabled"))
+                return
+            }
+            val body = readBodyCapped(exchange)
+            if (body == null) {
+                respond(exchange, 413, errorJson("payload too large"))
+                return
+            }
+            val fields = body.split('&')
+                .mapNotNull { pair ->
+                    val index = pair.indexOf('=')
+                    if (index <= 0) return@mapNotNull null
+                    val key = URLDecoder.decode(pair.substring(0, index), StandardCharsets.UTF_8)
+                    val value = URLDecoder.decode(pair.substring(index + 1), StandardCharsets.UTF_8)
+                    key to value
+                }
+            val args = fields.filter { it.first == "arg" }.map { it.second }
+            val caller = fields.lastOrNull { it.first == "player" }?.second.orEmpty()
+            if (caller.isNotEmpty()) {
+                logger.info("Cloud command from $caller: /cloud ${args.joinToString(" ")}")
+            }
+            val isCompletion = fields.lastOrNull { it.first == "mode" }?.second == "complete"
+            if (isCompletion) {
+                respond(exchange, 200, JsonWriter.obj("suggestions" to JsonWriter.strArray(commands.complete(args))))
+            } else {
+                respond(exchange, 200, JsonWriter.obj("lines" to JsonWriter.strArray(commands.execute(args))))
+            }
+        } catch (failure: IOException) {
+            logger.debug("Bridge cloud command failed: ${failure.message}")
+        } finally {
+            exchange.close()
+        }
+    }
+
+    /**
+     * `POST /bridge/services/command` — queues a console command for one service. */
     private fun handleServiceAction(exchange: HttpExchange) {
         try {
             if (exchange.requestMethod != "POST") {

@@ -57,7 +57,10 @@ class BridgeHttpServerTest {
         val tokenStore: BridgeTokenStore,
     )
 
-    private fun startServer(services: List<Service>): Running {
+    private fun startServer(
+        services: List<Service>,
+        cloudCommands: (() -> BridgeCloudCommands?)? = null,
+    ): Running {
         val settings = BridgeSettings(port = 0)
         val tokenStore = BridgeTokenStore(Files.createTempFile("bridge", ".token"), SilentLogger())
         val tracker = ServicePlayerTracker()
@@ -70,6 +73,7 @@ class BridgeHttpServerTest {
             settings = settings,
             logger = SilentLogger(),
             clock = clock,
+            cloudCommands = cloudCommands ?: { null },
         )
         server.start()
         return Running(server, tracker, registry, tokenStore)
@@ -140,6 +144,67 @@ class BridgeHttpServerTest {
             val status = get(running, "http://127.0.0.1:${running.server.boundPort()}/bridge/status")
             assertTrue(status.body().contains("\"players\":[\"Steve\",\"Alex\"]"))
             assertTrue(status.body().contains("\"agent-online\":true"))
+        } finally {
+            running.server.stop()
+        }
+    }
+
+    @Test
+    fun `cloud command endpoint executes and completes`() {
+        val services = listOf(
+            service("lobby-1", ServiceState.RUNNING),
+            service("citybuild-1", ServiceState.RUNNING),
+        )
+        val queue = BridgeCommandQueue()
+        val commands = BridgeCloudCommands(
+            services = FakeServiceManager(*services.toTypedArray()),
+            groups = FakeGroupManager(),
+            tracker = ServicePlayerTracker(),
+            commandQueue = queue,
+            sendConsoleCommand = { _, _ -> true },
+        )
+        val running = startServer(services) { commands }
+        try {
+            val base = "http://127.0.0.1:${running.server.boundPort()}/bridge/cloud"
+            val token = running.tokenStore.obtain()
+            fun post(body: String): HttpResponse<String> = http.send(
+                HttpRequest.newBuilder(URI.create(base))
+                    .header("Authorization", "Bearer $token")
+                    .header("Content-Type", "application/x-www-form-urlencoded")
+                    .POST(HttpRequest.BodyPublishers.ofString(body))
+                    .build(),
+                HttpResponse.BodyHandlers.ofString(),
+            )
+
+            val complete = post("arg=start&arg=c&mode=complete")
+            assertEquals(200, complete.statusCode())
+            assertTrue(complete.body().contains("citybuild-1"), complete.body())
+
+            val execute = post("arg=cmd&arg=lobby-1&arg=say&arg=hi&mode=execute")
+            assertEquals(200, execute.statusCode())
+            assertTrue(execute.body().contains("lines"), execute.body())
+
+            val bare = post("")
+            assertEquals(200, bare.statusCode(), "empty args default to the info listing")
+            assertTrue(bare.body().contains("lines"), bare.body())
+        } finally {
+            running.server.stop()
+        }
+    }
+
+    @Test
+    fun `cloud command endpoint without a command surface is disabled`() {
+        val running = startServer(listOf(service("lobby-1", ServiceState.RUNNING)))
+        try {
+            val response = http.send(
+                HttpRequest.newBuilder(URI.create("http://127.0.0.1:${running.server.boundPort()}/bridge/cloud"))
+                    .header("Authorization", "Bearer ${running.tokenStore.obtain()}")
+                    .header("Content-Type", "application/x-www-form-urlencoded")
+                    .POST(HttpRequest.BodyPublishers.ofString("arg=info&mode=execute"))
+                    .build(),
+                HttpResponse.BodyHandlers.ofString(),
+            )
+            assertEquals(501, response.statusCode())
         } finally {
             running.server.stop()
         }

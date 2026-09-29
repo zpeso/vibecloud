@@ -6,6 +6,8 @@ import dev.vibecloud.common.config.CloudConfigRepository
 import dev.vibecloud.common.logging.Logger
 import dev.vibecloud.core.bridge.BridgeAgentInstaller
 import dev.vibecloud.core.bridge.BridgeAgentRegistry
+import dev.vibecloud.core.bridge.BridgeCommandQueue
+import dev.vibecloud.core.bridge.BridgeCloudCommands
 import dev.vibecloud.core.bridge.BridgeHttpServer
 import dev.vibecloud.core.bridge.BridgeManager
 import dev.vibecloud.core.bridge.BridgeTokenStore
@@ -97,6 +99,25 @@ class CloudBootstrap(
             if (config.bridge.enabled) bridgeTokenStore.obtain()
             val bridgeRegistry = BridgeAgentRegistry { config.bridge.offlineTimeout }
             val bridgeTracker = ServicePlayerTracker()
+            // Console-command writer shared by the HTTP surface and the in-game /cloud command.
+            val consoleCommandWriter: (String, String) -> Boolean = { serviceName, command ->
+                runBlocking { serviceManagerReference.get()?.sendConsoleCommand(serviceName, command) == true }
+            }
+            // The in-game /cloud command surface needs the service manager and the bridge's
+            // command queue, neither of which exists while the bridge server is being
+            // constructed — resolve both lazily on first request instead.
+            var commandQueueHolder: BridgeCommandQueue? = null
+            val cloudCommands: () -> BridgeCloudCommands? = {
+                serviceManagerReference.get()?.let { manager ->
+                    BridgeCloudCommands(
+                        services = manager,
+                        groups = groupManager,
+                        tracker = bridgeTracker,
+                        commandQueue = commandQueueHolder ?: return@let null,
+                        sendConsoleCommand = consoleCommandWriter,
+                    )
+                }
+            }
             val bridgeServer = BridgeHttpServer(
                 cloudView = object : BridgeHttpServer.CloudView {
                     override fun services() = serviceManagerReference.get()?.all().orEmpty().toList()
@@ -115,15 +136,15 @@ class CloudBootstrap(
                 },
                 // The bridge dispatches console commands (proxy `send ...` transfers, agent
                 // commands) through the service manager's stdin writer.
-                sendConsoleCommand = { serviceName, command ->
-                    runBlocking { serviceManagerReference.get()?.sendConsoleCommand(serviceName, command) == true }
-                },
+                sendConsoleCommand = consoleCommandWriter,
+                cloudCommands = cloudCommands,
                 tokenStore = bridgeTokenStore,
                 registry = bridgeRegistry,
                 tracker = bridgeTracker,
                 settings = config.bridge,
                 logger = logger,
             )
+            commandQueueHolder = bridgeServer.commandQueue
             val bridgeManager = BridgeManager(bridgeServer, bridgeRegistry, bridgeTracker, config.bridge, logger)
             val agentInstaller = BridgeAgentInstaller(
                 settings = config.bridge,
