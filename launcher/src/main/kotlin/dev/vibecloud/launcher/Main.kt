@@ -43,11 +43,10 @@ fun main(args: Array<String>) = runBlocking {
         logger.error(failure.message ?: "Invalid command-line arguments")
         return@runBlocking
     }
-    // Self-update: apply a staged update from the previous run, then look for a newer release.
-    // Both are best-effort; an offline root server just skips the check.
-    val selfUpdater = SelfUpdater(logger, configPath, launcherVersion)
-    selfUpdater.applyPendingUpdate()
-    selfUpdater.checkAndStage()
+    // Self-update: a newer release is downloaded, verified and applied in this boot, then the
+    // process hands the console over to the new launcher (never returns when it updates).
+    // Best-effort: an offline root server just skips the check and boots normally.
+    SelfUpdater(logger, configPath, launcherVersion).checkAndUpdate()
     val cloud = try {
         CloudBootstrap(logger).create(configPath)
     } catch (failure: Exception) {
@@ -68,17 +67,28 @@ fun main(args: Array<String>) = runBlocking {
     var exitRequested = false
     try {
         // Route log output through the terminal so lines print above the active input line.
-        (logger as? ConsoleLogger)?.sink = { line -> interactive.printAbove(line) }
+        if (interactive.isInteractive) {
+            (logger as? ConsoleLogger)?.sink = { line -> interactive.printAbove(line) }
+        } else {
+            logger.info("No usable console — running headless. Stop the cloud with Ctrl+C or 'service stop' via your tooling; logs stream to stdout.")
+        }
         cloud.start()
-        interactive.banner()
+        if (interactive.isInteractive) interactive.banner()
         val cli = ConsoleCommandHandler(cloud, logger, interactive)
 
-        while (cloud.state == CloudState.RUNNING && !exitRequested) {
-            val line = interactive.readLine() ?: break
-            when {
-                line.isBlank() -> continue
-                line.trim().equals("clear", ignoreCase = true) -> interactive.clear()
-                else -> exitRequested = !cli.execute(line)
+        if (interactive.isInteractive) {
+            while (cloud.state == CloudState.RUNNING && !exitRequested) {
+                val line = interactive.readLine() ?: break
+                when {
+                    line.isBlank() -> continue
+                    line.trim().equals("clear", ignoreCase = true) -> interactive.clear()
+                    else -> exitRequested = !cli.execute(line)
+                }
+            }
+        } else {
+            // Headless: block until something stops the cloud (Ctrl+C/SIGTERM run the shutdown hook).
+            while (cloud.state == CloudState.RUNNING) {
+                kotlinx.coroutines.delay(1_000)
             }
         }
     } catch (failure: Exception) {

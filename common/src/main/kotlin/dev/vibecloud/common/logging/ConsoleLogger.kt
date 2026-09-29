@@ -17,6 +17,24 @@ class ConsoleLogger(
     private val lock = Any()
     private val timeFormat = DateTimeFormatter.ofPattern("HH:mm:ss")
 
+    /** Updates an in-place progress line (e.g. the update download bar). */
+    override fun updateProgressLine(text: String) {
+        val target = stdout
+        synchronized(lock) {
+            target.print("\r" + text + "\u001B[K")
+            target.flush()
+        }
+    }
+
+    /** Ends the current progress line so regular logging can continue below it. */
+    override fun clearProgressLine() {
+        val target = stdout
+        synchronized(lock) {
+            target.print("\r\u001B[K")
+            target.flush()
+        }
+    }
+
     override fun log(level: LogLevel, message: String, cause: Throwable?) {
         if (level.ordinal < minimumLevel.ordinal) return
         val target = if (level.ordinal >= LogLevel.WARN.ordinal) stderr else stdout

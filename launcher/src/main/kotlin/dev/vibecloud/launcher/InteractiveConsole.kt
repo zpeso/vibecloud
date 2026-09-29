@@ -15,7 +15,11 @@ import org.jline.utils.AttributedStyle
  * in the loop instead of killing the cloud.
  */
 class InteractiveConsole(private val cloud: Cloud) : AutoCloseable {
-    private val terminal: Terminal = buildTerminal()
+    /** Null when the environment offers no usable terminal: the cloud then runs headless. */
+    private val terminal: Terminal? = buildTerminal()
+
+    /** True when a real console is attached and commands can be typed. */
+    val isInteractive: Boolean get() = terminal != null
 
     /**
      * Terminal construction with graceful degradation. The first attempt is the full interactive
@@ -24,7 +28,7 @@ class InteractiveConsole(private val cloud: Cloud) : AutoCloseable {
      * inside the JLine jar, and finally fall back to a plain stdin/stdout terminal. The cloud must
      * never crash because the console looks wrong.
      */
-    private fun buildTerminal(): Terminal {
+    private fun buildTerminal(): Terminal? {
         val attempts = listOf(
             "full interactive terminal" to {
                 TerminalBuilder.builder().system(true).dumb(true).build()
@@ -44,35 +48,42 @@ class InteractiveConsole(private val cloud: Cloud) : AutoCloseable {
                 System.err.println("[console] $description unavailable: ${failure.message}")
             }
         }
-        throw IllegalStateException("No usable terminal could be created")
+        // A hostile environment (broken TERM, no TTY, damaged console libs) must never take the
+        // cloud down: continue headless — logs flow to stdout and services keep running.
+        System.err.println("[console] running headless — interactive commands are unavailable")
+        return null
     }
 
     private var cachedReader: LineReader? = null
 
     /** Prints a line above the active input and redraws the prompt; safe from any thread. */
     fun printAbove(line: String) {
-        reader().printAbove(line)
+        val active = terminal ?: return
+        reader(active).printAbove(line)
     }
 
-    /** Reads one command line at the main prompt. Returns null on EOF (Ctrl+D). */
+    /** Reads one command line at the main prompt. Returns null on EOF (Ctrl+D) or when headless. */
     fun readLine(): String? = readLine(Cli.prompt())
 
     /** Reads one command line while attached to a service console. */
     fun readLineScreen(serviceName: String): String? = readLine(Cli.screenPrompt(serviceName))
 
-    private fun readLine(prompt: String): String? = try {
-        reader().readLine(prompt)
-    } catch (_: UserInterruptException) {
-        printAbove(Cli.dim("(ctrl+c) — type ") + Cli.command("exit") + Cli.dim(" to shut down"))
-        ""
-    } catch (_: EndOfFileException) {
-        null
+    private fun readLine(prompt: String): String? {
+        val active = terminal ?: return null // headless: treated as EOF by the caller
+        return try {
+            reader(active).readLine(prompt)
+        } catch (_: UserInterruptException) {
+            printAbove(Cli.dim("(ctrl+c) — type ") + Cli.command("exit") + Cli.dim(" to shut down"))
+            ""
+        } catch (_: EndOfFileException) {
+            null
+        }
     }
 
-    private fun reader(): LineReader {
+    private fun reader(active: Terminal): LineReader {
         cachedReader?.let { return it }
         val built = LineReaderBuilder.builder()
-            .terminal(terminal)
+            .terminal(active)
             .completer(SmartCompleter(cloud))
             .highlighter(BufferHighlighter(cloud))
             .variable(LineReader.HISTORY_SIZE, 500)
@@ -86,8 +97,9 @@ class InteractiveConsole(private val cloud: Cloud) : AutoCloseable {
     }
 
     fun clear() {
-        terminal.writer().print("\u001B[2J\u001B[H")
-        terminal.writer().flush()
+        val writer = terminal?.writer() ?: return
+        writer.print("\u001B[2J\u001B[H")
+        writer.flush()
     }    fun banner() {
         printAbove(
             Cli.dim(" VibeCloud — type ") + Cli.command("help") +
@@ -98,7 +110,7 @@ class InteractiveConsole(private val cloud: Cloud) : AutoCloseable {
 
     override fun close() {
         cachedReader = null
-        runCatching { terminal.close() }
+        terminal?.let { active -> runCatching { active.close() } }
     }
 }
 
