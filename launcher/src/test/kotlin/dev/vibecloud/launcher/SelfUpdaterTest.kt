@@ -186,6 +186,42 @@ class SelfUpdaterTest {
     }
 
     @Test
+    fun `download follows redirects and rejects empty responses`() {
+        val payload = zipOf("lib/launcher-0.3.10.jar" to "new".toByteArray())
+        val server = com.sun.net.httpserver.HttpServer.create(java.net.InetSocketAddress(0), 0)
+        server.createContext("/file.zip") { exchange ->
+            exchange.responseHeaders.add("Location", "/real.zip")
+            exchange.sendResponseHeaders(302, -1)
+            exchange.close()
+        }
+        server.createContext("/real.zip") { exchange ->
+            exchange.sendResponseHeaders(200, payload.size.toLong())
+            exchange.responseBody.use { it.write(payload) }
+        }
+        server.createContext("/empty.zip") { exchange ->
+            exchange.sendResponseHeaders(200, -1)
+            exchange.close()
+        }
+        server.start()
+        try {
+            val port = server.address.port
+            val root = installRoot()
+            try {
+                val updater = updaterFor(root)
+                val redirected = updater.download(SelfUpdater.Release("v0.3.10", "http://127.0.0.1:$port/file.zip"))
+                assertEquals(payload.toList(), Files.readAllBytes(redirected).toList(), "302 must be followed, not saved")
+
+                val failure = runCatching { updater.download(SelfUpdater.Release("v0.3.10", "http://127.0.0.1:$port/empty.zip")) }
+                assertTrue(failure.isFailure, "a zero-byte download must fail validation")
+            } finally {
+                root.toFile().deleteRecursively()
+            }
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
     fun `version comparison is semantic`() {
         val updater = updaterFor(installRoot())
         assertTrue(updater.isNewer("0.3.10", "0.3.9"))

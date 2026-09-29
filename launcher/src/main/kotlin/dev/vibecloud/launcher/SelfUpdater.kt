@@ -39,7 +39,15 @@ class SelfUpdater(
     private val configPath: Path,
     private val currentVersion: String,
 ) {
-    private data class Release(val tag: String, val zipUrl: String)
+    internal data class Release(val tag: String, val zipUrl: String)
+
+    // GitHub asset URLs redirect (github.com → release-assets.githubusercontent.com). The JDK
+    // client default is Redirect.NEVER, which would download the empty 302 body instead of the
+    // actual release zip — the exact failure the validation below then refuses.
+    private val http: HttpClient = HttpClient.newBuilder()
+        .followRedirects(HttpClient.Redirect.ALWAYS)
+        .connectTimeout(Duration.ofSeconds(10))
+        .build()
 
     private val installRoot: Path = configPath.toAbsolutePath().parent ?: Path.of(".").toAbsolutePath().normalize()
 
@@ -129,17 +137,19 @@ class SelfUpdater(
     }
 
     /** Streams the release zip to a scratch file with a progress bar; returns the file path. */
-    private fun download(release: Release): Path {
+    internal fun download(release: Release): Path {
+        Files.createDirectories(downloadDirectory)
         val zip = downloadDirectory.resolve("update.zip")
         val progress = DownloadProgress(logger)
         val request = HttpRequest.newBuilder(URI.create(release.zipUrl))
             .timeout(Duration.ofSeconds(120))
             .GET()
             .build()
-        HttpClient.newHttpClient().send(
-            request,
-            HttpResponse.BodyHandlers.ofInputStream(),
-        ).body().use { input ->
+        val response = http.send(request, HttpResponse.BodyHandlers.ofInputStream())
+        if (response.statusCode() != 200) {
+            throw IOException("release download returned HTTP ${response.statusCode()}")
+        }
+        response.body().use { input ->
             Files.newOutputStream(zip).use { output ->
                 val buffer = ByteArray(64 * 1024)
                 var done = 0L
@@ -153,6 +163,9 @@ class SelfUpdater(
             }
         }
         progress.finished()
+        if (Files.size(zip) == 0L) {
+            throw IOException("downloaded release zip is empty")
+        }
         return zip
     }
 
@@ -314,7 +327,7 @@ class SelfUpdater(
             .header("Accept", "application/vnd.github+json")
             .GET()
             .build()
-        val response = HttpClient.newHttpClient().send(request, HttpResponse.BodyHandlers.ofString())
+        val response = http.send(request, HttpResponse.BodyHandlers.ofString())
         if (response.statusCode() == 404) return null // no releases yet
         if (response.statusCode() != 200) throw IOException("GitHub API returned ${response.statusCode()}")
         val body = response.body()
