@@ -351,7 +351,8 @@ internal object DashboardPage {
 <div id="login">
   <form class="login-card" id="login-form">
     <h1>VibeCloud</h1>
-    <p class="sub">Sign in with the bridge token (bridge.token on the cloud host).</p>
+    <p class="sub">Sign in with the bridge token (bridge.token on the cloud host). It is exchanged
+    for an HttpOnly session cookie and never stored in the browser.</p>
     <label for="token">Access token</label>
     <input type="password" id="token" autocomplete="off" autofocus>
     <div class="login-error" id="login-error"></div>
@@ -459,11 +460,9 @@ internal object DashboardPage {
 (function () {
   "use strict";
 
-  var TOKEN_KEY = "vibecloud.token";
   var CHART_COLORS = { players: "#22d3ee", tps: "#34d399", ram: "#fbbf24", services: "#a78bfa" };
   var root = document.getElementById("app");
   var login = document.getElementById("login");
-  var token = null;
   var lastStatus = null;
   var lastMetrics = null;
   var page = "overview";
@@ -482,12 +481,18 @@ internal object DashboardPage {
   }
 
   // ---- HTTP helpers -------------------------------------------------------
+  // Authentication uses an HttpOnly session cookie (POST /bridge/dashboard/login exchanges the
+  // bridge token for it). Cookie-authenticated state-changing requests must carry the
+  // X-Requested-With header — the server rejects them otherwise (CSRF guard).
   function api(path, options) {
     options = options || {};
-    options.headers = Object.assign({}, options.headers, { "Authorization": "Bearer " + token });
+    if (options.method && options.method !== "GET") {
+      options.headers = Object.assign({}, options.headers, { "X-Requested-With": "XMLHttpRequest" });
+    }
     if (options.body && typeof options.body === "string") {
       options.headers["Content-Type"] = options.headers["Content-Type"] || "application/x-www-form-urlencoded";
     }
+    options.credentials = "same-origin";
     return fetch(path, options).then(function (response) {
       if (response.status === 401) { showLogin(); throw new Error("unauthorized"); }
       if (!response.ok) { return response.text().then(function (body) { throw new Error(body || (response.status + " " + response.statusText)); }); }
@@ -504,8 +509,6 @@ internal object DashboardPage {
 
   // ---- auth ---------------------------------------------------------------
   function showLogin() {
-    try { localStorage.removeItem(TOKEN_KEY); } catch (error) {}
-    token = null;
     login.classList.remove("hidden");
     root.classList.add("hidden");
   }
@@ -516,16 +519,28 @@ internal object DashboardPage {
   }
   byId("login-form").addEventListener("submit", function (event) {
     event.preventDefault();
-    token = byId("token").value.trim();
+    var submitted = byId("token").value;
+    byId("token").value = "";
     byId("login-error").textContent = "";
-    api("/bridge/status").then(function () {
-      try { localStorage.setItem(TOKEN_KEY, token); } catch (error) {}
-      showApp();
+    fetch("/bridge/dashboard/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
+      body: form({ token: [submitted] }),
+      credentials: "same-origin",
+    }).then(function (response) {
+      if (response.ok) { submitted = null; showApp(); return; }
+      if (response.status === 401) throw new Error("Invalid token.");
+      if (response.status === 429) throw new Error("Too many attempts — wait a minute and retry.");
+      throw new Error("Sign-in failed (" + response.status + ").");
     }).catch(function (error) {
-      byId("login-error").textContent = error.message === "unauthorized" ? "Invalid token." : ("Sign-in failed: " + error.message);
+      byId("login-error").textContent = error.message;
     });
   });
-  byId("logout").addEventListener("click", showLogin);
+  byId("logout").addEventListener("click", function () {
+    fetch("/bridge/dashboard/logout", { method: "POST", headers: { "X-Requested-With": "XMLHttpRequest" }, credentials: "same-origin" })
+      .catch(function () {})
+      .then(showLogin);
+  });
 
   // ---- data ---------------------------------------------------------------
   function refresh() {
@@ -649,8 +664,8 @@ internal object DashboardPage {
 
     byId("player-grid").innerHTML = visible.length ? visible.map(function (row) {
       var initial = esc(row.name.charAt(0).toUpperCase());
-      var head = '<img class="head" alt="" loading="lazy" src="https://mc-heads.net/avatar/' + encodeURIComponent(row.name) + '/36" ' +
-        'onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\';">' +
+      // No inline onerror (CSP): failed avatar loads are handled after insertion.
+      var head = '<img class="head" alt="" loading="lazy" src="https://mc-heads.net/avatar/' + encodeURIComponent(row.name) + '/36">' +
         '<div class="fallback-head" style="display:none;">' + initial + '</div>';
       return '<div class="player">' + head +
         '<div class="who"><div class="name">' + esc(row.name) + '</div>' +
@@ -680,6 +695,14 @@ internal object DashboardPage {
           .then(function () { toast(player + " was kicked."); })
           .catch(function (error) { toast("Kick failed: " + error.message); })
           .then(refresh);
+      });
+    });
+    // CSP-safe avatar fallback: swap to the letter tile when the CDN image fails.
+    Array.prototype.forEach.call(byId("player-grid").querySelectorAll("img.head"), function (image) {
+      image.addEventListener("error", function () {
+        image.style.display = "none";
+        var fallback = image.nextElementSibling;
+        if (fallback) fallback.style.display = "flex";
       });
     });
   }
@@ -1099,19 +1122,14 @@ internal object DashboardPage {
   });
 
   // ---- boot ----------------------------------------------------------------
-  try { token = localStorage.getItem(TOKEN_KEY); } catch (error) { token = null; }
-  if (token) {
-    api("/bridge/status").then(function () {
-      showApp();
-      navigate((location.hash || "#overview").slice(1));
-    }).catch(function (error) {
-      if (error.message === "unauthorized") showLogin();
-    });
-  } else {
-    showLogin();
-  }
+  // A valid HttpOnly session cookie (if any) is proven by a probe request; the token itself never
+  // touches JavaScript — the browser attaches the cookie automatically.
+  api("/bridge/status").then(function () {
+    showApp();
+    navigate((location.hash || "#overview").slice(1));
+  }).catch(function () { showLogin(); });
   window.setInterval(function () {
-    if (token && !root.classList.contains("hidden")) {
+    if (!root.classList.contains("hidden")) {
       refresh();
       if (page === "console" && byId("console-follow").checked) loadConsole();
     }

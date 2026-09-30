@@ -1,9 +1,16 @@
 .gradle/
 **/build/
 services/
-templates/*/*/
+templates/*/*
 !templates/README.md
 .idea/
 *.iml
 .DS_Store
 .kotlin/
+
+# Secrets and runtime state — never commit these.
+config.yml
+bridge.token
+forwarding.secret
+.update-download/
+pending-update/

@@ -10,6 +10,7 @@ import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
+import java.security.SecureRandom
 import java.time.Clock
 import java.time.Duration
 import java.time.Instant
@@ -21,9 +22,12 @@ import java.util.concurrent.atomic.AtomicBoolean
  * plugins on backends (and external tools) GET the cloud status with live player counts.
  *
  * Endpoints (all JSON):
- *  - `GET  /`                → the built-in dashboard (HTML; the page itself is public, all data
- *    it loads requires the token)
- *  - `GET  /bridge/status`   → cloud status; requires the agent token
+ *  - `GET  /`                → the built-in dashboard (static HTML shell — public, carries no
+ *    data; every API it loads requires authentication)
+ *  - `POST /bridge/dashboard/login` → exchange the bridge token for an HttpOnly session cookie
+ *    (rate limited per client)
+ *  - `POST /bridge/dashboard/logout` → revoke the browser session and clear the cookie
+ *  - `GET  /bridge/status`   → cloud status; requires the agent token or a valid session
  *  - `GET  /bridge/services` → alias of `/bridge/status`
  *  - `GET  /bridge/metrics`  → rolling metric samples for the dashboard charts + per-service
  *    TPS/memory of the last agent heartbeats
@@ -36,8 +40,16 @@ import java.util.concurrent.atomic.AtomicBoolean
  *    repeated `arg` (the argument list, excluding `/cloud`), optional `player` (caller), and
  *    `mode=complete` for tab-completion suggestions instead of execution
  *
- * The server binds to `bridge.bind-address` (default `127.0.0.1`) — it is a local control surface,
- * not a public API. Use a reverse proxy with TLS and its own authentication to expose it.
+ * Authentication: `Authorization: Bearer <token>` (agents, API clients) or the dashboard session
+ * cookie (browsers, obtained via the login endpoint). Cookie-authenticated state-changing
+ * requests must send the `X-Requested-With` header (CSRF guard). The old `?token=` query fallback
+ * was removed: tokens in URLs leak into proxy and access logs. Failed authentication attempts are
+ * rate limited per client address.
+ *
+ * The server binds to `bridge.bind-address` (default `127.0.0.1`) — put a TLS reverse proxy in
+ * front for remote access (see docs/SECURITY.md). All responses carry no-store, nosniff,
+ * Referrer-Policy and frame-deny headers; HSTS is emitted when the request arrived over a
+ * forwarded HTTPS connection.
  */
 class BridgeHttpServer(
     private val cloudView: CloudView,
@@ -55,6 +67,8 @@ class BridgeHttpServer(
     private val metricsHistory: MetricsHistory = MetricsHistory(),
     /** Console output history per service name (maxLines), shown in the dashboard console. */
     private val consoleHistory: ((serviceName: String, maxLines: Int) -> List<String>)? = null,
+    /** Server-side browser sessions backing the dashboard cookie (invalidated on restart). */
+    private val sessions: DashboardSessions = DashboardSessions(clock = clock),
 ) {
     /** Read-only projection of the cloud, implemented by the composition root. */
     interface CloudView {
@@ -78,6 +92,13 @@ class BridgeHttpServer(
     private var server: HttpServer? = null
     private val backingQueue = BridgeCommandQueue()
 
+    // Per-client throttles: failed token guesses, login attempts, and the state-changing command
+    // endpoints. Read-only dashboard polling is deliberately never rate limited.
+    private val authFailures = RateLimiter(maxEvents = 10, window = Duration.ofSeconds(60))
+    private val loginAttempts = RateLimiter(maxEvents = 10, window = Duration.ofSeconds(60))
+    private val commandRate = RateLimiter(maxEvents = 120, window = Duration.ofSeconds(60))
+    private val nonceRandom = SecureRandom()
+
     /** Pending player/service commands, drained by the agents' heartbeats. */
     internal val commandQueue: BridgeCommandQueue get() = backingQueue
 
@@ -89,15 +110,17 @@ class BridgeHttpServer(
             created.executor = Executors.newFixedThreadPool(WORKER_THREADS) { runnable ->
                 Thread(runnable, "bridge-http-worker").apply { isDaemon = true }
             }
-            created.createContext("/") { exchange -> handleRoot(exchange) }
-            created.createContext("/bridge/status") { exchange -> handleStatus(exchange) }
-            created.createContext("/bridge/services") { exchange -> handleStatus(exchange) }
-            created.createContext("/bridge/metrics") { exchange -> handleMetrics(exchange) }
-            created.createContext("/bridge/console") { exchange -> handleConsole(exchange) }
-            created.createContext("/bridge/heartbeat") { exchange -> handleHeartbeat(exchange) }
-            created.createContext("/bridge/players") { exchange -> handlePlayerAction(exchange) }
-            created.createContext("/bridge/services/command") { exchange -> handleServiceAction(exchange) }
-            created.createContext("/bridge/cloud") { exchange -> handleCloudCommand(exchange) }
+            created.createContext("/") { exchange -> safe(exchange, "dashboard") { handleRoot(it) } }
+            created.createContext("/bridge/dashboard/login") { exchange -> safe(exchange, "login") { handleDashboardLogin(it) } }
+            created.createContext("/bridge/dashboard/logout") { exchange -> safe(exchange, "logout") { handleDashboardLogout(it) } }
+            created.createContext("/bridge/status") { exchange -> safe(exchange, "status") { handleStatus(it) } }
+            created.createContext("/bridge/services") { exchange -> safe(exchange, "status") { handleStatus(it) } }
+            created.createContext("/bridge/metrics") { exchange -> safe(exchange, "metrics") { handleMetrics(it) } }
+            created.createContext("/bridge/console") { exchange -> safe(exchange, "console") { handleConsole(it) } }
+            created.createContext("/bridge/heartbeat") { exchange -> safe(exchange, "heartbeat") { handleHeartbeat(it) } }
+            created.createContext("/bridge/players") { exchange -> safe(exchange, "players") { handlePlayerAction(it) } }
+            created.createContext("/bridge/services/command") { exchange -> safe(exchange, "service command") { handleServiceAction(it) } }
+            created.createContext("/bridge/cloud") { exchange -> safe(exchange, "cloud command") { handleCloudCommand(it) } }
             created.start()
             server = created
             if (!settings.bindAddress.isLoopbackAddress()) {
@@ -127,16 +150,30 @@ class BridgeHttpServer(
     /** Actual bound port, e.g. when configured with port 0 (random free port). */
     fun boundPort(): Int = server?.address?.port ?: -1
 
+    /**
+     * Wraps every handler with a catch-all: unexpected exceptions are logged server-side and
+     * answered with a generic 500 — never a stack trace, path, or configuration detail.
+     */
+    private fun safe(exchange: HttpExchange, name: String, handler: (HttpExchange) -> Unit) {
+        try {
+            handler(exchange)
+        } catch (failure: IOException) {
+            logger.debug("Bridge $name request failed: ${failure.message}")
+        } catch (failure: Exception) {
+            logger.error("Unexpected error while handling $name: ${failure::class.simpleName}: ${failure.message}", failure)
+            runCatching { respond(exchange, 500, errorJson("internal server error")) }
+        } finally {
+            exchange.close()
+        }
+    }
+
     private fun handleStatus(exchange: HttpExchange) {
         try {
             if (exchange.requestMethod != "GET" && exchange.requestMethod != "HEAD") {
                 respond(exchange, 405, errorJson("method not allowed"))
                 return
             }
-            if (!requireToken(exchange)) {
-                respond(exchange, 401, errorJson("missing or invalid bridge token"))
-                return
-            }
+            if (!authorize(exchange)) return
             respond(exchange, 200, statusDocument())
         } catch (failure: IOException) {
             logger.debug("Bridge status request failed: ${failure.message}")
@@ -151,10 +188,7 @@ class BridgeHttpServer(
                 respond(exchange, 405, errorJson("method not allowed"))
                 return
             }
-            if (!requireToken(exchange)) {
-                respond(exchange, 401, errorJson("missing or invalid bridge token"))
-                return
-            }
+            if (!authorize(exchange)) return
             val body = readBodyCapped(exchange)
             if (body == null) {
                 respond(exchange, 413, errorJson("heartbeat payload too large"))
@@ -229,20 +263,22 @@ class BridgeHttpServer(
                 respond(exchange, 405, errorJson("method not allowed"))
                 return
             }
-            if (!requireToken(exchange)) {
-                respond(exchange, 401, errorJson("missing or invalid bridge token"))
-                return
-            }
+            if (!authorize(exchange)) return
             val body = readBodyCapped(exchange)
             if (body == null) {
                 respond(exchange, 413, errorJson("payload too large"))
                 return
             }
+            if (!commandRate.tryAcquire(clientKey(exchange))) {
+                respond(exchange, 429, errorJson("rate limit exceeded"))
+                return
+            }
+            if (!enforceCsrfGuard(exchange)) return
             val fields = parseBody(body)
             val playerName = fields["player"]?.trim().orEmpty()
             val action = fields["action"]?.trim().orEmpty()
-            if (playerName.isEmpty() || action.isEmpty()) {
-                respond(exchange, 400, errorJson("requires 'player' and 'action'"))
+            if (playerName.isEmpty() || playerName.length > MAX_PLAYER_NAME_LENGTH || action.isEmpty()) {
+                respond(exchange, 400, errorJson("requires 'player' (max $MAX_PLAYER_NAME_LENGTH characters) and 'action'"))
                 return
             }
             val command: BridgeCommand = when (action) {
@@ -263,7 +299,7 @@ class BridgeHttpServer(
                     id = backingQueue.nextId(),
                     type = "kick",
                     playerName = playerName,
-                    payload = mapOf("reason" to fields["reason"]?.trim().orEmpty().ifEmpty { "Kicked by the cloud" }),
+                    payload = mapOf("reason" to fields["reason"]?.trim().orEmpty().take(MAX_KICK_REASON_LENGTH).ifEmpty { "Kicked by the cloud" }),
                 )
                 "transfer" -> {
                     val target = fields["target"]?.trim().orEmpty()
@@ -275,7 +311,7 @@ class BridgeHttpServer(
                     // running service; resolve now so the proxy receives a concrete name.
                     val targetService = resolveServiceName(target)
                     if (targetService == null) {
-                        respond(exchange, 404, errorJson("unknown target service '$target'"))
+                        respond(exchange, 404, errorJson("unknown target service"))
                         return
                     }
                     // Version-independent transfer via the proxy console — no client transfer
@@ -322,15 +358,7 @@ class BridgeHttpServer(
                 respond(exchange, 405, errorJson("method not allowed"))
                 return
             }
-            if (!requireToken(exchange)) {
-                respond(exchange, 401, errorJson("missing or invalid bridge token"))
-                return
-            }
-            val commands = cloudCommands()
-            if (commands == null) {
-                respond(exchange, 501, errorJson("the cloud command surface is disabled"))
-                return
-            }
+            if (!authorize(exchange)) return
             val body = readBodyCapped(exchange)
             if (body == null) {
                 respond(exchange, 413, errorJson("payload too large"))
@@ -344,10 +372,28 @@ class BridgeHttpServer(
                     val value = URLDecoder.decode(pair.substring(index + 1), StandardCharsets.UTF_8)
                     key to value
                 }
+            // Input validation happens before anything else touches the command surface.
+            val client = clientKey(exchange)
+            if (!commandRate.tryAcquire(client)) {
+                respond(exchange, 429, errorJson("rate limit exceeded"))
+                return
+            }
+            if (!enforceCsrfGuard(exchange)) return
             val args = fields.filter { it.first == "arg" }.map { it.second }
+            if (args.size > MAX_ARG_COUNT || args.any { it.length > MAX_ARG_LENGTH }) {
+                respond(exchange, 400, errorJson("cloud command too large (max $MAX_ARG_COUNT arguments of $MAX_ARG_LENGTH characters)"))
+                return
+            }
+            val commands = cloudCommands()
+            if (commands == null) {
+                respond(exchange, 501, errorJson("the cloud command surface is disabled"))
+                return
+            }
             val caller = fields.lastOrNull { it.first == "player" }?.second.orEmpty()
             if (caller.isNotEmpty()) {
-                logger.info("Cloud command from $caller: /cloud ${args.joinToString(" ")}")
+                // Strip control characters so a crafted caller name cannot forge log lines.
+                val safeCaller = caller.take(MAX_ARG_LENGTH).filter { !it.isISOControl() }
+                logger.info("Cloud command from $safeCaller: /cloud ${args.joinToString(" ")}")
             }
             val isCompletion = fields.lastOrNull { it.first == "mode" }?.second == "complete"
             if (isCompletion) {
@@ -370,26 +416,32 @@ class BridgeHttpServer(
                 respond(exchange, 405, errorJson("method not allowed"))
                 return
             }
-            if (!requireToken(exchange)) {
-                respond(exchange, 401, errorJson("missing or invalid bridge token"))
-                return
-            }
+            if (!authorize(exchange)) return
             val body = readBodyCapped(exchange)
             if (body == null) {
                 respond(exchange, 413, errorJson("payload too large"))
                 return
             }
+            if (!commandRate.tryAcquire(clientKey(exchange))) {
+                respond(exchange, 429, errorJson("rate limit exceeded"))
+                return
+            }
+            if (!enforceCsrfGuard(exchange)) return
             val fields = parseBody(body)
             val service = fields["service"]?.trim().orEmpty()
             val action = fields["action"]?.trim().orEmpty()
             val commandLine = fields["command"]?.trim().orEmpty()
-            if (service.isEmpty() || action != "command" || commandLine.isEmpty()) {
-                respond(exchange, 400, errorJson("requires 'service', 'action=command' and 'command'"))
+            if (service.isEmpty() || service.length > MAX_SERVICE_NAME_LENGTH ||
+                action != "command" || commandLine.isEmpty() || commandLine.length > MAX_COMMAND_LENGTH
+            ) {
+                respond(exchange, 400, errorJson("requires 'service', 'action=command' and a 'command' of up to $MAX_COMMAND_LENGTH characters"))
                 return
             }
             val known = cloudView.services().firstOrNull { it.name.equals(service, ignoreCase = true) }
             if (known == null) {
-                respond(exchange, 404, errorJson("unknown service '$service'"))
+                // Deliberately does not echo the requested name: error bodies must never reflect
+                // unsanitized input, even escaped (defense in depth against reflection XSS).
+                respond(exchange, 404, errorJson("unknown service"))
                 return
             }
             val command = BridgeCommand(
@@ -468,7 +520,7 @@ class BridgeHttpServer(
                 "GET", "HEAD" -> {
                     val bytes = DashboardPage.html.toByteArray(StandardCharsets.UTF_8)
                     exchange.responseHeaders.set("Content-Type", "text/html; charset=utf-8")
-                    exchange.responseHeaders.set("Cache-Control", "no-store")
+                    applySecurityHeaders(exchange)
                     exchange.sendResponseHeaders(200, if (exchange.requestMethod == "HEAD") -1 else bytes.size.toLong())
                     if (exchange.requestMethod == "GET") exchange.responseBody.use { it.write(bytes) }
                 }
@@ -489,10 +541,7 @@ class BridgeHttpServer(
                 respond(exchange, 405, errorJson("method not allowed"))
                 return
             }
-            if (!requireToken(exchange)) {
-                respond(exchange, 401, errorJson("missing or invalid bridge token"))
-                return
-            }
+            if (!authorize(exchange)) return
             respond(exchange, 200, metricsDocument())
         } catch (failure: IOException) {
             logger.debug("Bridge metrics request failed: ${failure.message}")
@@ -508,17 +557,14 @@ class BridgeHttpServer(
                 respond(exchange, 405, errorJson("method not allowed"))
                 return
             }
-            if (!requireToken(exchange)) {
-                respond(exchange, 401, errorJson("missing or invalid bridge token"))
-                return
-            }
+            if (!authorize(exchange)) return
             val service = exchange.requestURI.rawQuery
                 ?.split('&')
                 ?.firstOrNull { it.startsWith("service=") }
                 ?.substringAfter('=')
                 ?.let { URLDecoder.decode(it, StandardCharsets.UTF_8) }
                 .orEmpty()
-            if (service.isEmpty()) {
+            if (service.isEmpty() || service.length > MAX_SERVICE_NAME_LENGTH) {
                 respond(exchange, 400, errorJson("requires 'service'"))
                 return
             }
@@ -632,13 +678,125 @@ class BridgeHttpServer(
             ?.removePrefix("Bearer ")
             ?.trim()
             ?.takeIf { it.isNotEmpty() }
-            ?: exchange.requestURI.rawQuery
-                ?.split('&')
-                ?.firstOrNull { it.startsWith("token=") }
-                ?.substringAfter('=')
-                ?.let { URLDecoder.decode(it, StandardCharsets.UTF_8) }
             ?: return false
         return tokenStore.matches(candidate)
+    }
+
+    /**
+     * Authentication boundary for every sensitive endpoint. Accepts the agent bearer token or a
+     * valid dashboard session cookie. Failed attempts are rate limited per client; the response
+     * never reveals whether the token was merely malformed.
+     */
+    private fun authorize(exchange: HttpExchange): Boolean {
+        val client = clientKey(exchange)
+        val valid = requireToken(exchange) || sessions.validate(sessionCookie(exchange))
+        if (!valid) {
+            authFailures.failure(client)
+            respond(exchange, 401, errorJson("missing or invalid bridge token"))
+            return false
+        }
+        return true
+    }
+
+    /** Value of the dashboard session cookie, or null. */
+    private fun sessionCookie(exchange: HttpExchange): String? {
+        val header = exchange.requestHeaders.getFirst("Cookie") ?: return null
+        return header.split(';')
+            .mapNotNull { pair ->
+                val index = pair.indexOf('=')
+                if (index <= 0) return@mapNotNull null
+                pair.substring(0, index).trim() to pair.substring(index + 1).trim()
+            }
+            .firstOrNull { it.first == DashboardSessions.COOKIE_NAME }
+            ?.second
+            ?.takeIf { it.isNotEmpty() }
+    }
+
+    /** Opaque per-client key for rate limiting: the remote address, never logged with events. */
+    private fun clientKey(exchange: HttpExchange): String =
+        exchange.remoteAddress.address.hostAddress
+
+    /**
+     * CSRF guard for cookie-authenticated browsers: state-changing requests must carry a custom
+     * header, which cross-site form posts cannot add without a CORS preflight. Bearer-token
+     * clients (agents, API integrations) are unaffected — CSRF requires an ambient credential,
+     * which a header-based token is not.
+     */
+    private fun enforceCsrfGuard(exchange: HttpExchange): Boolean {
+        if (sessionCookie(exchange) == null) return true
+        val requested = exchange.requestHeaders.getFirst("X-Requested-With")
+        if (requested != null && requested.equals("XMLHttpRequest", ignoreCase = true)) return true
+        respond(exchange, 403, errorJson("cookie-authenticated requests must send the X-Requested-With header"))
+        return false
+    }
+
+    /**
+     * `POST /bridge/dashboard/login` — exchanges the bridge token for an HttpOnly session cookie
+     * so the browser never has to persist the shared token itself. Body: form field `token`.
+     * Response never reveals whether the token was wrong vs. rate limited (always 401).
+     */
+    private fun handleDashboardLogin(exchange: HttpExchange) {
+        try {
+            if (exchange.requestMethod != "POST") {
+                respond(exchange, 405, errorJson("method not allowed"))
+                return
+            }
+            val client = clientKey(exchange)
+            if (loginAttempts.isBlocked(client) || authFailures.isBlocked(client)) {
+                respond(exchange, 429, errorJson("too many attempts; try again later"))
+                return
+            }
+            val body = readBodyCapped(exchange)
+            if (body == null) {
+                respond(exchange, 413, errorJson("payload too large"))
+                return
+            }
+            val submitted = parseBody(body)["token"].orEmpty()
+            if (!tokenStore.matches(submitted)) {
+                loginAttempts.failure(client)
+                authFailures.failure(client)
+                respond(exchange, 401, errorJson("invalid token"))
+                return
+            }
+            val sessionId = sessions.create()
+            // 'Secure' is added only when the request arrived over forwarded HTTPS: behind a TLS
+            // proxy the cookie must never travel in the clear, while plain local HTTP access
+            // (127.0.0.1 without a proxy) keeps working — browsers reject Secure cookies on http.
+            val secureFlag = if (exchange.requestHeaders.getFirst("X-Forwarded-Proto")
+                    .equals("https", ignoreCase = true)
+            ) "; Secure" else ""
+            exchange.responseHeaders.add(
+                "Set-Cookie",
+                "$COOKIE_PAIR=${sessionId}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${DashboardSessions.DEFAULT_LIFETIME.seconds}$secureFlag",
+            )
+            respond(exchange, 200, JsonWriter.obj("ok" to JsonWriter.bool(true)))
+        } catch (failure: IOException) {
+            logger.debug("Dashboard login failed: ${failure.message}")
+        } finally {
+            exchange.close()
+        }
+    }
+
+    /** `POST /bridge/dashboard/logout` — revokes the session server-side and clears the cookie. */
+    private fun handleDashboardLogout(exchange: HttpExchange) {
+        try {
+            if (exchange.requestMethod != "POST") {
+                respond(exchange, 405, errorJson("method not allowed"))
+                return
+            }
+            // Even logout must not be triggerable cross-site (forced-logout CSRF nuisance).
+            if (!enforceCsrfGuard(exchange)) return
+            sessions.revoke(sessionCookie(exchange))
+            exchange.responseHeaders.add(
+                "Set-Cookie",
+                "$COOKIE_PAIR=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0",
+            )
+            respond(exchange, 200, JsonWriter.obj("ok" to JsonWriter.bool(true)))
+        } catch (failure: IOException) {
+            logger.debug("Dashboard logout failed: ${failure.message}")
+        } finally {
+            exchange.close()
+        }
     }
 
     /** Reads the request body, rejecting payloads beyond [MAX_BODY_BYTES] instead of buffering them. */
@@ -651,8 +809,27 @@ class BridgeHttpServer(
     private fun respond(exchange: HttpExchange, status: Int, body: String) {
         val bytes = body.toByteArray(StandardCharsets.UTF_8)
         exchange.responseHeaders.set("Content-Type", "application/json; charset=utf-8")
+        applySecurityHeaders(exchange)
         exchange.sendResponseHeaders(status, if (body.isEmpty()) -1 else bytes.size.toLong())
         if (bytes.isNotEmpty()) exchange.responseBody.use { it.write(bytes) }
+    }
+
+    /**
+     * Security headers on every response: no caching, no MIME sniffing, no framing, no referrer
+     * leakage. HSTS is only sent when the request reached us over a forwarded HTTPS connection
+     * (i.e. behind a TLS-terminating reverse proxy), so plain local HTTP keeps working.
+     */
+    private fun applySecurityHeaders(exchange: HttpExchange) {
+        val headers = exchange.responseHeaders
+        headers.set("Cache-Control", "no-store")
+        headers.set("X-Content-Type-Options", "nosniff")
+        headers.set("X-Frame-Options", "DENY")
+        headers.set("Referrer-Policy", "no-referrer")
+        headers.set("Content-Security-Policy", CSP)
+        val forwardedProto = exchange.requestHeaders.getFirst("X-Forwarded-Proto")
+        if (forwardedProto.equals("https", ignoreCase = true)) {
+            headers.set("Strict-Transport-Security", "max-age=31536000")
+        }
     }
 
     private fun errorJson(message: String): String = JsonWriter.obj("error" to JsonWriter.str(message))
@@ -663,6 +840,23 @@ class BridgeHttpServer(
         const val MAX_BODY_BYTES = 64 * 1024
         const val MAX_PLAYER_NAMES = 500
         const val MAX_CONSOLE_LINES = 200
+        const val MAX_ARG_COUNT = 32
+        const val MAX_ARG_LENGTH = 200
+        const val MAX_PLAYER_NAME_LENGTH = 16
+        const val MAX_KICK_REASON_LENGTH = 200
+        const val MAX_COMMAND_LENGTH = 256
+        const val MAX_SERVICE_NAME_LENGTH = 64
+        const val COOKIE_PAIR = DashboardSessions.COOKIE_NAME
+
+        /**
+         * The dashboard is a same-origin SPA with inline script/style (it ships as one file).
+         * 'unsafe-inline' is required for both, everything else is locked down: no frames, no
+         * objects, no form actions, connections restricted to same origin plus the avatar CDN
+         * the players page explicitly loads images from.
+         */
+        const val CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; " +
+                "img-src 'self' https://mc-heads.net; connect-src 'self'; frame-ancestors 'none'; " +
+                "base-uri 'none'; form-action 'self'"
 
         private fun String.isLoopbackAddress(): Boolean =
             this == "127.0.0.1" || this == "localhost" || this == "::1"

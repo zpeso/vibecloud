@@ -33,8 +33,12 @@ internal object JsonWriter {
 
     fun num(value: Long): String = value.toString()
 
-    fun num(value: Double): String =
-        if (value == value.toLong().toDouble()) value.toLong().toString() else value.toString()
+    fun num(value: Double): String = when {
+        // NaN/Infinity are invalid JSON and would break every client parsing the document.
+        !value.isFinite() -> "null"
+        value == value.toLong().toDouble() -> value.toLong().toString()
+        else -> value.toString()
+    }
 
     fun bool(value: Boolean): String = value.toString()
 }

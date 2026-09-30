@@ -23,10 +23,11 @@ runtime:
 reconciliation:
   interval-seconds: 5
 
-# Local HTTP bridge: backend agent plugins report live player rosters here, and plugins can read
-# the cloud status (groups, services, players) from code. Agents are installed automatically into
-# every backend service; the shared token is generated at bridge.token next to this file.
-# Keep bind-address at 127.0.0.1 unless you front the endpoint with an authenticated proxy.
+# Local HTTP bridge: backend agent plugins report live player rosters here, the web dashboard is
+# served at its root, and plugins can read the cloud status from code. Agents are installed
+# automatically into every backend service; the shared token is generated at bridge.token next to
+# this file. Keep bind-address at 127.0.0.1 and put a TLS reverse proxy in front for remote
+# dashboard access — see docs/SECURITY.md for the full deployment guide.
 bridge:
   enabled: true
   port: 25580
