@@ -308,9 +308,14 @@ The bridge serves a built-in dashboard at its root: `http://<cloud-host>:<bridge
 - **Live data**: totals, per-service TPS (1m average) and heap usage (reported by the agent every
   heartbeat), players, groups, rolling charts (players / TPS / memory / running services) sampled
   once per reconciliation cycle, and the recent console output of any running service.
-- **Actions**: start/stop/restart per service, `group start <name>`, and the full cloud command
-  surface (with Tab completion) in the quick-command bar — the same authority as the interactive
-  console.
+- **Pages**: the sidebar switches between Overview (stat cards + charts with 15m/30m/1h range
+  selectors and hover tooltips), Players (skin heads, current server, one-click transfer via
+  dropdown, kick), Services (state tabs with counts, TPS/memory meters, start/restart/stop),
+  Groups (backend/proxy tabs, running vs. desired vs. max, `Start another`), and Console
+  (per-service output with auto-refresh and command input).
+- **Actions**: start/stop/restart per service, `group start <name>`, player transfers and kicks,
+  and the full cloud command surface (with Tab completion) in the top command bar — the same
+  authority as the interactive console.
 
 New bridge endpoints (all require the token):
 
