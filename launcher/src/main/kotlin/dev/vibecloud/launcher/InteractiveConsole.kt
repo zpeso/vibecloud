@@ -147,7 +147,7 @@ internal class SmartCompleter(private val cloud: Cloud) : Completer {
                     )
                 }
 
-            soFar[0] == "group" && soFar.size == 2 && soFar[1] in listOf("info", "delete") ->
+            soFar[0] == "group" && soFar.size == 2 && soFar[1] in listOf("info", "delete", "start") ->
                 cloud.groups.all().forEach { group ->
                     candidates += Candidate(group.name, group.name, "group", "group", null, null, true)
                 }

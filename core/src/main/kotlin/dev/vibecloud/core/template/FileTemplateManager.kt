@@ -305,10 +305,16 @@ connection_throttle: 4000
             provision(service)
             return@withContext
         }
-        copyTemplate(source, service.directory, overwrite = true)
+        // The proxy's velocity.toml belongs to the service once provisioned: the cloud owns the
+        // [servers] table and forwarding keys, the user owns everything else (try order, motd).
+        // Never let a template merge overwrite an existing copy — the template's stale backend
+        // table would silently revert the service config on every cloud restart (the applied
+        // template fingerprint is only tracked in memory, so a merge always runs after a restart).
+        // A missing file is still re-seeded from the template.
+        copyTemplate(source, service.directory, overwrite = true, skipExisting = PROTECTED_SERVICE_FILES)
         val overlay = groupOverlayDirectory(service.groupName)
         if (Files.isDirectory(overlay, LinkOption.NOFOLLOW_LINKS)) {
-            copyTemplate(overlay, service.directory, overwrite = true)
+            copyTemplate(overlay, service.directory, overwrite = true, skipExisting = PROTECTED_SERVICE_FILES)
         }
         // Re-apply cloud-managed files on top (port, forwarding, eula may have changed).
         adapters.get(service.type).configure(
@@ -345,7 +351,7 @@ connection_throttle: 4000
         return source
     }
 
-    private fun copyTemplate(source: Path, destination: Path, overwrite: Boolean = false) {
+    private fun copyTemplate(source: Path, destination: Path, overwrite: Boolean = false, skipExisting: Set<String> = emptySet()) {
         Files.walkFileTree(source, object : SimpleFileVisitor<Path>() {
             override fun preVisitDirectory(dir: Path, attrs: BasicFileAttributes): FileVisitResult {
                 if (Files.isSymbolicLink(dir)) {
@@ -363,6 +369,9 @@ connection_throttle: 4000
                 }
                 val target = destination.resolve(source.relativize(file).toString()).normalize()
                 if (!target.startsWith(destination)) throw TemplateException("Template entry escapes destination: $file")
+                if (file.fileName.toString() in skipExisting && Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
+                    return FileVisitResult.CONTINUE
+                }
                 if (overwrite) {
                     Files.copy(file, target, StandardCopyOption.REPLACE_EXISTING)
                 } else {
@@ -391,5 +400,11 @@ connection_throttle: 4000
 
     private companion object {
         const val BUILD_METADATA_FILE = ".server-build.properties"
+
+        /**
+         * Files a provisioned service owns once it exists; a template merge (updateFromTemplate)
+         * seeds them only when missing and never overwrites the service's copy.
+         */
+        val PROTECTED_SERVICE_FILES = setOf("velocity.toml")
     }
 }

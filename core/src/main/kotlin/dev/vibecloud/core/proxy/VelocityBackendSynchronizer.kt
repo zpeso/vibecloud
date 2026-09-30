@@ -20,6 +20,8 @@ import java.util.*
 internal class VelocityBackendSynchronizer(
     private val logger: Logger,
     private val forwardingProvider: () -> ProxyForwarding? = { null },
+    /** Live view of all services; used to re-apply configs right after a template merge. */
+    private val serviceProvider: (() -> Collection<Service>)? = null,
 ) {
     private val mutex = Mutex()
     private val pendingReloads = mutableSetOf<String>()
@@ -31,47 +33,107 @@ internal class VelocityBackendSynchronizer(
         val allServices = services().toList()
         val backends = allServices.filter { it.type == ServerType.PAPER || it.type == ServerType.SPIGOT }
         val servers = backendEntries(backends)
-        val defaultServer = backends.sortedWith(backendPreference).firstNotNullOfOrNull { service ->
-            service.name.takeIf { it in servers }
-        } ?: servers.keys.first()
+        val defaultServer = defaultServerFor(backends, servers)
         val proxyServices = allServices.filter { it.type == ServerType.VELOCITY }
         val proxyNames = proxyServices.mapTo(mutableSetOf()) { it.name }
         pendingReloads.retainAll(proxyNames)
 
         proxyServices.forEach { proxy ->
-            val config = proxy.directory.resolve("velocity.toml")
-            if (!Files.isRegularFile(config)) {
-                logger.warn("Cannot sync Velocity backends for ${proxy.name}: missing config $config")
-                return@forEach
-            }
-            forwardingProvider()?.let { forwarding -> repairForwardingSecretFile(proxy, forwarding) }
+            applyToConfig(
+                proxy = proxy,
+                servers = servers,
+                defaultServer = defaultServer,
+                legacyGroupAliases = backends.mapTo(mutableSetOf()) { it.groupName },
+                reloadProxy = reloadProxy,
+            )
+        }
+    }
+
+    /**
+     * Re-applies the cloud-managed backend table to a single proxy right after its static files
+     * were merged from the template. The merge copies the template's (stale) `[servers]` table
+     * over the proxy's config — without this pass, a freshly merged proxy would boot with the
+     * template's backend list and lose the user's `try` join order.
+     *
+     * [preservedTry] is the join order read from the proxy's config BEFORE the merge overwrote
+     * it; it is re-applied when it only references registered backends.
+     */
+    suspend fun resyncAfterTemplateMerge(proxy: Service, preservedTry: List<String>? = null) {
+        val provider = serviceProvider ?: return
+        mutex.withLock {
+            val allServices = provider().toList()
+            val backends = allServices.filter { it.type == ServerType.PAPER || it.type == ServerType.SPIGOT }
+            if (backends.isEmpty()) return@withLock
+            val servers = backendEntries(backends)
             try {
-                val changed = VelocityTomlBackendTable.update(
-                    config = config,
-                    serverAddresses = servers,
-                    defaultServer = defaultServer,
+                applyToConfig(
+                    proxy = proxy,
+                    servers = servers,
+                    defaultServer = defaultServerFor(backends, servers),
                     legacyGroupAliases = backends.mapTo(mutableSetOf()) { it.groupName },
+                    reloadProxy = null,
+                    preservedTry = preservedTry,
                 )
-                val needsReload = changed || proxy.name in pendingReloads
-                if (changed) {
-                    logger.info("Updated ${servers.size} Velocity backend route(s) in $config")
-                    pendingReloads += proxy.name
-                }
-                if (needsReload && proxy.state == ServiceState.RUNNING) {
-                    if (reloadProxy(proxy.name)) {
-                        pendingReloads -= proxy.name
-                        logger.info("Reloaded backend configuration for Velocity proxy ${proxy.name}")
-                    } else {
-                        logger.warn("Could not send a configuration reload to ${proxy.name}; changes will apply at its next start")
-                    }
-                }
             } catch (failure: CancellationException) {
                 throw failure
             } catch (failure: Exception) {
-                logger.warn("Could not sync Velocity backend config $config: ${failure.message}", failure)
+                logger.warn("Could not re-apply Velocity backends to ${proxy.name} after template refresh: ${failure.message}", failure)
             }
         }
     }
+
+    private suspend fun applyToConfig(
+        proxy: Service,
+        servers: Map<String, String>,
+        defaultServer: String,
+        legacyGroupAliases: Set<String>,
+        reloadProxy: (suspend (String) -> Boolean)?,
+        preservedTry: List<String>? = null,
+    ) {
+        val config = proxy.directory.resolve("velocity.toml")
+        if (!Files.isRegularFile(config)) {
+            logger.warn("Cannot sync Velocity backends for ${proxy.name}: missing config $config")
+            return
+        }
+        forwardingProvider()?.let { forwarding -> repairForwardingSecretFile(proxy, forwarding) }
+        try {
+            val changed = VelocityTomlBackendTable.update(
+                config = config,
+                serverAddresses = servers,
+                defaultServer = defaultServer,
+                legacyGroupAliases = legacyGroupAliases,
+                preservedTry = preservedTry,
+            )
+            if (reloadProxy == null) {
+                if (changed) {
+                    logger.info("Re-applied ${servers.size} Velocity backend route(s) to $config after template refresh")
+                }
+                return
+            }
+            val needsReload = changed || proxy.name in pendingReloads
+            if (changed) {
+                logger.info("Updated ${servers.size} Velocity backend route(s) in $config")
+                pendingReloads += proxy.name
+            }
+            if (needsReload && proxy.state == ServiceState.RUNNING) {
+                if (reloadProxy(proxy.name)) {
+                    pendingReloads -= proxy.name
+                    logger.info("Reloaded backend configuration for Velocity proxy ${proxy.name}")
+                } else {
+                    logger.warn("Could not send a configuration reload to ${proxy.name}; changes will apply at its next start")
+                }
+            }
+        } catch (failure: CancellationException) {
+            throw failure
+        } catch (failure: Exception) {
+            logger.warn("Could not sync Velocity backend config $config: ${failure.message}", failure)
+        }
+    }
+
+    private fun defaultServerFor(backends: List<Service>, servers: Map<String, String>): String =
+        backends.sortedWith(backendPreference).firstNotNullOfOrNull { service ->
+            service.name.takeIf { it in servers }
+        } ?: servers.keys.first()
 
     /** Writes the shared forwarding secret if the proxy's secret file is missing or has drifted. */
     private fun repairForwardingSecretFile(proxy: Service, forwarding: ProxyForwarding) {
@@ -138,6 +200,7 @@ internal object VelocityTomlBackendTable {
         serverAddresses: Map<String, String>,
         defaultServer: String,
         legacyGroupAliases: Set<String> = emptySet(),
+        preservedTry: List<String>? = null,
     ): Boolean {
         require(serverAddresses.isNotEmpty()) { "At least one Velocity backend entry is required" }
         require(defaultServer in serverAddresses) { "Default Velocity server '$defaultServer' is not registered" }
@@ -177,8 +240,12 @@ internal object VelocityTomlBackendTable {
         val rawSection = lines.subList(sectionStart + 1, sectionEnd)
         val body = removeOldManagedBlock(rawSection)
         // Honor a user-chosen join order: an existing `try` that only references registered
-        // servers is preserved instead of being reset to the cloud's default choice.
-        val effectiveDefault = preservedTryValues(rawSection, serverAddresses.keys) ?: listOf(defaultServer)
+        // servers is preserved instead of being reset to the cloud's default choice. A caller
+        // may also pass [preservedTry] explicitly — read before the file was overwritten — so a
+        // template merge cannot lose the user's join order.
+        val effectiveDefault = (preservedTry?.takeIf { list ->
+            list.isNotEmpty() && list.all { it in serverAddresses.keys }
+        } ?: preservedTryValues(rawSection, serverAddresses.keys)) ?: listOf(defaultServer)
         val cleanedBody = removeManagedAssignments(body, managedKeys)
         while (cleanedBody.lastOrNull()?.isBlank() == true) cleanedBody.removeAt(cleanedBody.lastIndex)
 
@@ -216,6 +283,23 @@ internal object VelocityTomlBackendTable {
             Files.deleteIfExists(temp)
         }
         return true
+    }
+
+    /**
+     * Reads the `try` assignment from a raw velocity.toml source, wherever it appears. Returns
+     * the quoted names verbatim (unvalidated) or null when no try list exists. Used by callers
+     * that must snapshot the user's join order before something overwrites the config.
+     */
+    fun readTryValues(source: String): List<String>? {
+        for (line in source.lineSequence()) {
+            val match = assignment.matchEntire(line.trim()) ?: continue
+            if (assignmentKey(match) != "try") continue
+            val names = SERVER_NAME_LITERAL.findAll(match.groupValues[4])
+                .map { it.groupValues[1] }
+                .toList()
+            return names.takeIf { it.isNotEmpty() }
+        }
+        return null
     }
 
     /**

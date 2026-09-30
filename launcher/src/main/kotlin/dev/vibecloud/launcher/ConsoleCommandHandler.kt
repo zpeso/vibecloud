@@ -94,13 +94,37 @@ class ConsoleCommandHandler(
             }
 
             "create" -> createGroup(args.drop(1))
+            "start" -> {
+                val name = args.getOrNull(1)?.lowercase(Locale.ROOT)
+                    ?: throw IllegalArgumentException("Usage: group start <name>")
+                val group = cloud.groups.get(name) ?: throw NoSuchElementException("Group '$name' does not exist")
+                // Reuse an existing stopped/crashed/created record of this group before
+                // provisioning a new one; creating when the group is at maxServices would fail.
+                val eligible = cloud.services.all()
+                    .filter { it.groupName == group.name }
+                    .filter { it.state == ServiceState.CREATED || it.state == ServiceState.STOPPED || it.state == ServiceState.CRASHED }
+                    .minByOrNull { serviceSuffix(it.name) }
+                val service = if (eligible != null) {
+                    cloud.services.start(eligible.name)
+                    eligible
+                } else {
+                    val created = cloud.services.create(group.name)
+                    cloud.services.start(created.name)
+                    created
+                }
+                println(Cli.success("Started ${service.name}") + Cli.dim(" (group '") + Cli.accent(group.name) + Cli.dim("', port ") + Cli.highlight(service.port.toString()) + Cli.dim(")"))
+                if (group.desiredRunningServices < group.maxServices) {
+                    println(Cli.warn("Note: the reconciler keeps ${group.desiredRunningServices} service(s) of '${group.name}' running; extras may be stopped automatically."))
+                }
+                println(Cli.dim("Watch its console with ") + Cli.command("service screen ${service.name}"))
+            }
             "delete" -> {
                 val name = args.getOrNull(1) ?: throw IllegalArgumentException("Usage: group delete <name>")
                 cloud.groups.delete(name)
                 println(Cli.success("Deleted group '$name'."))
             }
 
-            else -> throw IllegalArgumentException("Usage: group <list|info|create|delete> [name]")
+            else -> throw IllegalArgumentException("Usage: group <list|info|create|start|delete> [name]")
         }
     }
 
@@ -212,6 +236,9 @@ class ConsoleCommandHandler(
             else -> text
         }
     }
+
+    /** Lowest numeric suffix wins, matching the reconciler's candidate ordering. */
+    private fun serviceSuffix(name: String): Int = name.substringAfterLast('-', "0").toIntOrNull() ?: 0
 
     private suspend fun createGroup(args: List<String>) {
         val nameArgument = args.firstOrNull()?.takeUnless { it.startsWith("--") }

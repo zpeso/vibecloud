@@ -272,6 +272,7 @@ interactive console:
 ```text
 /cloud info                      Cloud overview: running/starting/crashed counts, players online
 /cloud groups                    Group table (type, version, desired/max/provisioned)
+/cloud group start <name>        Start another service of a group (reuses stopped records first)
 /cloud services                  Service table (group, state, type, port)
 /cloud service <name>            Details for one service
 /cloud players                   Rosters per service

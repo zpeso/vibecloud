@@ -11,10 +11,38 @@ import dev.vibecloud.common.logging.Logger
 import kotlinx.coroutines.*
 import java.nio.file.Path
 import java.time.Instant
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 class DesiredStateReconcilerTest {
+
+    @Test
+    fun `reconcileOnce starts independent groups concurrently`() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val groups = MultiGroups(
+            listOf(
+                Group(name = "lobby", type = ServerType.PAPER, version = "26.3", minServices = 1, maxServices = 2, alwaysRunningServices = 1),
+                Group(name = "citybuild", type = ServerType.PAPER, version = "26.3", minServices = 1, maxServices = 2, alwaysRunningServices = 1),
+            ),
+        )
+        val services = OverlappingServices()
+        val reconciler = DesiredStateReconciler(scope, groups, services, 1000, SilentLogger())
+
+        try {
+            reconciler.reconcileOnce()
+            assertEquals(2, services.startedNames.size)
+            assertTrue(
+                services.maxObservedConcurrency.get() >= 2,
+                "group starts must overlap instead of awaiting each other",
+            )
+        } finally {
+            reconciler.stop()
+            scope.cancel()
+        }
+    }
     @Test
     fun `reconciles to desired running count and scales down to updated target`() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -108,6 +136,70 @@ class DesiredStateReconcilerTest {
 
         override fun get(name: String): Service? = services[name]
         override fun all(): Collection<Service> = services.values.toList()
+    }
+
+    private class MultiGroups(groups: List<Group>) : GroupManager {
+        private val byName = groups.associateBy { it.name }.toMutableMap()
+
+        override fun create(group: Group) {
+            byName[group.name] = group
+        }
+
+        override fun delete(name: String) {
+            byName.remove(name)
+        }
+
+        override fun get(name: String): Group? = byName[name]
+        override fun all(): Collection<Group> = byName.values
+
+        override fun replaceAll(groups: Collection<Group>) {
+            byName.clear()
+            groups.forEach { byName[it.name] = it }
+        }
+    }
+
+    /** Slows each start so overlapping group passes become observable via the concurrency peak. */
+    private class OverlappingServices : ServiceManager {
+        private val inFlight = AtomicInteger(0)
+        val maxObservedConcurrency = AtomicInteger(0)
+        val startedNames = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+        override suspend fun create(groupName: String): Service {
+            val name = "$groupName-${startedNames.size + 1}"
+            val now = Instant.now()
+            val service = Service(
+                id = name,
+                name = name,
+                groupName = groupName,
+                type = ServerType.PAPER,
+                version = "26.3",
+                state = ServiceState.CREATED,
+                port = 25565 + startedNames.size,
+                directory = Path.of("services", name),
+                createdAt = now,
+                updatedAt = now,
+            )
+            created[name] = service
+            return service
+        }
+
+        override suspend fun start(name: String, automatic: Boolean) {
+            val current = inFlight.incrementAndGet()
+            maxObservedConcurrency.updateAndGet { observed -> maxOf(observed, current) }
+            delay(150)
+            inFlight.decrementAndGet()
+            startedNames += name
+        }
+
+        override suspend fun stop(name: String) = Unit
+        override suspend fun restart(name: String) = Unit
+        override suspend fun delete(name: String) = Unit
+        override suspend fun stopAll() = Unit
+
+        override fun get(name: String): Service? = created[name]
+        override fun all(): Collection<Service> = created.values.toList()
+
+        private val created = ConcurrentHashMap<String, Service>()
     }
 
     private class SilentLogger : Logger {

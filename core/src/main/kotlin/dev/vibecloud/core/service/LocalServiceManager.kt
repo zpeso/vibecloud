@@ -24,6 +24,7 @@ import dev.vibecloud.core.port.PortAllocator
 import dev.vibecloud.core.process.ManagedProcess
 import dev.vibecloud.core.process.ProcessLaunchSpec
 import dev.vibecloud.core.process.ProcessManager
+import dev.vibecloud.core.proxy.VelocityTomlBackendTable
 import dev.vibecloud.core.server.ProxyForwarding
 import dev.vibecloud.core.server.ServerAdapter
 import dev.vibecloud.core.server.ServerAdapterRegistry
@@ -57,6 +58,7 @@ class LocalServiceManager(
     private val logger: Logger,
     private val lifecycleLock: ReentrantLock,
     private val onServicesChanged: suspend () -> Unit = {},
+    internal val velocityResynchronizer: (suspend (Service, List<String>?) -> Unit)? = null,
     internal val bridgeTracker: ServicePlayerTracker? = null,
     private val agentInstaller: BridgeAgentInstaller? = null,
 ) : ServiceManager {
@@ -252,8 +254,27 @@ class LocalServiceManager(
                     )
                     val lastApplied = slot.appliedTemplateFingerprint
                     if (fingerprint != lastApplied) {
+                        // Snapshot the user's Velocity join order BEFORE the template merge
+                        // overwrites velocity.toml with the (stale) template copy, so it can be
+                        // re-applied afterwards.
+                        val velocityToml = starting.directory.resolve("velocity.toml")
+                        val preservedTry = if (Files.isRegularFile(velocityToml)) {
+                            withContext(Dispatchers.IO) {
+                                runCatching {
+                                    VelocityTomlBackendTable.readTryValues(Files.readString(velocityToml))
+                                }.getOrNull()
+                            }
+                        } else {
+                            null
+                        }
                         templateManager.updateFromTemplate(starting)
                         slot.appliedTemplateFingerprint = fingerprint
+                        // The merge just copied the template's [servers] table over the proxy's
+                        // config; restore the cloud-managed backends and the user's try order
+                        // before launch (the boot-time synchronize already ran by now).
+                        if (starting.type.isProxy && velocityResynchronizer != null) {
+                            velocityResynchronizer(starting, preservedTry)
+                        }
                         if (lastApplied != null) {
                             logger.info("Updated ${starting.name} from changed template")
                         }

@@ -70,7 +70,13 @@ class CloudBootstrap(
                 val mode = ServerVersionProfiles.networkForwardingMode(backends)
                 ProxyForwarding(mode, forwardingSecretStore.obtain())
             }
-            val velocityBackendSynchronizer = VelocityBackendSynchronizer(logger, forwardingProvider)
+            val velocityBackendSynchronizer = VelocityBackendSynchronizer(
+                logger,
+                forwardingProvider,
+                // Live service view so a static proxy's freshly template-merged config can be
+                // re-synced immediately, before its process launches.
+                serviceProvider = { serviceManagerReference.get()?.all().orEmpty() },
+            )
 
             val groupManager = LocalGroupManager(
                 initialGroups = config.groups,
@@ -186,6 +192,9 @@ class CloudBootstrap(
                     serviceManagerReference.get()?.let { manager ->
                         velocityBackendSynchronizer.synchronize(manager::all, manager::reloadProxyConfiguration)
                     }
+                },
+                velocityResynchronizer = { service, preservedTry ->
+                    velocityBackendSynchronizer.resyncAfterTemplateMerge(service, preservedTry)
                 },
                 bridgeTracker = bridgeTracker,
                 agentInstaller = agentInstaller,

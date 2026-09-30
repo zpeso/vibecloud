@@ -26,6 +26,11 @@ class BridgeCloudCommands(
         when (args.firstOrNull()?.lowercase()) {
             null, "info" -> info()
             "groups" -> groups()
+            "group" -> when (args.getOrNull(1)?.lowercase()) {
+                null -> groups()
+                "start" -> startInGroup(args.getOrNull(2))
+                else -> listOf(error("Usage: /cloud group start <name>"))
+            }
             "services" -> services()
             "service" -> serviceDetail(args.getOrNull(1))
             "start" -> lifecycle(args.getOrNull(1), "started") { services.start(it) }
@@ -49,6 +54,13 @@ class BridgeCloudCommands(
         val serviceNames = runCatching { services.all().map { it.name } }.getOrDefault(emptyList())
         return when {
             previous.isEmpty() -> SUBCOMMANDS.filter { it.startsWith(current, ignoreCase = true) }
+
+            previous.size == 1 && previous[0].equals("group", true) ->
+                listOf("start").filter { it.startsWith(current, ignoreCase = true) }
+
+            previous.size == 2 && previous[0].equals("group", true) && previous[1].equals("start", true) ->
+                runCatching { groups.all().map { it.name } }.getOrDefault(emptyList())
+                    .filter { it.startsWith(current, ignoreCase = true) }
 
             previous.size == 1 && previous[0].lowercase() in LIFECYCLE_SUBCOMMANDS ->
                 serviceNames.filter { it.startsWith(current, ignoreCase = true) }
@@ -155,6 +167,53 @@ class BridgeCloudCommands(
             listOf(error(failure.message ?: "Invalid request"))
         }
     }
+
+    /**
+     * `/cloud group start <name>`: brings another service of a group online. Reuses an existing
+     * stopped/created/crashed record before provisioning a new one, mirroring the CLI command.
+     */
+    private fun startInGroup(name: String?): List<String> {
+        if (name == null) return listOf(error("Usage: /cloud group start <name>"))
+        return runBlocking {
+            val group = groups.get(name.trim().lowercase())
+                ?: return@runBlocking listOf(error("Group '$name' does not exist"))
+            val eligible = services.all()
+                .filter { it.groupName == group.name }
+                .filter {
+                    it.state == ServiceState.CREATED || it.state == ServiceState.STOPPED ||
+                            it.state == ServiceState.CRASHED
+                }
+                .minByOrNull { serviceSuffix(it.name) }
+            val serviceName = try {
+                if (eligible != null) {
+                    services.start(eligible.name)
+                    eligible.name
+                } else {
+                    val created = services.create(group.name)
+                    services.start(created.name)
+                    created.name
+                }
+            } catch (failure: IllegalStateException) {
+                return@runBlocking listOf(error(failure.message ?: "Cannot start another service of '${group.name}' right now"))
+            } catch (failure: IllegalArgumentException) {
+                return@runBlocking listOf(error(failure.message ?: "Invalid request"))
+            } catch (failure: NoSuchElementException) {
+                return@runBlocking listOf(error(failure.message ?: "Group '${group.name}' does not exist"))
+            }
+            buildList {
+                add(success("Started $serviceName (group '${group.name}')."))
+                if (group.desiredRunningServices < group.maxServices) {
+                    add(
+                        dim("The reconciler keeps ${group.desiredRunningServices} service(s) of '${group.name}' running; " +
+                                "extras may be stopped automatically."),
+                    )
+                }
+            }
+        }
+    }
+
+    /** Lowest numeric suffix wins, matching the reconciler's candidate ordering. */
+    private fun serviceSuffix(name: String): Int = name.substringAfterLast('-', "0").toIntOrNull() ?: 0
 
     private fun players(): List<String> {
         val services = runBlocking { services.all().sortedBy { it.name } }
@@ -269,7 +328,7 @@ class BridgeCloudCommands(
 
     private companion object {
         val SUBCOMMANDS = listOf(
-            "info", "groups", "services", "service", "players", "send", "msg", "cmd",
+            "info", "groups", "group", "services", "service", "players", "send", "msg", "cmd",
             "start", "stop", "restart", "delete",
         )
         val LIFECYCLE_SUBCOMMANDS = setOf("start", "stop", "restart", "delete")

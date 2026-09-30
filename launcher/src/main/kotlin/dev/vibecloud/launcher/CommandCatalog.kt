@@ -22,6 +22,7 @@ object CommandCatalog {
                 SubCommandSpec("list", "", "Show all groups"),
                 SubCommandSpec("info", " <name>", "Show group details"),
                 SubCommandSpec("create", " [name]", "Wizard to create a group"),
+                SubCommandSpec("start", " <name>", "Start another service of a group"),
                 SubCommandSpec("delete", " <name>", "Delete an empty group"),
             ),
         ),

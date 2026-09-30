@@ -167,7 +167,7 @@ class BridgeCloudCommandsTest {
             running("citybuild-1", "citybuild", port = 25567),
             service("proxy-1", "proxy", ServerType.VELOCITY, ServiceState.RUNNING, 25565),
         )
-        assertEquals(listOf("info", "groups", "services"), f.commands.complete(emptyList()).take(3))
+        assertEquals(listOf("info", "groups", "group"), f.commands.complete(emptyList()).take(3))
         assertEquals(listOf("citybuild-1"), f.commands.complete(listOf("start", "c")))
         assertEquals(listOf("lobby-1"), f.commands.complete(listOf("cmd", "l")))
         assertTrue(f.commands.complete(listOf("restart", "")).containsAll(listOf("citybuild-1", "lobby-1", "proxy-1")))
@@ -181,6 +181,53 @@ class BridgeCloudCommandsTest {
         assertEquals(listOf("Alex"), f.commands.complete(listOf("send", "A")))
         // Third argument of `send` suggests target services again.
         assertEquals(listOf("lobby-1"), f.commands.complete(listOf("send", "Alex", "l")))
+    }
+
+    @Test
+    fun `group start reuses an existing stopped service of the group`() {
+        val f = fixture(
+            service("lobby-1", "lobby", ServerType.PAPER, ServiceState.STOPPED, 25566),
+            groups = listOf(group("lobby", min = 1, max = 2, always = 1)),
+        )
+        val lines = f.commands.execute(listOf("group", "start", "lobby"))
+        assertEquals(listOf("lobby-1"), f.services.startedNames)
+        assertEquals(1, f.services.all().size)
+        assertTrue(lines.first().contains("Started lobby-1"), lines.joinToString())
+    }
+
+    @Test
+    fun `group start provisions a new service when none can be reused`() {
+        val f = fixture(
+            running("lobby-1", "lobby"),
+            groups = listOf(group("lobby", min = 1, max = 3, always = 1)),
+        )
+        val lines = f.commands.execute(listOf("group", "start", "lobby"))
+        assertTrue(f.services.startedNames.contains("lobby-2"))
+        assertTrue(lines.first().contains("Started lobby-2"), lines.joinToString())
+    }
+
+    @Test
+    fun `group start fails for unknown group`() {
+        val f = fixture(running("lobby-1", "lobby"))
+        val lines = f.commands.execute(listOf("group", "start", "nope"))
+        assertTrue(lines.single().contains("does not exist"))
+    }
+
+    @Test
+    fun `group start warns when the reconciler may stop extras`() {
+        val f = fixture(
+            service("lobby-1", "lobby", ServerType.PAPER, ServiceState.STOPPED, 25566),
+            groups = listOf(group("lobby", min = 1, max = 2, always = 1)),
+        )
+        val lines = f.commands.execute(listOf("group", "start", "lobby"))
+        assertTrue(lines.any { it.contains("reconciler") }, lines.joinToString())
+    }
+
+    @Test
+    fun `completion suggests group start arguments`() {
+        val f = fixture(running("lobby-1", "lobby"))
+        assertEquals(listOf("start"), f.commands.complete(listOf("group", "")))
+        assertEquals(listOf("lobby"), f.commands.complete(listOf("group", "start", "l")))
     }
 
     @Test

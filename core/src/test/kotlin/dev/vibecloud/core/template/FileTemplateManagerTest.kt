@@ -188,6 +188,95 @@ forwarding-secret = "change-this-secret-before-public-use"
     }
 
     @Test
+    fun `updating a static proxy from its template preserves the service velocity config`() = runBlocking {
+        // Regression for the recurring 'my try = ["lobby-1"] edit reverts to the template value'
+        // bug: updateFromTemplate overwrote the service's velocity.toml with the stale template
+        // copy, so the user's join order (and backend table) vanished after every cloud restart.
+        val root = Files.createTempDirectory("cloud-template-merge-velocity-test")
+        try {
+            val templates = root.resolve("templates/velocity/4.0")
+            val services = root.resolve("services")
+            Files.createDirectories(templates)
+            Files.writeString(templates.resolve("server.jar"), "velocity jar placeholder")
+            Files.writeString(
+                templates.resolve("velocity.toml"),
+                """config-version = "2.7"
+bind = "0.0.0.0:25565"
+motd = "Stale template motd"
+
+[servers]
+lobby = "127.0.0.1:25566"
+try = ["lobby"]
+
+[forced-hosts]
+""",
+            )
+            val runtime = RuntimeSettings(
+                javaCommand = "java",
+                minMemoryMb = 512,
+                maxMemoryMb = 1024,
+                jvmArgs = emptyList(),
+                startupTimeout = Duration.ofSeconds(1),
+                shutdownTimeout = Duration.ofSeconds(1),
+                minecraftEulaAccepted = false,
+            )
+            val manager = FileTemplateManager(
+                templateRoot = root.resolve("templates"),
+                serviceRoot = services,
+                adapters = defaultServerAdapters(),
+                runtime = runtime,
+                forwardingProvider = { ProxyForwarding(ProxyForwarding.Mode.VELOCITY_MODERN, "proxy-secret") },
+            )
+            val serviceDirectory = services.resolve("proxy-1")
+            Files.createDirectories(serviceDirectory)
+            val now = Instant.now()
+            val service = Service(
+                id = "id",
+                name = "proxy-1",
+                groupName = "proxy",
+                type = ServerType.VELOCITY,
+                version = "4.0",
+                state = ServiceState.STOPPED,
+                port = 25565,
+                directory = serviceDirectory,
+                createdAt = now,
+                updatedAt = now,
+            )
+            // The service's live config: cloud-managed backends plus the user's join order.
+            Files.writeString(
+                serviceDirectory.resolve("velocity.toml"),
+                """motd = "My custom motd"
+bind = "0.0.0.0:25565"
+
+[servers]
+# BEGIN VibeCloud managed backends
+"citybuild-1" = "127.0.0.1:25567"
+"lobby-1" = "127.0.0.1:25566"
+try = ["citybuild-1", "lobby-1"]
+# END VibeCloud managed backends
+
+[forced-hosts]
+""",
+            )
+            Files.writeString(serviceDirectory.resolve("forwarding.secret"), "proxy-secret")
+
+            manager.updateFromTemplate(service)
+
+            val updated = Files.readString(serviceDirectory.resolve("velocity.toml"))
+            assertTrue(updated.contains("try = [\"citybuild-1\", \"lobby-1\"]"), "user join order must survive the template merge: $updated")
+            assertFalse(updated.contains("try = [\"lobby\"]"), "stale template try list must not come back: $updated")
+            assertTrue(updated.contains("\"citybuild-1\" = \"127.0.0.1:25567\""), "cloud-managed backends must be re-applied after the merge: $updated")
+            assertTrue(updated.contains("\"lobby-1\" = \"127.0.0.1:25566\""), "cloud-managed backends must be re-applied after the merge: $updated")
+            assertFalse(updated.contains("\"lobby\" = "), "stale template backend must not come back: $updated")
+            assertTrue(updated.contains("motd = \"My custom motd\""), "user edits outside the managed table must survive: $updated")
+            assertFalse(updated.contains("Stale template motd"), "template content must not overwrite user edits: $updated")
+            assertEquals("proxy-secret", Files.readString(serviceDirectory.resolve("forwarding.secret")).trim())
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
     fun `group overlay folder is layered over the shared build template`() = runBlocking {
         val root = Files.createTempDirectory("cloud-overlay-template-test")
         try {
