@@ -12,8 +12,8 @@ class BridgeAgentRegistryTest {
     fun `heartbeats are stored per service id and expire after the staleness window`() {
         val registry = BridgeAgentRegistry { Duration.ofSeconds(20) }
         val now = Instant.now()
-        registry.heartbeat("id-1", "lobby-1", "lobby", "0.1.0", listOf("Steve"), 100, now)
-        registry.heartbeat("id-2", "lobby-2", "lobby", "0.1.0", emptyList(), 100, now.minusSeconds(60))
+        registry.heartbeat("id-1", "lobby-1", "lobby", "0.1.0", listOf("Steve"), 100, now = now)
+        registry.heartbeat("id-2", "lobby-2", "lobby", "0.1.0", emptyList(), 100, now = now.minusSeconds(60))
 
         assertEquals(now, registry.lastHeartbeat("id-1"))
         assertEquals(listOf("id-2"), registry.staleIds(now))

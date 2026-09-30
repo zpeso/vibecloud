@@ -1,13 +1,16 @@
 package dev.vibecloud.core.bridge
 
 import dev.vibecloud.api.service.Service
+import dev.vibecloud.api.service.ServiceState
 import dev.vibecloud.common.config.BridgeSettings
 import dev.vibecloud.common.logging.Logger
+import java.time.Instant
 import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Owns the bridge endpoint and keeps agent bookkeeping consistent with service lifecycle:
  * stale agents are dropped, stopped/deleted services lose their trackers and agent entries.
+ * Each [reconcile] pass also samples one cloud-wide metrics point for the dashboard charts.
  */
 class BridgeManager(
     val server: BridgeHttpServer,
@@ -15,6 +18,8 @@ class BridgeManager(
     private val tracker: ServicePlayerTracker,
     private val settings: BridgeSettings,
     private val logger: Logger,
+    /** Rolling statistics history rendered by the dashboard's charts. */
+    val metrics: MetricsHistory = MetricsHistory(),
 ) {
     private val running = AtomicReference(false)
     private val commandQueue = server.commandQueue
@@ -61,5 +66,41 @@ class BridgeManager(
                 registry.remove(service.id)
             }
         }
+        sampleMetrics(services, now)
+    }
+
+    /** One rolling sample: players, running services, worst backend TPS, mean heap usage. */
+    private fun sampleMetrics(services: Collection<Service>, now: Instant) {
+        val runningServices = services.filter { it.state == ServiceState.RUNNING }
+        var playersOnline = 0
+        var tpsReports = 0
+        var worstTps = Double.MAX_VALUE
+        var heapSum = 0.0
+        var heapMax = 0.0
+        var heapReports = 0
+        runningServices.forEach { service ->
+            playersOnline += tracker.playerCount(service.name)
+            val report = registry.all().firstOrNull { it.serviceId == service.id } ?: return@forEach
+            report.tps?.let { tps ->
+                tpsReports++
+                if (tps < worstTps) worstTps = tps
+            }
+            report.heapUsageRatio()?.let { ratio ->
+                heapReports++
+                heapSum += ratio
+                val max = report.heapMaxMb ?: 0.0
+                if (max > heapMax) heapMax = max
+            }
+        }
+        metrics.record(
+            MetricsHistory.Sample(
+                timestamp = now,
+                playersOnline = playersOnline,
+                runningServices = runningServices.size,
+                totalServices = services.size,
+                worstTps = if (tpsReports > 0) worstTps else null,
+                averageRamUsage = if (heapReports > 0) heapSum / heapReports else null,
+            ),
+        )
     }
 }

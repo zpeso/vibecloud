@@ -293,6 +293,36 @@ val subs = VibeCloud.instance.completeCloudCommand(listOf("start", ""))  // tab-
 HTTP surface: `POST /bridge/cloud` with repeated `arg` fields, optional `player` (caller, for logs) and
 `mode=execute` (default) or `mode=complete`; responds `{"lines":[...]}` or `{"suggestions":[...]}`.
 
+### The web dashboard
+
+The bridge serves a built-in dashboard at its root: `http://<cloud-host>:<bridge-port>/` (default
+`http://127.0.0.1:25580/`). No extra service, no build step — it ships inside the controller.
+
+- **Login**: paste the bridge token (the contents of `bridge.token` next to `config.yml`). The token
+  is stored in the browser's `localStorage` and sent as `Authorization: Bearer <token>` on every API
+  call — exactly like every other bridge client. The page itself carries no data, so all state stays
+  behind the token.
+- **Local + remote**: the bridge binds to `127.0.0.1` by default (open the dashboard locally or
+  through an SSH tunnel). Set `bridge.bind-address: 0.0.0.0` in `config.yml` to reach it remotely —
+  every data endpoint requires the token, and without it only the empty login page is served.
+- **Live data**: totals, per-service TPS (1m average) and heap usage (reported by the agent every
+  heartbeat), players, groups, rolling charts (players / TPS / memory / running services) sampled
+  once per reconciliation cycle, and the recent console output of any running service.
+- **Actions**: start/stop/restart per service, `group start <name>`, and the full cloud command
+  surface (with Tab completion) in the quick-command bar — the same authority as the interactive
+  console.
+
+New bridge endpoints (all require the token):
+
+```text
+GET /                   → the dashboard HTML (public; no data)
+GET /bridge/metrics     → {"history":{"points":[...]},"services":[{name,tps,ram_usage,heap_used_mb,heap_max_mb}]}
+GET /bridge/console?service=<name> → {"lines":[...]}  (last 200 console lines)
+```
+
+Agent heartbeats additionally carry `tps`, `heap-used-mb` and `heap-max-mb`; `GET /bridge/status`
+includes the same values per service plus `totals.agents-online`.
+
 ### The raw client (still available)
 
 `VibeCloudClient` stays as the low-level transport. `VibeCloudClient.forService()` is deprecated in favor of

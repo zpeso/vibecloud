@@ -21,8 +21,13 @@ import java.util.concurrent.atomic.AtomicBoolean
  * plugins on backends (and external tools) GET the cloud status with live player counts.
  *
  * Endpoints (all JSON):
+ *  - `GET  /`                → the built-in dashboard (HTML; the page itself is public, all data
+ *    it loads requires the token)
  *  - `GET  /bridge/status`   → cloud status; requires the agent token
  *  - `GET  /bridge/services` → alias of `/bridge/status`
+ *  - `GET  /bridge/metrics`  → rolling metric samples for the dashboard charts + per-service
+ *    TPS/memory of the last agent heartbeats
+ *  - `GET  /bridge/console?service=<name>` → recent console output of one service
  *  - `POST /bridge/heartbeat` → agent heartbeat; requires `Authorization: Bearer <token>`;
  *    the response carries queued player/service commands for that service
  *  - `POST /bridge/players`  → queue a player action (`message`, `kick`, `transfer`)
@@ -46,6 +51,10 @@ class BridgeHttpServer(
     private val sendConsoleCommand: (serviceName: String, command: String) -> Boolean = { _, _ -> false },
     /** Executes the in-game `/cloud` command server-side; null disables the endpoint. */
     private val cloudCommands: () -> BridgeCloudCommands? = { null },
+    /** Rolling cloud statistics sampled by the reconciler; rendered for the dashboard charts. */
+    private val metricsHistory: MetricsHistory = MetricsHistory(),
+    /** Console output history per service name (maxLines), shown in the dashboard console. */
+    private val consoleHistory: ((serviceName: String, maxLines: Int) -> List<String>)? = null,
 ) {
     /** Read-only projection of the cloud, implemented by the composition root. */
     interface CloudView {
@@ -56,6 +65,11 @@ class BridgeHttpServer(
 
         /** Pre-rendered JSON array of group summaries (group documents change rarely). */
         fun snapshotGroups(): String
+
+        /** Group summary documents for the dashboard; defaults to the pre-rendered snapshot. */
+        fun groups(): List<String> =
+            snapshotGroups().removePrefix("[").removeSuffix("]").split(",")
+                .filter { it.isNotBlank() && it != "[" && it != "]" }
     }
 
     private data class LiveValues(val names: List<String>, val count: Int?)
@@ -75,8 +89,11 @@ class BridgeHttpServer(
             created.executor = Executors.newFixedThreadPool(WORKER_THREADS) { runnable ->
                 Thread(runnable, "bridge-http-worker").apply { isDaemon = true }
             }
+            created.createContext("/") { exchange -> handleRoot(exchange) }
             created.createContext("/bridge/status") { exchange -> handleStatus(exchange) }
             created.createContext("/bridge/services") { exchange -> handleStatus(exchange) }
+            created.createContext("/bridge/metrics") { exchange -> handleMetrics(exchange) }
+            created.createContext("/bridge/console") { exchange -> handleConsole(exchange) }
             created.createContext("/bridge/heartbeat") { exchange -> handleHeartbeat(exchange) }
             created.createContext("/bridge/players") { exchange -> handlePlayerAction(exchange) }
             created.createContext("/bridge/services/command") { exchange -> handleServiceAction(exchange) }
@@ -173,6 +190,9 @@ class BridgeHttpServer(
                 agentVersion = fields["agent-version"]?.trim().orEmpty(),
                 players = players,
                 maxPlayers = fields["max-players"]?.trim()?.toIntOrNull() ?: 0,
+                tps = fields["tps"]?.trim()?.toDoubleOrNull(),
+                heapUsedMb = fields["heap-used-mb"]?.trim()?.toDoubleOrNull(),
+                heapMaxMb = fields["heap-max-mb"]?.trim()?.toDoubleOrNull(),
                 now = Instant.now(clock),
             )
             if (firstHeartbeat) {
@@ -438,13 +458,111 @@ class BridgeHttpServer(
     private fun isAgentOnline(serviceId: String, now: Instant): Boolean = registry.lastHeartbeat(serviceId)
         ?.let { Duration.between(it, now) <= settings.offlineTimeout } == true
 
+    /**
+     * `GET /` — the built-in dashboard. The page itself carries no data, so it is served without
+     * a token; every API it calls requires the same bearer token as the rest of the bridge.
+     */
+    private fun handleRoot(exchange: HttpExchange) {
+        try {
+            when (exchange.requestMethod) {
+                "GET", "HEAD" -> {
+                    val bytes = DashboardPage.html.toByteArray(StandardCharsets.UTF_8)
+                    exchange.responseHeaders.set("Content-Type", "text/html; charset=utf-8")
+                    exchange.responseHeaders.set("Cache-Control", "no-store")
+                    exchange.sendResponseHeaders(200, if (exchange.requestMethod == "HEAD") -1 else bytes.size.toLong())
+                    if (exchange.requestMethod == "GET") exchange.responseBody.use { it.write(bytes) }
+                }
+
+                else -> respond(exchange, 405, errorJson("method not allowed"))
+            }
+        } catch (failure: IOException) {
+            logger.debug("Dashboard request failed: ${failure.message}")
+        } finally {
+            exchange.close()
+        }
+    }
+
+    /** `GET /bridge/metrics` — rolling samples for the charts plus per-service agent metrics. */
+    private fun handleMetrics(exchange: HttpExchange) {
+        try {
+            if (exchange.requestMethod != "GET" && exchange.requestMethod != "HEAD") {
+                respond(exchange, 405, errorJson("method not allowed"))
+                return
+            }
+            if (!requireToken(exchange)) {
+                respond(exchange, 401, errorJson("missing or invalid bridge token"))
+                return
+            }
+            respond(exchange, 200, metricsDocument())
+        } catch (failure: IOException) {
+            logger.debug("Bridge metrics request failed: ${failure.message}")
+        } finally {
+            exchange.close()
+        }
+    }
+
+    /** `GET /bridge/console?service=<name>` — recent console output of one service. */
+    private fun handleConsole(exchange: HttpExchange) {
+        try {
+            if (exchange.requestMethod != "GET") {
+                respond(exchange, 405, errorJson("method not allowed"))
+                return
+            }
+            if (!requireToken(exchange)) {
+                respond(exchange, 401, errorJson("missing or invalid bridge token"))
+                return
+            }
+            val service = exchange.requestURI.rawQuery
+                ?.split('&')
+                ?.firstOrNull { it.startsWith("service=") }
+                ?.substringAfter('=')
+                ?.let { URLDecoder.decode(it, StandardCharsets.UTF_8) }
+                .orEmpty()
+            if (service.isEmpty()) {
+                respond(exchange, 400, errorJson("requires 'service'"))
+                return
+            }
+            respond(
+                exchange,
+                200,
+                JsonWriter.obj("lines" to JsonWriter.strArray(consoleHistory?.invoke(service, MAX_CONSOLE_LINES).orEmpty())),
+            )
+        } catch (failure: IOException) {
+            logger.debug("Bridge console request failed: ${failure.message}")
+        } finally {
+            exchange.close()
+        }
+    }
+
+    /** Metrics document: history points plus the freshest agent metrics per service name. */
+    private fun metricsDocument(): String {
+        val byName = registry.all().associateBy { it.serviceName }
+        val servicesJson = cloudView.services().map { service ->
+            val report = byName[service.name]
+            JsonWriter.obj(
+                "name" to JsonWriter.str(service.name),
+                "tps" to (report?.tps?.let { JsonWriter.num(it) } ?: "null"),
+                "ram_usage" to (report?.heapUsageRatio()?.let { JsonWriter.num(it) } ?: "null"),
+                "heap_used_mb" to (report?.heapUsedMb?.let { JsonWriter.num(it) } ?: "null"),
+                "heap_max_mb" to (report?.heapMaxMb?.let { JsonWriter.num(it) } ?: "null"),
+                "agent-online" to JsonWriter.bool(isAgentOnline(service.id, Instant.now(clock))),
+            )
+        }
+        return JsonWriter.obj(
+            "history" to MetricsJson.document(metricsHistory),
+            "services" to JsonWriter.arr(servicesJson),
+        )
+    }
+
     private fun statusDocument(): String {
         val services = cloudView.services()
         val now = Instant.now(clock)
         var playersOnline = 0
+        val agentsByServiceName = registry.all().associateBy { it.serviceName }
         val serviceJson = services.map { service ->
             val live = liveValues(service, now)
             live.count?.let { playersOnline += it }
+            val report = agentsByServiceName[service.name]
             JsonWriter.obj(
                 "name" to JsonWriter.str(service.name),
                 "group" to JsonWriter.str(service.groupName),
@@ -455,6 +573,10 @@ class BridgeHttpServer(
                 "agent-online" to JsonWriter.bool(isAgentOnline(service.id, now)),
                 "players-online" to (live.count?.let { JsonWriter.num(it) } ?: "null"),
                 "players" to (if (live.count == null) "null" else JsonWriter.strArray(live.names)),
+                "tps" to (report?.tps?.let { JsonWriter.num(it) } ?: "null"),
+                "ram_usage" to (report?.heapUsageRatio()?.let { JsonWriter.num(it) } ?: "null"),
+                "heap-used-mb" to (report?.heapUsedMb?.let { JsonWriter.num(it) } ?: "null"),
+                "heap-max-mb" to (report?.heapMaxMb?.let { JsonWriter.num(it) } ?: "null"),
             )
         }
         return JsonWriter.obj(
@@ -463,6 +585,7 @@ class BridgeHttpServer(
                 "services" to JsonWriter.num(services.size),
                 "online" to JsonWriter.num(services.count { it.state == ServiceState.RUNNING }),
                 "players-online" to JsonWriter.num(playersOnline),
+                "agents-online" to JsonWriter.num(services.count { isAgentOnline(it.id, now) }),
             ),
             "groups" to cloudView.snapshotGroups(),
             "services" to JsonWriter.arr(serviceJson),
@@ -539,6 +662,7 @@ class BridgeHttpServer(
         const val WORKER_THREADS = 4
         const val MAX_BODY_BYTES = 64 * 1024
         const val MAX_PLAYER_NAMES = 500
+        const val MAX_CONSOLE_LINES = 200
 
         private fun String.isLoopbackAddress(): Boolean =
             this == "127.0.0.1" || this == "localhost" || this == "::1"

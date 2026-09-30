@@ -55,16 +55,19 @@ class BridgeHttpServerTest {
         val tracker: ServicePlayerTracker,
         val registry: BridgeAgentRegistry,
         val tokenStore: BridgeTokenStore,
+        val metrics: MetricsHistory = MetricsHistory(),
     )
 
     private fun startServer(
         services: List<Service>,
         cloudCommands: (() -> BridgeCloudCommands?)? = null,
+        consoleHistory: ((String, Int) -> List<String>)? = null,
     ): Running {
         val settings = BridgeSettings(port = 0)
         val tokenStore = BridgeTokenStore(Files.createTempFile("bridge", ".token"), SilentLogger())
         val tracker = ServicePlayerTracker()
         val registry = BridgeAgentRegistry { settings.offlineTimeout }
+        val metrics = MetricsHistory()
         val server = BridgeHttpServer(
             cloudView = CloudViewStub(services),
             tokenStore = tokenStore,
@@ -74,9 +77,11 @@ class BridgeHttpServerTest {
             logger = SilentLogger(),
             clock = clock,
             cloudCommands = cloudCommands ?: { null },
+            metricsHistory = metrics,
+            consoleHistory = consoleHistory ?: { _, _ -> emptyList() },
         )
         server.start()
-        return Running(server, tracker, registry, tokenStore)
+        return Running(server, tracker, registry, tokenStore, metrics)
     }
 
     private val http: HttpClient = HttpClient.newHttpClient()
@@ -163,7 +168,7 @@ class BridgeHttpServerTest {
             commandQueue = queue,
             sendConsoleCommand = { _, _ -> true },
         )
-        val running = startServer(services) { commands }
+        val running = startServer(services, cloudCommands = { commands })
         try {
             val base = "http://127.0.0.1:${running.server.boundPort()}/bridge/cloud"
             val token = running.tokenStore.obtain()
@@ -205,6 +210,120 @@ class BridgeHttpServerTest {
                 HttpResponse.BodyHandlers.ofString(),
             )
             assertEquals(501, response.statusCode())
+        } finally {
+            running.server.stop()
+        }
+    }
+
+    @Test
+    fun `dashboard is served at the root without a token`() {
+        val running = startServer(listOf(service("lobby-1", ServiceState.RUNNING)))
+        try {
+            val response = http.send(
+                HttpRequest.newBuilder(URI.create("http://127.0.0.1:${running.server.boundPort()}/"))
+                    .GET().build(),
+                HttpResponse.BodyHandlers.ofString(),
+            )
+            assertEquals(200, response.statusCode())
+            assertTrue(response.body().contains("VibeCloud Dashboard"), "page title must be present")
+            assertTrue(response.body().contains("bridge.token"), "login hint must mention the token file")
+        } finally {
+            running.server.stop()
+        }
+    }
+
+    @Test
+    fun `metrics endpoint requires a token and reports history plus per-service values`() {
+        val running = startServer(listOf(service("lobby-1", ServiceState.RUNNING)))
+        try {
+            val noToken = http.send(
+                HttpRequest.newBuilder(URI.create("http://127.0.0.1:${running.server.boundPort()}/bridge/metrics"))
+                    .GET().build(),
+                HttpResponse.BodyHandlers.ofString(),
+            )
+            assertEquals(401, noToken.statusCode())
+
+            running.registry.heartbeat(
+                serviceId = "id-lobby-1",
+                serviceName = "lobby-1",
+                groupName = "lobby",
+                agentVersion = "test",
+                players = listOf("Steve"),
+                maxPlayers = 20,
+                tps = 19.75,
+                heapUsedMb = 1024.0,
+                heapMaxMb = 2048.0,
+                now = fixedNow,
+            )
+            running.metrics.record(
+                MetricsHistory.Sample(
+                    timestamp = fixedNow,
+                    playersOnline = 1,
+                    runningServices = 1,
+                    totalServices = 1,
+                    worstTps = 19.75,
+                    averageRamUsage = 0.5,
+                ),
+            )
+            val response = get(running, "http://127.0.0.1:${running.server.boundPort()}/bridge/metrics")
+            assertEquals(200, response.statusCode())
+            assertTrue(response.body().contains("\"tps\":19.75"), response.body())
+            assertTrue(response.body().contains("\"ram_usage\":0.5"), response.body())
+            assertTrue(response.body().contains("\"players\":1"), response.body())
+        } finally {
+            running.server.stop()
+        }
+    }
+
+    @Test
+    fun `heartbeat accepts agent tps and heap fields and exposes them in status`() {
+        val running = startServer(listOf(service("lobby-1", ServiceState.RUNNING)))
+        try {
+            val response = http.send(
+                HttpRequest.newBuilder(URI.create("http://127.0.0.1:${running.server.boundPort()}/bridge/heartbeat"))
+                    .header("Authorization", "Bearer ${running.tokenStore.obtain()}")
+                    .header("Content-Type", "application/x-www-form-urlencoded")
+                    .POST(
+                        HttpRequest.BodyPublishers.ofString(
+                            "service-id=id-lobby-1&service-name=lobby-1&players=Steve&tps=19.5&heap-used-mb=512&heap-max-mb=2048",
+                        ),
+                    )
+                    .build(),
+                HttpResponse.BodyHandlers.ofString(),
+            )
+            assertEquals(204, response.statusCode())
+            val status = get(running, "http://127.0.0.1:${running.server.boundPort()}/bridge/status")
+            assertTrue(status.body().contains("\"tps\":19.5"), status.body())
+            assertTrue(status.body().contains("\"ram_usage\":0.25"), status.body())
+            assertTrue(status.body().contains("\"heap-used-mb\":512"), status.body())
+        } finally {
+            running.server.stop()
+        }
+    }
+
+    @Test
+    fun `console endpoint returns recorded lines for a service`() {
+        val running = startServer(
+            listOf(service("lobby-1", ServiceState.RUNNING)),
+            consoleHistory = { name, maxLines ->
+                if (name == "lobby-1") listOf("line-a", "line-b").take(maxLines) else emptyList()
+            },
+        )
+        try {
+            val response = get(running, "http://127.0.0.1:${running.server.boundPort()}/bridge/console?service=lobby-1")
+            assertEquals(200, response.statusCode())
+            assertTrue(response.body().contains("line-a"), response.body())
+
+            val unknown = get(running, "http://127.0.0.1:${running.server.boundPort()}/bridge/console?service=nope")
+            assertEquals(200, unknown.statusCode())
+            assertTrue(unknown.body().contains("[]"), unknown.body())
+
+            val noToken = http.send(
+                HttpRequest.newBuilder(URI.create("http://127.0.0.1:${running.server.boundPort()}/bridge/console?service=lobby-1"))
+                    .GET().build(),
+                HttpResponse.BodyHandlers.ofString(),
+            )
+            assertEquals(401, noToken.statusCode())
         } finally {
             running.server.stop()
         }

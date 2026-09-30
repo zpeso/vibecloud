@@ -12,6 +12,7 @@ import dev.vibecloud.core.bridge.BridgeHttpServer
 import dev.vibecloud.core.bridge.BridgeManager
 import dev.vibecloud.core.bridge.BridgeTokenStore
 import dev.vibecloud.core.bridge.JsonWriter
+import dev.vibecloud.core.bridge.MetricsHistory
 import dev.vibecloud.core.bridge.ServicePlayerTracker
 import dev.vibecloud.core.event.CoroutineEventBus
 import dev.vibecloud.core.group.LocalGroupManager
@@ -113,6 +114,8 @@ class CloudBootstrap(
             // command queue, neither of which exists while the bridge server is being
             // constructed — resolve both lazily on first request instead.
             var commandQueueHolder: BridgeCommandQueue? = null
+            // Shared rolling metrics history: the manager samples it, the HTTP endpoint renders it.
+            val metricsHistory = MetricsHistory()
             val cloudCommands: () -> BridgeCloudCommands? = {
                 serviceManagerReference.get()?.let { manager ->
                     BridgeCloudCommands(
@@ -144,6 +147,10 @@ class CloudBootstrap(
                 // commands) through the service manager's stdin writer.
                 sendConsoleCommand = consoleCommandWriter,
                 cloudCommands = cloudCommands,
+                metricsHistory = metricsHistory,
+                consoleHistory = { serviceName, maxLines ->
+                    serviceManagerReference.get()?.console?.history(serviceName, maxLines).orEmpty()
+                },
                 tokenStore = bridgeTokenStore,
                 registry = bridgeRegistry,
                 tracker = bridgeTracker,
@@ -151,7 +158,14 @@ class CloudBootstrap(
                 logger = logger,
             )
             commandQueueHolder = bridgeServer.commandQueue
-            val bridgeManager = BridgeManager(bridgeServer, bridgeRegistry, bridgeTracker, config.bridge, logger)
+            val bridgeManager = BridgeManager(
+                server = bridgeServer,
+                registry = bridgeRegistry,
+                tracker = bridgeTracker,
+                settings = config.bridge,
+                logger = logger,
+                metrics = metricsHistory,
+            )
             val agentInstaller = BridgeAgentInstaller(
                 settings = config.bridge,
                 tokenStore = bridgeTokenStore,

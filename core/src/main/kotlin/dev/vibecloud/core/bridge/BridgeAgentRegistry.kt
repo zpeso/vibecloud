@@ -17,6 +17,9 @@ class BridgeAgentRegistry(private val staleness: () -> Duration) {
         val agentVersion: String,
         val players: List<String>,
         val maxPlayers: Int,
+        val tps: Double?,
+        val heapUsedMb: Double?,
+        val heapMaxMb: Double?,
         val lastHeartbeat: Instant,
     )
 
@@ -29,9 +32,15 @@ class BridgeAgentRegistry(private val staleness: () -> Duration) {
         agentVersion: String,
         players: List<String>,
         maxPlayers: Int,
+        tps: Double? = null,
+        heapUsedMb: Double? = null,
+        heapMaxMb: Double? = null,
         now: Instant = Instant.now(),
     ) {
-        entries[serviceId] = Entry(serviceId, serviceName, groupName, agentVersion, players, maxPlayers, now)
+        entries[serviceId] = Entry(
+            serviceId, serviceName, groupName, agentVersion, players, maxPlayers,
+            tps, heapUsedMb, heapMaxMb, now,
+        )
     }
 
     fun remove(serviceId: String) {
@@ -55,10 +64,30 @@ class BridgeAgentRegistry(private val staleness: () -> Duration) {
         val agentVersion: String,
         val players: List<String>,
         val maxPlayers: Int,
+        val tps: Double? = null,
+        val heapUsedMb: Double? = null,
+        val heapMaxMb: Double? = null,
         val lastHeartbeat: Instant,
-    )
+    ) {
+        /** Used/max heap as a 0..1 ratio; null when the agent did not report memory. */
+        fun heapUsageRatio(): Double? =
+            if (heapUsedMb == null || heapMaxMb == null || heapMaxMb <= 0.0) null else (heapUsedMb / heapMaxMb).coerceIn(0.0, 1.0)
+    }
 
     fun all(): List<AgentReport> = entries.values
         .sortedBy { it.serviceName }
-        .map { AgentReport(it.serviceId, it.serviceName, it.groupName, it.agentVersion, it.players, it.maxPlayers, it.lastHeartbeat) }
+        .map { entry ->
+            AgentReport(
+                entry.serviceId,
+                entry.serviceName,
+                entry.groupName,
+                entry.agentVersion,
+                entry.players,
+                entry.maxPlayers,
+                entry.tps,
+                entry.heapUsedMb,
+                entry.heapMaxMb,
+                entry.lastHeartbeat,
+            )
+        }
 }

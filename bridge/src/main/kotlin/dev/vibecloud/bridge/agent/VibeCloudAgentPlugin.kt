@@ -14,6 +14,7 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Duration
+import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
@@ -104,12 +105,19 @@ class VibeCloudAgentPlugin : JavaPlugin() {
         val current = this.config ?: return
         try {
             val names = server.onlinePlayers.map { it.name }
+            val tpsField = runCatching { Bukkit.getTPS()[0] }.getOrNull()
+            val memory = Runtime.getRuntime()
+            val heapUsedMb = (memory.totalMemory() - memory.freeMemory()) / BYTES_PER_MB
+            val heapMaxMb = memory.maxMemory() / BYTES_PER_MB
             val form = formEncode(
                 "service-id" to current.serviceId,
                 "service-name" to current.serviceName,
                 "players" to names.joinToString(","),
                 "max-players" to server.maxPlayers.toString(),
                 "agent-version" to description.version,
+                "tps" to (tpsField?.let { String.format(Locale.US, "%.2f", it) } ?: ""),
+                "heap-used-mb" to heapUsedMb.toString(),
+                "heap-max-mb" to heapMaxMb.toString(),
             )
             val request = HttpRequest.newBuilder()
                 .uri(URI.create("${current.cloudUrl}/bridge/heartbeat"))
@@ -180,5 +188,6 @@ class VibeCloudAgentPlugin : JavaPlugin() {
 
     private companion object {
         const val HEARTBEAT_DELAY_SECONDS = 2L
+        const val BYTES_PER_MB = 1024L * 1024L
     }
 }

@@ -31,5 +31,10 @@ internal object JsonWriter {
 
     fun num(value: Int): String = value.toString()
 
+    fun num(value: Long): String = value.toString()
+
+    fun num(value: Double): String =
+        if (value == value.toLong().toDouble()) value.toLong().toString() else value.toString()
+
     fun bool(value: Boolean): String = value.toString()
 }
