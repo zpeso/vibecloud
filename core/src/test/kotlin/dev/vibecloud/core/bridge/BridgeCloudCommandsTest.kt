@@ -224,10 +224,24 @@ class BridgeCloudCommandsTest {
     }
 
     @Test
-    fun `completion suggests group start arguments`() {
+    fun `completion suggests group subcommands and arguments`() {
         val f = fixture(running("lobby-1", "lobby"))
-        assertEquals(listOf("start"), f.commands.complete(listOf("group", "")))
+        assertEquals(listOf("start", "delete", "version"), f.commands.complete(listOf("group", "")))
         assertEquals(listOf("lobby"), f.commands.complete(listOf("group", "start", "l")))
+        assertEquals(listOf("lobby"), f.commands.complete(listOf("group", "delete", "l")))
+    }
+
+    @Test
+    fun `ser alias resolves like service`() {
+        val f = fixture(running("lobby-1", "lobby"))
+        assertEquals(f.commands.execute(listOf("service", "lobby-1")), f.commands.execute(listOf("ser", "lobby-1")))
+        assertTrue(f.commands.complete(listOf("ser", "")).isNotEmpty())
+    }
+
+    @Test
+    fun `group version rejects unknown versions`() {
+        val f = fixture(running("lobby-1", "lobby"))
+        assertTrue(f.commands.execute(listOf("group", "version", "lobby", "1.20")).single().contains("unavailable"))
     }
 
     @Test

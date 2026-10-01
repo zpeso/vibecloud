@@ -55,6 +55,24 @@ class LocalGroupManager(
         logger.info("Deleted group '$key'")
     }
 
+    override fun update(group: Group) = lifecycleLock.withLock {
+        checkAccepting()
+        validateSupported(group)
+        val key = normalize(group.name)
+        val current = groups.get()
+        val existing = current[key] ?: throw NoSuchElementException("Group '$key' does not exist")
+        if (existing.type != group.type) {
+            throw IllegalArgumentException(
+                "Cannot change the system of group '$key' (${existing.type.name} → ${group.type.name}); " +
+                        "a group's type is fixed — create a new group instead",
+            )
+        }
+        val updated = LinkedHashMap(current).apply { put(key, group.copy(name = key)) }
+        persist(updated.values.toList())
+        groups.set(updated.toMap())
+        logger.info("Updated group '$key' (${group.type.name} ${group.version})")
+    }
+
     override fun get(name: String): Group? = groups.get()[normalize(name)]
 
     override fun all(): Collection<Group> = groups.get().values.sortedBy { it.name }

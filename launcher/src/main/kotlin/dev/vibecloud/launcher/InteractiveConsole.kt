@@ -100,12 +100,6 @@ class InteractiveConsole(private val cloud: Cloud) : AutoCloseable {
         val writer = terminal?.writer() ?: return
         writer.print("\u001B[2J\u001B[H")
         writer.flush()
-    }    fun banner() {
-        printAbove(
-            Cli.dim(" VibeCloud — type ") + Cli.command("help") +
-                Cli.dim(" for commands, ") + Cli.highlight("Tab") + Cli.dim(" completes."),
-        )
-        printAbove("")
     }
 
     override fun close() {
@@ -127,14 +121,15 @@ internal class SmartCompleter(private val cloud: Cloud) : Completer {
             }
 
             soFar[0] == "group" && soFar.size == 1 -> addSubCommands("group", candidates)
-            soFar[0] == "service" && soFar.size == 1 -> addSubCommands("service", candidates)
+            soFar[0] in listOf("service", "ser") && soFar.size == 1 -> addSubCommands("service", candidates)
             soFar[0] == "cloud" && soFar.size == 1 -> addSubCommands("cloud", candidates)
-            soFar[0] == "service" && soFar.size == 2 && soFar[1] == "create" ->
+            soFar[0] == "service" && soFar.size == 2 && soFar[1] == "create" ||
+                soFar[0] == "ser" && soFar.size == 2 && soFar[1] == "create" ->
                 cloud.groups.all().forEach { group ->
                     candidates += Candidate(group.name, group.name, "group", "group", null, null, true)
                 }
 
-            soFar[0] == "service" && soFar.size == 2 && soFar[1] in TARGET_SUBCOMMANDS ->
+            soFar[0] in TARGET_COMMANDS && soFar.size == 2 && soFar[1] in TARGET_SUBCOMMANDS ->
                 cloud.services.all().forEach { service ->
                     candidates += Candidate(
                         service.name,
@@ -147,9 +142,14 @@ internal class SmartCompleter(private val cloud: Cloud) : Completer {
                     )
                 }
 
-            soFar[0] == "group" && soFar.size == 2 && soFar[1] in listOf("info", "delete", "start") ->
+            soFar[0] == "group" && soFar.size == 2 && soFar[1] in listOf("info", "delete", "start", "version") ->
                 cloud.groups.all().forEach { group ->
                     candidates += Candidate(group.name, group.name, "group", "group", null, null, true)
+                }
+
+            soFar[0] == "group" && soFar[1] == "version" && soFar.size == 3 ->
+                groupVersionSuggestions(cloud.groups.all().firstOrNull { it.name == soFar[2] }).forEach { candidate ->
+                    candidates += Candidate(candidate, candidate, "version", null, null, null, true)
                 }
 
             soFar[0] == "group" && soFar[1] == "create" && current.startsWith("-") ->
@@ -170,8 +170,15 @@ internal class SmartCompleter(private val cloud: Cloud) : Completer {
         }
     }
 
+    /** Local template keys of the group's type; online versions are too many to be useful here. */
+    private fun groupVersionSuggestions(group: dev.vibecloud.api.group.Group?): List<String> {
+        val type = group?.type ?: return emptyList()
+        return runCatching { cloud.templates.availableVersions(type) }.getOrDefault(emptyList())
+    }
+
     private companion object {
         val TARGET_SUBCOMMANDS = setOf("screen", "start", "stop", "restart", "info", "delete")
+        val TARGET_COMMANDS = listOf("service", "ser")
     }
 }
 

@@ -1,9 +1,14 @@
 package dev.vibecloud.core.bridge
 
 import dev.vibecloud.api.group.GroupManager
+import dev.vibecloud.api.server.ServerCatalog
 import dev.vibecloud.api.service.Service
 import dev.vibecloud.api.service.ServiceManager
 import dev.vibecloud.api.service.ServiceState
+import dev.vibecloud.api.template.TemplateManager
+import dev.vibecloud.core.group.GroupCascade
+import dev.vibecloud.core.group.GroupVersionSwitch
+import dev.vibecloud.core.server.GroupInUseException
 import kotlinx.coroutines.runBlocking
 
 /**
@@ -19,7 +24,15 @@ class BridgeCloudCommands(
     private val tracker: ServicePlayerTracker,
     private val commandQueue: BridgeCommandQueue,
     private val sendConsoleCommand: (serviceName: String, command: String) -> Boolean,
+    /** Enables `group version <name> <version>`: online version lookup and template downloads. */
+    private val serverCatalog: ServerCatalog? = null,
+    private val templates: TemplateManager? = null,
 ) {
+    private val cascade = GroupCascade(services, groups)
+    private val versionSwitch = serverCatalog?.let { catalog ->
+        templates?.let { tpl -> GroupVersionSwitch(groups, tpl, catalog) }
+    }
+
 
     /** Runs a `/cloud ...` command; returns the response lines. */
     fun execute(args: List<String>): List<String> = try {
@@ -29,10 +42,12 @@ class BridgeCloudCommands(
             "group" -> when (args.getOrNull(1)?.lowercase()) {
                 null -> groups()
                 "start" -> startInGroup(args.getOrNull(2))
-                else -> listOf(error("Usage: /cloud group start <name>"))
+                "delete" -> deleteGroup(args.getOrNull(2))
+                "version" -> switchGroupVersion(args.drop(2))
+                else -> listOf(error("Usage: /cloud group <start|delete|version>"))
             }
             "services" -> services()
-            "service" -> serviceDetail(args.getOrNull(1))
+            "service", "ser" -> serviceDetail(args.getOrNull(1))
             "start" -> lifecycle(args.getOrNull(1), "started") { services.start(it) }
             "stop" -> lifecycle(args.getOrNull(1), "stopped") { services.stop(it) }
             "restart" -> lifecycle(args.getOrNull(1), "restarted") { services.restart(it) }
@@ -56,16 +71,16 @@ class BridgeCloudCommands(
             previous.isEmpty() -> SUBCOMMANDS.filter { it.startsWith(current, ignoreCase = true) }
 
             previous.size == 1 && previous[0].equals("group", true) ->
-                listOf("start").filter { it.startsWith(current, ignoreCase = true) }
+                listOf("start", "delete", "version").filter { it.startsWith(current, ignoreCase = true) }
 
-            previous.size == 2 && previous[0].equals("group", true) && previous[1].equals("start", true) ->
+            previous.size == 2 && previous[0].equals("group", true) && previous[1] in GROUP_NAME_SUBCOMMANDS ->
                 runCatching { groups.all().map { it.name } }.getOrDefault(emptyList())
                     .filter { it.startsWith(current, ignoreCase = true) }
 
             previous.size == 1 && previous[0].lowercase() in LIFECYCLE_SUBCOMMANDS ->
                 serviceNames.filter { it.startsWith(current, ignoreCase = true) }
 
-            previous.size == 1 && previous[0].equals("service", true) ->
+            previous.size == 1 && (previous[0].equals("service", true) || previous[0].equals("ser", true)) ->
                 serviceNames.filter { it.startsWith(current, ignoreCase = true) }
 
             previous.size == 1 && previous[0].equals("send", true) -> onlinePlayerNames(current)
@@ -215,6 +230,65 @@ class BridgeCloudCommands(
     /** Lowest numeric suffix wins, matching the reconciler's candidate ordering. */
     private fun serviceSuffix(name: String): Int = name.substringAfterLast('-', "0").toIntOrNull() ?: 0
 
+    /**
+     * `/cloud group delete <name>`: stops and deletes every service of the group first, then
+     * removes the group itself so nothing re-provisions or lingers behind.
+     */
+    private fun deleteGroup(name: String?): List<String> {
+        if (name == null) return listOf(error("Usage: /cloud group delete <name>"))
+        return runBlocking {
+            val group = groups.get(name.trim().lowercase())
+                ?: return@runBlocking listOf(error("Group '$name' does not exist"))
+            try {
+                val deleted = cascade.deleteGroup(group.name)
+                buildList {
+                    add(success("Group '${group.name}' deleted."))
+                    if (deleted.isNotEmpty()) add(dim("  Services: ${deleted.joinToString(", ")}"))
+                }
+            } catch (failure: NoSuchElementException) {
+                listOf(error(failure.message ?: "Group '${group.name}' does not exist"))
+            } catch (failure: IllegalStateException) {
+                listOf(error(failure.message ?: "Group '${group.name}' cannot be deleted right now"))
+            } catch (failure: GroupInUseException) {
+                listOf(error(failure.message ?: "Group '${group.name}' is still in use"))
+            }
+        }
+    }
+
+    /**
+     * `/cloud group version <name> <version>`: switches the server version of a group — same
+     * server system only (paper → paper), never across systems. The build is resolved against
+     * the online catalog (or an installed local template), downloaded, and takes effect on the
+     * services' next start/restart.
+     */
+    private fun switchGroupVersion(args: List<String>): List<String> {
+        val name = args.getOrNull(0)
+        val version = args.getOrNull(1)
+        if (name == null || version == null) {
+            return listOf(error("Usage: /cloud group version <name> <version>"))
+        }
+        val switch = versionSwitch
+            ?: return listOf(error("Version switching is unavailable on this cloud"))
+        return runBlocking {
+            val group = groups.get(name.trim().lowercase())
+                ?: return@runBlocking listOf(error("Group '$name' does not exist"))
+            try {
+                val outcome = switch.switch(group.name, version)
+                buildList {
+                    add(success("Group '${group.name}' is now on ${group.type.name.lowercase()} ${outcome.group.version}."))
+                    outcome.installedFileName?.let { add(dim("  Downloaded: $it")) }
+                    add(dim("  Applies on the services' next start/restart."))
+                }
+            } catch (failure: NoSuchElementException) {
+                listOf(error(failure.message ?: "Version or group not found"))
+            } catch (failure: IllegalArgumentException) {
+                listOf(error(failure.message ?: "Invalid version switch"))
+            } catch (failure: IllegalStateException) {
+                listOf(error(failure.message ?: "Version switch failed"))
+            }
+        }
+    }
+
     private fun players(): List<String> {
         val services = runBlocking { services.all().sortedBy { it.name } }
         var total = 0
@@ -328,9 +402,10 @@ class BridgeCloudCommands(
 
     private companion object {
         val SUBCOMMANDS = listOf(
-            "info", "groups", "group", "services", "service", "players", "send", "msg", "cmd",
+            "info", "groups", "group", "services", "service", "ser", "players", "send", "msg", "cmd",
             "start", "stop", "restart", "delete",
         )
         val LIFECYCLE_SUBCOMMANDS = setOf("start", "stop", "restart", "delete")
+        val GROUP_NAME_SUBCOMMANDS = setOf("start", "delete", "version")
     }
 }

@@ -43,7 +43,21 @@ object Cli {
     fun highlight(text: String) = bold(WHITE, text)
     fun dim(text: String) = paint(DIM_HEX, text)
 
-    fun prompt(): String = bold(SKY, "cloud") + dim(" ❯ ")
+    fun prompt(): String = paint(VIOLET, "◆ ") + bold(WHITE, "vibecloud") + dim(" ❯ ")
 
-    fun screenPrompt(serviceName: String): String = bold(CYAN, serviceName) + dim(" ❯ ")
+    fun screenPrompt(serviceName: String): String = paint(CYAN, "◇ ") + bold(CYAN, serviceName) + dim(" ❯ ")
+
+    /** Rounded info box in the dashboard's card style: violet → sky gradient header. */
+    fun banner(version: String?): List<String> {
+        val v = if (version.isNullOrBlank() || version == "0.0.0") "" else " $version"
+        return listOf(
+            "",
+            paint(VIOLET, "  ╭─────────────────────────────────────────────╮"),
+            bold(WHITE, "  │") + "  " + paint(VIOLET, "◆") + "  " + bold(WHITE, "VibeCloud") + paint(DIM_HEX, v),
+            paint(SKY, "  │") + "     " + dim("single-node minecraft cloud"),
+            paint(CYAN, "  ╰─────────────────────────────────────────────╯"),
+            dim("  ") + command("help") + dim(" lists commands · ") + highlight("Tab") + dim(" completes · ") + command("exit") + dim(" stops the cloud"),
+            "",
+        )
+    }
 }

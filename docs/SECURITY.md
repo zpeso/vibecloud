@@ -89,6 +89,11 @@ scripts — the actual XSS vector — are locked to `'self'` with no `'unsafe-in
 browsers). `Strict-Transport-Security` is emitted only when the request arrived with
 `X-Forwarded-Proto: https` (i.e. behind your TLS proxy).
 
+In release builds the dashboard script (`app.js`) is minified and identifier-mangled with terser
+before packaging (development builds keep the readable source). This is lightweight obfuscation
+for code hygiene — **not** a security boundary: the script still runs client-side and anything it
+can do is governed by the session/token model above.
+
 Errors are generic (`400/401/403/404/429/500` JSON); unexpected exceptions are logged server-side
 and answered with a body-less-detail 500 — no stack traces, paths, or configuration leak.
 Unknown URL paths fall through to the public dashboard shell only.

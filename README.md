@@ -219,7 +219,8 @@ group info lobby
 group create                       # prompts for name, type, version, build, and service counts
 group create lobby                 # same wizard, with the name prefilled
 group create lobby --type PAPER --version 26.2 --build 129 --min-services 1 --max-services 5 --always-running-services 2
-group delete lobby                 # only when no service records remain
+group version lobby 1.8.8          # switch the group's version within its system (paper → paper); services pick it up on restart
+group delete lobby                 # stops and deletes every service of the group, then the group itself
 
 service list
 service info lobby-1
@@ -229,6 +230,7 @@ service stop lobby-1
 service restart lobby-1
 service screen lobby-1             # attach to the live server console; type 'exit' to detach
 service delete lobby-1             # stops, then permanently deletes its service directory
+ser list                           # 'ser' is a shortcut for 'service'
 
 exit
 ```

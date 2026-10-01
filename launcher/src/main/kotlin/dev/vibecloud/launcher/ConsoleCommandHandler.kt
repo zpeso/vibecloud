@@ -8,8 +8,11 @@ import dev.vibecloud.api.server.ServerVersion
 import dev.vibecloud.api.service.Service
 import dev.vibecloud.api.service.ServiceState
 import dev.vibecloud.common.logging.Logger
+import dev.vibecloud.core.group.GroupCascade
+import dev.vibecloud.core.group.GroupVersionSwitch
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.time.format.DateTimeFormatter
 import java.util.*
@@ -18,6 +21,8 @@ class ConsoleCommandHandler(
     private val cloud: Cloud,
     private val logger: Logger,
     private val terminal: InteractiveConsole,
+    /** Runs long commands (group delete, version switches) off the prompt thread. */
+    private val commandScope: kotlinx.coroutines.CoroutineScope,
 ) {
     private suspend fun readInput(): String? = withContext(Dispatchers.IO) {
         terminal.readLineScreen(currentScreenService ?: "service")
@@ -25,15 +30,29 @@ class ConsoleCommandHandler(
 
     @Volatile
     private var currentScreenService: String? = null
+
+    /** Whether [line] dispatches long-running work that should not block the prompt. */
+    private fun isAsync(command: String, args: List<String>): Boolean =
+        command == "group" && args.firstOrNull()?.lowercase() in setOf("delete", "version")
+
+    /**
+     * Executes a console line. Returns false when the CLI should exit.
+     *
+     * Long commands (group delete/version) run in [commandScope] so the prompt stays usable:
+     * deleting a group stops and deletes every service first, which can take many seconds, and
+     * waiting for the summary before the next prompt was bad UX. Output is tagged with the
+     * command tag so results stay attributable when interleaved with later commands.
+     */
     suspend fun execute(line: String): Boolean {
         val arguments = line.trim().split(WHITESPACE).filter(String::isNotBlank).map { it.trim('"', '\'') }
         if (arguments.isEmpty()) return true
+        val command = CommandCatalog.canonical(arguments[0])
         try {
-            when (arguments[0].lowercase()) {
+            when (command) {
                 "help", "?" -> printHelp()
                 "exit", "quit" -> return false
                 "clear", "cls" -> terminal.clear()
-                "group" -> handleGroup(arguments.drop(1))
+                "group" -> dispatchGroup(arguments.drop(1))
                 "service" -> handleService(arguments.drop(1))
                 "cloud" -> handleCloud(arguments.drop(1))
                 else -> println(Cli.warn("Unknown command '${arguments[0]}'.") + " " + Cli.dim("Type 'help' for commands."))
@@ -46,6 +65,42 @@ class ConsoleCommandHandler(
         }
         return true
     }
+
+    /** Routes group subcommands; delete/version run asynchronously with a [commandTag]. */
+    private suspend fun dispatchGroup(args: List<String>) {
+        val sub = args.firstOrNull()?.lowercase()
+        if (isAsync("group", args)) {
+            val tag = nextTag()
+            val name = args.getOrNull(1) ?: ""
+            commandScope.launch {
+                try {
+                    when (sub) {
+                        "delete" -> deleteGroupCascade(name)
+                        "version" -> switchGroupVersion(args.drop(1))
+                    }
+                } catch (failure: CancellationException) {
+                    throw failure
+                } catch (failure: Exception) {
+                    logger.warn("Command failed: ${failure.message}")
+                    println(commandTag(tag) + Cli.error("Error: ${failure.message ?: failure::class.simpleName}"))
+                }
+            }
+            println(
+                commandTag(tag) + Cli.dim(
+                    when (sub) {
+                        "delete" -> "Deleting group '${args.getOrNull(1)}' (stops and deletes its services first)..."
+                        else -> "Switching version of '${args.getOrNull(1)}'..."
+                    },
+                ),
+            )
+            return
+        }
+        handleGroup(args)
+    }
+
+    private var tagCounter = 0
+    private fun nextTag(): Int = ++tagCounter
+    private fun commandTag(tag: Int): String = Cli.dim("[#$tag] ")
 
     private suspend fun handleGroup(args: List<String>) {
         when (args.firstOrNull()?.lowercase()) {
@@ -118,14 +173,37 @@ class ConsoleCommandHandler(
                 }
                 println(Cli.dim("Watch its console with ") + Cli.command("service screen ${service.name}"))
             }
-            "delete" -> {
-                val name = args.getOrNull(1) ?: throw IllegalArgumentException("Usage: group delete <name>")
-                cloud.groups.delete(name)
-                println(Cli.success("Deleted group '$name'."))
-            }
-
-            else -> throw IllegalArgumentException("Usage: group <list|info|create|start|delete> [name]")
+            else -> throw IllegalArgumentException("Usage: group <list|info|create|start|version|delete> [name]")
         }
+    }
+
+    /**
+     * Stops and deletes every service of the group, then deletes the group itself. Called on the
+     * async command scope — a big group can take a while, and the prompt must stay usable.
+     */
+    private suspend fun deleteGroupCascade(name: String) {
+        if (name.isBlank()) throw IllegalArgumentException("Usage: group delete <name>")
+        val cascade = GroupCascade(cloud.services, cloud.groups)
+        val deleted = cascade.deleteGroup(name)
+        println(Cli.success("Deleted group '$name'."))
+        if (deleted.isNotEmpty()) println(Cli.dim("  Services: ${deleted.joinToString(", ")}"))
+    }
+
+    /**
+     * `group version <name> <version>`: switches the group's server version within its own
+     * system (paper → paper). Resolves against the online catalog or an installed template,
+     * downloads the build, and the services pick it up on their next start/restart.
+     */
+    private suspend fun switchGroupVersion(args: List<String>) {
+        val name = args.getOrNull(0) ?: throw IllegalArgumentException("Usage: group version <name> <version>")
+        val version = args.getOrNull(1) ?: throw IllegalArgumentException("Usage: group version <name> <version>")
+        val group = cloud.groups.get(name.trim().lowercase(Locale.ROOT))
+            ?: throw NoSuchElementException("Group '$name' does not exist")
+        val switch = GroupVersionSwitch(cloud.groups, cloud.templates, cloud.serverCatalog)
+        val outcome = switch.switch(group.name, version)
+        println(Cli.success("Group '${group.name}' is now on ${group.type.name.lowercase()} ${outcome.group.version}."))
+        outcome.installedFileName?.let { println(Cli.dim("  Downloaded: $it")) }
+        println(Cli.dim("  Applies on the services' next start/restart."))
     }
 
     private suspend fun handleService(args: List<String>) {

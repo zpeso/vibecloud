@@ -23,7 +23,8 @@ object CommandCatalog {
                 SubCommandSpec("info", " <name>", "Show group details"),
                 SubCommandSpec("create", " [name]", "Wizard to create a group"),
                 SubCommandSpec("start", " <name>", "Start another service of a group"),
-                SubCommandSpec("delete", " <name>", "Delete an empty group"),
+                SubCommandSpec("version", " <name> <version>", "Switch the group's version (same system only)"),
+                SubCommandSpec("delete", " <name>", "Delete a group with all of its services"),
             ),
         ),
         CommandSpec(
@@ -37,6 +38,16 @@ object CommandCatalog {
                 SubCommandSpec("stop", " <name>", "Stop a service"),
                 SubCommandSpec("restart", " <name>", "Restart a service"),
                 SubCommandSpec("screen", " <name>", "Attach to its console; 'exit' detaches"),
+                SubCommandSpec("delete", " <name>", "Delete a service and its files"),
+            ),
+        ),
+        CommandSpec(
+            "ser",
+            "Alias for 'service'",
+            listOf(
+                SubCommandSpec("list", "", "Show all services"),
+                SubCommandSpec("info", " <name>", "Show service details"),
+                SubCommandSpec("screen", " <name>", "Attach to its console"),
                 SubCommandSpec("delete", " <name>", "Delete a service and its files"),
             ),
         ),
@@ -63,7 +74,12 @@ object CommandCatalog {
         "--static" to "true: keep files between restarts · false: fresh from template every start",
     )
 
-    fun find(name: String): CommandSpec? = commands.firstOrNull { it.name == name }
+    fun find(name: String): CommandSpec? = commands.firstOrNull { it.name == name || it.name == aliasOf(name) }
 
-    fun isCommand(name: String): Boolean = commands.any { it.name == name }
+    fun isCommand(name: String): Boolean = commands.any { it.name == name || it.name == aliasOf(name) }
+
+    /** Canonical command name for an alias ('ser' → 'service'); identity for everything else. */
+    fun canonical(name: String): String = if (name.equals("ser", ignoreCase = true)) "service" else name.lowercase()
+
+    private fun aliasOf(name: String): String = canonical(name)
 }

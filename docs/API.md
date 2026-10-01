@@ -273,8 +273,10 @@ interactive console:
 /cloud info                      Cloud overview: running/starting/crashed counts, players online
 /cloud groups                    Group table (type, version, desired/max/provisioned)
 /cloud group start <name>        Start another service of a group (reuses stopped records first)
+/cloud group delete <name>       Delete a group together with all of its services
+/cloud group version <n> <v>     Switch the group's version (same system only, e.g. paper → paper)
 /cloud services                  Service table (group, state, type, port)
-/cloud service <name>            Details for one service
+/cloud service <name>            Details for one service ('ser' is a shortcut)
 /cloud players                   Rosters per service
 /cloud send <player> <target>    Transfer a player (service or group#) via the proxy console
 /cloud msg <player> <text>       Send a chat message to a player

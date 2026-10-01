@@ -128,6 +128,8 @@ class CloudBootstrap(
             // command queue, neither of which exists while the bridge server is being
             // constructed — resolve both lazily on first request instead.
             var commandQueueHolder: BridgeCommandQueue? = null
+            // Resolved later in create(); the /cloud group commands need it for version switches.
+            var templateManagerHolder: FileTemplateManager? = null
             // Shared rolling metrics history: the manager samples it, the HTTP endpoint renders it.
             val metricsHistory = MetricsHistory()
             // Host-level metrics (CPU load, memory, uptime of the root server) plus per-process
@@ -153,6 +155,8 @@ class CloudBootstrap(
                         tracker = bridgeTracker,
                         commandQueue = commandQueueHolder ?: return@let null,
                         sendConsoleCommand = consoleCommandWriter,
+                        serverCatalog = serverCatalog,
+                        templates = templateManagerHolder,
                     )
                 }
             }
@@ -221,6 +225,7 @@ class CloudBootstrap(
                 serverCatalog = serverCatalog,
                 forwardingProvider = forwardingProvider,
             )
+            templateManagerHolder = templateManager
             val processManager = JvmProcessManager(scope, logger)
             val serviceManager = LocalServiceManager(
                 groupManager = groupManager,

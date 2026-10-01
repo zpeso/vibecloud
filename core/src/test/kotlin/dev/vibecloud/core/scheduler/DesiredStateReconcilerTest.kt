@@ -86,6 +86,11 @@ class DesiredStateReconcilerTest {
 
         override fun get(name: String): Group? = group.takeIf { it.name == name }
         override fun all(): Collection<Group> = listOf(group)
+
+        override fun update(group: Group) {
+            this.group = group
+        }
+
         override fun replaceAll(groups: Collection<Group>) {
             group = groups.single()
         }
@@ -151,6 +156,10 @@ class DesiredStateReconcilerTest {
 
         override fun get(name: String): Group? = byName[name]
         override fun all(): Collection<Group> = byName.values
+
+        override fun update(group: Group) {
+            byName[group.name] = group
+        }
 
         override fun replaceAll(groups: Collection<Group>) {
             byName.clear()

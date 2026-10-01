@@ -5,6 +5,9 @@ import dev.vibecloud.common.logging.ConsoleLogger
 import dev.vibecloud.common.logging.LogLevel
 import dev.vibecloud.common.logging.Logger
 import dev.vibecloud.core.cloud.CloudBootstrap
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.runBlocking
 import java.nio.file.Files
 import java.nio.file.Path
@@ -73,8 +76,11 @@ fun main(args: Array<String>) = runBlocking {
             logger.info("No usable console — running headless. Stop the cloud with Ctrl+C or 'service stop' via your tooling; logs stream to stdout.")
         }
         cloud.start()
-        if (interactive.isInteractive) interactive.banner()
-        val cli = ConsoleCommandHandler(cloud, logger, interactive)
+        Cli.banner(launcherVersion).forEach { line -> interactive.printAbove(line) }
+        // Long-running commands (group delete/version) execute here so the prompt returns
+        // immediately and output is tagged [#n] when it arrives.
+        val commandScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val cli = ConsoleCommandHandler(cloud, logger, interactive, commandScope)
 
         if (interactive.isInteractive) {
             while (cloud.state == CloudState.RUNNING && !exitRequested) {

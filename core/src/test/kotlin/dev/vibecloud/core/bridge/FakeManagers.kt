@@ -84,6 +84,11 @@ internal class FakeGroupManager(vararg initial: Group) : GroupManager {
         groups.remove(name)
     }
 
+    override fun update(group: Group) {
+        require(groups.containsKey(group.name)) { "Group '${group.name}' does not exist" }
+        groups[group.name] = group
+    }
+
     override fun get(name: String): Group? = groups[name]
 
     override fun all(): Collection<Group> = groups.values.toList()
