@@ -2,6 +2,7 @@ package dev.vibecloud.bridge.agent
 
 import dev.vibecloud.api.bridge.AgentConfig
 import dev.vibecloud.api.bridge.VibeCloud
+import net.kyori.adventure.text.minimessage.MiniMessage
 import org.bukkit.Bukkit
 import org.bukkit.entity.Player
 import org.bukkit.plugin.java.JavaPlugin
@@ -84,6 +85,9 @@ class VibeCloudAgentPlugin : JavaPlugin() {
     }
 
     override fun onDisable() {
+        // Announce the stop while players are still connected: plugins disable before the server
+        // kicks everyone, so holders of `cloud.logs` see why the server is going down.
+        announceServiceStopped()
         heartbeatTask?.cancel(false)
         executor?.let { scheduler ->
             scheduler.shutdown()
@@ -99,6 +103,22 @@ class VibeCloudAgentPlugin : JavaPlugin() {
         heartbeatTask = null
         config = null
         getLogger().info("VibeCloud agent disabled")
+    }
+
+    /**
+     * The cloud-side service log, mirrored to online players: when this service stops, everyone
+     * holding the `cloud.logs` permission receives the stop notice in the cloud's branded
+     * MiniMessage format. The console gets the same notice as a plain log line.
+     */
+    private fun announceServiceStopped() {
+        val current = config ?: return
+        val message = MiniMessage.miniMessage().deserialize(
+            SERVICE_LOG_PREFIX + "Service " + current.serviceName + " is now stopped",
+        )
+        Bukkit.getOnlinePlayers()
+            .filter { it.hasPermission(CLOUD_LOGS_PERMISSION) }
+            .forEach { it.sendMessage(message) }
+        getLogger().info("Service ${current.serviceName} is now stopped")
     }
 
     private fun sendHeartbeat() {
@@ -198,5 +218,9 @@ class VibeCloudAgentPlugin : JavaPlugin() {
     private companion object {
         const val HEARTBEAT_DELAY_SECONDS = 2L
         const val BYTES_PER_MB = 1024L * 1024L
+
+        /** Branded prefix for agent service-log messages (cloud red, small-caps name, separator). */
+        const val SERVICE_LOG_PREFIX = "<#ed3030>ᴄʟᴏᴜᴅ <dark_gray>» "
+        const val CLOUD_LOGS_PERMISSION = "cloud.logs"
     }
 }

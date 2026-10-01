@@ -16,3 +16,6 @@ permissions:
   minetropia.cloud:
     description: Allows using the /cloud command.
     default: op
+  cloud.logs:
+    description: Receives cloud service-log broadcasts (e.g. when a service stops).
+    default: op
