@@ -10,7 +10,8 @@ import java.util.concurrent.atomic.AtomicReference
 /**
  * Owns the bridge endpoint and keeps agent bookkeeping consistent with service lifecycle:
  * stale agents are dropped, stopped/deleted services lose their trackers and agent entries.
- * Each [reconcile] pass also samples one cloud-wide metrics point for the dashboard charts.
+ * Each [reconcile] pass also samples one cloud-wide metrics point (including host CPU/RAM)
+ * for the dashboard charts.
  */
 class BridgeManager(
     val server: BridgeHttpServer,
@@ -20,6 +21,8 @@ class BridgeManager(
     private val logger: Logger,
     /** Rolling statistics history rendered by the dashboard's charts. */
     val metrics: MetricsHistory = MetricsHistory(),
+    /** Host-level metrics (CPU, memory, uptime); sampled once per reconcile cycle. */
+    private val hostMetrics: HostMetrics = HostMetrics(),
 ) {
     private val running = AtomicReference(false)
     private val commandQueue = server.commandQueue
@@ -61,7 +64,7 @@ class BridgeManager(
             }
         }
         services.forEach { service ->
-            if (service.state != dev.vibecloud.api.service.ServiceState.RUNNING) {
+            if (service.state != ServiceState.RUNNING) {
                 tracker.clear(service.name)
                 registry.remove(service.id)
             }
@@ -69,15 +72,15 @@ class BridgeManager(
         sampleMetrics(services, now)
     }
 
-    /** One rolling sample: players, running services, worst backend TPS, mean heap usage. */
+    /** One rolling sample: players, running services, worst backend TPS, mean heap, host CPU/RAM. */
     private fun sampleMetrics(services: Collection<Service>, now: Instant) {
         val runningServices = services.filter { it.state == ServiceState.RUNNING }
         var playersOnline = 0
         var tpsReports = 0
         var worstTps = Double.MAX_VALUE
         var heapSum = 0.0
-        var heapMax = 0.0
         var heapReports = 0
+        var heapMax = 0.0
         runningServices.forEach { service ->
             playersOnline += tracker.playerCount(service.name)
             val report = registry.all().firstOrNull { it.serviceId == service.id } ?: return@forEach
@@ -92,6 +95,7 @@ class BridgeManager(
                 if (max > heapMax) heapMax = max
             }
         }
+        val host = hostMetrics.snapshot()
         metrics.record(
             MetricsHistory.Sample(
                 timestamp = now,
@@ -100,6 +104,9 @@ class BridgeManager(
                 totalServices = services.size,
                 worstTps = if (tpsReports > 0) worstTps else null,
                 averageRamUsage = if (heapReports > 0) heapSum / heapReports else null,
+                hostCpu = host.cpuLoad,
+                hostSysRam = host.ramRatio(),
+                hostJvmHeap = host.jvmHeapRatio(),
             ),
         )
     }

@@ -66,10 +66,13 @@ share the token with people who should only *see* the dashboard.
 | Endpoint | Auth | Extra protections |
 |---|---|---|
 | `GET /` | public | static shell, no data, CSP, no-store |
+| `GET /assets/app.css`, `/assets/app.js` | public | static same-origin assets, no data, CSP, no-store |
 | `POST /bridge/dashboard/login` | token check | rate limited (10/min/IP), constant-time compare |
 | `POST /bridge/dashboard/logout` | session | CSRF header required |
 | `GET /bridge/status`, `/bridge/services` | bearer or session | — |
 | `GET /bridge/metrics` | bearer or session | — |
+| `GET /bridge/host` | bearer or session | — |
+| `GET /bridge/activity` | bearer or session | — |
 | `GET /bridge/console?service=` | bearer or session | name length cap |
 | `POST /bridge/heartbeat` | bearer (agents) | body cap, unknown-service 404 |
 | `POST /bridge/players` | bearer or session | CSRF, rate limit, action allowlist, caps |
@@ -78,10 +81,13 @@ share the token with people who should only *see* the dashboard.
 
 Every response carries: `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`,
 `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, and a `Content-Security-Policy`
-(`default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline';
+(`default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline';
 img-src 'self' https://mc-heads.net; connect-src 'self'; frame-ancestors 'none';
-base-uri 'none'; form-action 'self'`). `Strict-Transport-Security` is emitted only when the
-request arrived with `X-Forwarded-Proto: https` (i.e. behind your TLS proxy).
+base-uri 'none'; form-action 'self'`). The dashboard ships as external same-origin assets, so
+scripts — the actual XSS vector — are locked to `'self'` with no `'unsafe-inline'`; styles keep it
+(the UI sets inline style attributes dynamically, and CSS cannot execute script in modern
+browsers). `Strict-Transport-Security` is emitted only when the request arrived with
+`X-Forwarded-Proto: https` (i.e. behind your TLS proxy).
 
 Errors are generic (`400/401/403/404/429/500` JSON); unexpected exceptions are logged server-side
 and answered with a body-less-detail 500 — no stack traces, paths, or configuration leak.

@@ -10,6 +10,15 @@ kotlin {
     }
 }
 
+tasks.jar {
+    manifest {
+        attributes(
+            "Implementation-Title" to "vibecloud-core",
+            "Implementation-Version" to project.version.toString(),
+        )
+    }
+}
+
 dependencies {
     api(project(":api"))
     implementation(project(":common"))

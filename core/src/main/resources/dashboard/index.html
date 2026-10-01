@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VibeCloud Dashboard</title>
+<link rel="stylesheet" href="/assets/app.css">
+<script src="/assets/app.js" defer></script>
+</head>
+<body>
+
+<div id="login" class="hidden">
+  <div class="login-glow" aria-hidden="true"></div>
+  <form class="login-card" id="login-form">
+    <div class="brand center"><span class="dot"></span> VibeCloud</div>
+    <h1>Welcome back</h1>
+    <p class="sub">Sign in with the bridge token (<code>bridge.token</code> on the cloud host). It is exchanged
+    for an HttpOnly session cookie and never stored in the browser.</p>
+    <label for="token">Access token</label>
+    <input type="password" id="token" autocomplete="off" autofocus>
+    <div class="login-error" id="login-error"></div>
+    <button class="btn primary" type="submit" style="width:100%;justify-content:center;margin-top:8px;">Sign in</button>
+  </form>
+</div>
+
+<div id="app" class="hidden">
+  <nav class="sidebar">
+    <div class="brand"><span class="dot"></span> VibeCloud</div>
+    <div class="nav-group">Cloud</div>
+    <button class="nav-item" data-page="overview"><span class="icon">◎</span> Overview</button>
+    <button class="nav-item" data-page="players"><span class="icon">☺</span> Players <span class="count" id="nav-players">0</span></button>
+    <button class="nav-item" data-page="services"><span class="icon">▦</span> Services <span class="count" id="nav-services">0</span></button>
+    <button class="nav-item" data-page="groups"><span class="icon">❏</span> Groups <span class="count" id="nav-groups">0</span></button>
+    <button class="nav-item" data-page="console"><span class="icon">⌘</span> Console</button>
+    <div class="nav-group">System</div>
+    <button class="nav-item" data-page="system"><span class="icon">♨</span> Host &amp; Health</button>
+    <button class="nav-item" data-page="activity"><span class="icon">≡</span> Activity</button>
+    <div class="foot">
+      <div id="sidebar-version" class="dim">VibeCloud</div>
+      <a href="/bridge/status" target="_blank">raw status JSON</a>
+    </div>
+  </nav>
+
+  <div class="content">
+    <header class="topbar">
+      <div class="page-title" id="page-title">Overview</div>
+      <div class="quick-cmd">
+        <input type="text" id="quick-command" placeholder="Cloud command — try 'group start lobby', Tab completes">
+        <button class="btn primary" id="quick-run">Run</button>
+      </div>
+      <div class="meta">
+        <span class="updated" id="updated-at"></span>
+        <button class="btn small" id="logout">Sign out</button>
+      </div>
+    </header>
+
+    <main class="page">
+      <!-- ============ OVERVIEW ============ -->
+      <section id="page-overview" class="page-section" style="display:flex;flex-direction:column;gap:16px;">
+        <div id="alert-banner"></div>
+        <div class="stat-grid" id="stats"></div>
+        <div class="hero-chart card">
+          <div class="card-head">
+            <h2>Network activity</h2>
+            <div class="range-tabs" data-chart="players">
+              <button data-range="900">15m</button>
+              <button data-range="1800" class="active">30m</button>
+              <button data-range="3600">1h</button>
+            </div>
+          </div>
+          <div class="chart-wrap tall"><canvas id="chart-players"></canvas>
+            <div class="tooltip" id="tip-players"></div>
+          </div>
+        </div>
+        <div class="charts" id="charts"></div>
+        <div class="card">
+          <div class="card-head"><h2>Group distribution</h2><span class="dim small-note">live services per group</span></div>
+          <div id="group-distribution"></div>
+        </div>
+      </section>
+
+      <!-- ============ PLAYERS ============ -->
+      <section id="page-players" class="page-section hidden" style="display:flex;flex-direction:column;gap:16px;">
+        <div class="card">
+          <div class="card-head">
+            <h2>Players online <span id="players-count" class="dim" style="text-transform:none;"></span></h2>
+            <input type="text" id="player-filter" placeholder="Filter by name or server…" style="width:220px;">
+          </div>
+          <div class="player-grid" id="player-grid"></div>
+        </div>
+      </section>
+
+      <!-- ============ SERVICES ============ -->
+      <section id="page-services" class="page-section hidden" style="display:flex;flex-direction:column;gap:16px;">
+        <div class="card">
+          <div class="card-head"><h2>Services</h2><span class="dim small-note">click a row for its console</span></div>
+          <div class="tabs" id="service-tabs"></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr>
+                <th>Name</th><th>Group</th><th>State</th><th>Type</th><th>Port</th>
+                <th>CPU</th><th>TPS</th><th>Memory</th><th>Players</th><th style="text-align:right;">Actions</th>
+              </tr></thead>
+              <tbody id="services-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ GROUPS ============ -->
+      <section id="page-groups" class="page-section hidden" style="display:flex;flex-direction:column;gap:16px;">
+        <div class="group-cards" id="group-cards"></div>
+        <div class="card">
+          <h2>All groups</h2>
+          <div class="tabs" id="group-tabs"></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Name</th><th>Type</th><th>Version</th><th>Running</th><th>Desired</th><th>Provisioned</th><th>Max</th><th>Players</th><th style="text-align:right;">Actions</th></tr></thead>
+              <tbody id="groups-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ CONSOLE ============ -->
+      <section id="page-console" class="page-section hidden" style="display:flex;flex-direction:column;gap:16px;">
+        <div class="card">
+          <div class="console-head">
+            <h2>Console</h2>
+            <select id="console-service"></select>
+            <div class="grow"></div>
+            <label class="dim" style="font-size:12px;display:flex;align-items:center;gap:6px;">
+              <input type="checkbox" id="console-follow" checked> auto-refresh
+            </label>
+            <button class="btn small" id="console-refresh">Refresh</button>
+          </div>
+          <div class="console" id="console-output"></div>
+          <div class="console-input">
+            <input type="text" id="console-command" placeholder="Console command for the selected service">
+            <button class="btn" id="console-send">Send</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ SYSTEM ============ -->
+      <section id="page-system" class="page-section hidden" style="display:flex;flex-direction:column;gap:16px;">
+        <div class="stat-grid" id="system-stats"></div>
+        <div class="charts">
+          <div class="card">
+            <div class="card-head">
+              <h2>Host CPU load</h2>
+              <div class="range-tabs" data-chart="cpu">
+                <button data-range="900">15m</button>
+                <button data-range="1800" class="active">30m</button>
+                <button data-range="3600">1h</button>
+              </div>
+            </div>
+            <div class="chart-wrap"><canvas id="chart-cpu"></canvas><div class="tooltip" id="tip-cpu"></div></div>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <h2>System memory</h2>
+              <div class="range-tabs" data-chart="sysram">
+                <button data-range="900">15m</button>
+                <button data-range="1800" class="active">30m</button>
+                <button data-range="3600">1h</button>
+              </div>
+            </div>
+            <div class="chart-wrap"><canvas id="chart-sysram"></canvas><div class="tooltip" id="tip-sysram"></div></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>Host details</h2></div>
+          <div class="table-wrap">
+            <table id="system-details"></table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ ACTIVITY ============ -->
+      <section id="page-activity" class="page-section hidden" style="display:flex;flex-direction:column;gap:16px;">
+        <div class="card">
+          <div class="card-head">
+            <h2>Recent cloud activity</h2>
+            <button class="btn small" id="activity-refresh">Refresh</button>
+          </div>
+          <div class="timeline" id="activity-list"><div class="empty">Loading…</div></div>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+
+<div id="toasts"></div>
+</body>
+</html>

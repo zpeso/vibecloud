@@ -18,6 +18,12 @@ class MetricsHistory(private val capacity: Int = DEFAULT_CAPACITY) {
         val worstTps: Double?,
         /** Cloud-wide sum of backend heap-usage ratios (0..1); null until an agent reports one. */
         val averageRamUsage: Double?,
+        /** Whole-host CPU load (0..1); null until the OS reports a value. */
+        val hostCpu: Double? = null,
+        /** Host system-RAM usage (0..1); null when unavailable. */
+        val hostSysRam: Double? = null,
+        /** Controller JVM heap usage (0..1). */
+        val hostJvmHeap: Double? = null,
     )
 
     private val samples = ConcurrentLinkedDeque<Sample>()

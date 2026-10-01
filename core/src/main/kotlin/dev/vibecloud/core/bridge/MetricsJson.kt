@@ -15,6 +15,9 @@ internal object MetricsJson {
                 "services" to JsonWriter.num(sample.totalServices),
                 "tps" to (sample.worstTps?.let { JsonWriter.num(it) } ?: "null"),
                 "ram" to (sample.averageRamUsage?.let { JsonWriter.num(it) } ?: "null"),
+                "cpu" to (sample.hostCpu?.let { JsonWriter.num(it) } ?: "null"),
+                "sysram" to (sample.hostSysRam?.let { JsonWriter.num(it) } ?: "null"),
+                "jvmheap" to (sample.hostJvmHeap?.let { JsonWriter.num(it) } ?: "null"),
             )
         }
         return JsonWriter.obj(

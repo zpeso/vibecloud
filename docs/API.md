@@ -296,37 +296,52 @@ HTTP surface: `POST /bridge/cloud` with repeated `arg` fields, optional `player`
 ### The web dashboard
 
 The bridge serves a built-in dashboard at its root: `http://<cloud-host>:<bridge-port>/` (default
-`http://127.0.0.1:25580/`). No extra service, no build step — it ships inside the controller.
+`http://127.0.0.1:25580/`). No extra service, no build step — the page, stylesheet and script ship
+inside the controller (served from the core jar as classpath resources).
 
-- **Login**: paste the bridge token (the contents of `bridge.token` next to `config.yml`). The token
-  is stored in the browser's `localStorage` and sent as `Authorization: Bearer <token>` on every API
-  call — exactly like every other bridge client. The page itself carries no data, so all state stays
-  behind the token.
+- **Login**: paste the bridge token (the contents of `bridge.token` next to `config.yml`). It is
+  exchanged for an HttpOnly session cookie — the token itself never touches JavaScript or browser
+  storage. Cookie-authenticated state-changing requests carry a CSRF header automatically.
 - **Local + remote**: the bridge binds to `127.0.0.1` by default (open the dashboard locally or
   through an SSH tunnel). Set `bridge.bind-address: 0.0.0.0` in `config.yml` to reach it remotely —
   every data endpoint requires the token, and without it only the empty login page is served.
-- **Live data**: totals, per-service TPS (1m average) and heap usage (reported by the agent every
+- **Live data**: totals, per-service TPS, heap and **CPU usage** (reported by the agent every
   heartbeat), players, groups, rolling charts (players / TPS / memory / running services) sampled
   once per reconciliation cycle, and the recent console output of any running service.
-- **Pages**: the sidebar switches between Overview (stat cards + charts with 15m/30m/1h range
-  selectors and hover tooltips), Players (skin heads, current server, one-click transfer via
-  dropdown, kick), Services (state tabs with counts, TPS/memory meters, start/restart/stop),
-  Groups (backend/proxy tabs, running vs. desired vs. max, `Start another`), and Console
-  (per-service output with auto-refresh and command input).
+- **Pages**: the sidebar switches between Overview (stat cards, network activity chart, group
+  distribution, crash alert banner), Players (skin heads, current server, one-click transfer via
+  dropdown, kick), Services (state tabs with counts, CPU/TPS/memory meters, start/restart/stop),
+  Groups (per-group cards with capacity bars plus the table, backend/proxy tabs, `Start another`),
+  Console (per-service output with auto-refresh and command input), **Host & Health** (host CPU
+  load chart, system memory chart, uptime, JVM heap, OS/Java details, per-process CPU), and
+  **Activity** (recent service lifecycle events, newest first).
 - **Actions**: start/stop/restart per service, `group start <name>`, player transfers and kicks,
   and the full cloud command surface (with Tab completion) in the top command bar — the same
   authority as the interactive console.
+- **Security hardening**: the shell, stylesheet and script are separate same-origin assets, so the
+  Content-Security-Policy locks scripts to `'self'` — no more `'unsafe-inline'` scripts (styles keep
+  inline attributes, which cannot execute script).
 
-New bridge endpoints (all require the token):
+Bridge endpoints (all data endpoints require the token or a session):
 
 ```text
 GET /                   → the dashboard HTML (public; no data)
-GET /bridge/metrics     → {"history":{"points":[...]},"services":[{name,tps,ram_usage,heap_used_mb,heap_max_mb}]}
+GET /assets/app.css     → the dashboard stylesheet (public)
+GET /assets/app.js      → the dashboard script (public)
+GET /bridge/metrics     → {"history":{"points":[{t,players,running,services,tps,ram,cpu,sysram,jvmheap},...]},"services":[{name,tps,ram_usage,heap_used_mb,heap_max_mb,cpu}]}
+GET /bridge/host        → host system metrics: {cpu, process-cpu, cores, memory-total-mb, memory-used-mb, swap-total-mb, swap-used-mb, jvm-used-mb, jvm-max-mb, uptime-seconds, load-average, os-name, os-version, os-arch, java-version, version, started-at, processes:{"<service>":cpu}}
+GET /bridge/activity    → {"events":[{t,kind,message},...]} newest first (service lifecycle)
 GET /bridge/console?service=<name> → {"lines":[...]}  (last 200 console lines)
 ```
 
-Agent heartbeats additionally carry `tps`, `heap-used-mb` and `heap-max-mb`; `GET /bridge/status`
-includes the same values per service plus `totals.agents-online`.
+Agent heartbeats additionally carry `tps`, `heap-used-mb`, `heap-max-mb` and `process-cpu`; `GET
+/bridge/status` includes the same values per service plus `agent-version`, `restarts`, `last-error`
+and `totals.agents-online`.
+
+`/bridge/host` values come from the controller JVM's `com.sun.management.OperatingSystemMXBean`:
+`cpu` is the whole-host CPU load (0..1) — the number to watch for the root server's CPU — while
+`process-cpu` is the controller process's own share. Per-service CPU lives in `processes` and in
+each service's `cpu` field in status/metrics, reported by the agents themselves.
 
 ### The raw client (still available)
 

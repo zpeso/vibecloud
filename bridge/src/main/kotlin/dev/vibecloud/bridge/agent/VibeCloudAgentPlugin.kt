@@ -109,6 +109,14 @@ class VibeCloudAgentPlugin : JavaPlugin() {
             val memory = Runtime.getRuntime()
             val heapUsedMb = (memory.totalMemory() - memory.freeMemory()) / BYTES_PER_MB
             val heapMaxMb = memory.maxMemory() / BYTES_PER_MB
+            // This JVM's own CPU usage (0..1 of all cores combined) — the cloud cannot read a
+            // child process's CPU from outside, so the agent reports it. Null when the OS
+            // has not computed a value yet (Java returns -1 in that case).
+            val processCpu = runCatching {
+                (java.lang.management.ManagementFactory.getPlatformMXBean(
+                    com.sun.management.OperatingSystemMXBean::class.java,
+                )?.processCpuLoad ?: -1.0).takeIf { it >= 0.0 }
+            }.getOrNull()
             val form = formEncode(
                 "service-id" to current.serviceId,
                 "service-name" to current.serviceName,
@@ -118,6 +126,7 @@ class VibeCloudAgentPlugin : JavaPlugin() {
                 "tps" to (tpsField?.let { String.format(Locale.US, "%.2f", it) } ?: ""),
                 "heap-used-mb" to heapUsedMb.toString(),
                 "heap-max-mb" to heapMaxMb.toString(),
+                "process-cpu" to (processCpu?.let { String.format(Locale.US, "%.4f", it) } ?: ""),
             )
             val request = HttpRequest.newBuilder()
                 .uri(URI.create("${current.cloudUrl}/bridge/heartbeat"))

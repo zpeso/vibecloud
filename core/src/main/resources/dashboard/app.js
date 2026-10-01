@@ -1,0 +1,866 @@
+/* VibeCloud dashboard — dependency-free SPA served by the bridge.
+ * Auth works with HttpOnly session cookies (POST /bridge/dashboard/login exchanges the bridge
+ * token); cookie-authenticated state-changing requests carry the CSRF header. */
+(function () {
+  "use strict";
+
+  var root = document.getElementById("app");
+  var login = document.getElementById("login");
+  var lastStatus = null;
+  var lastMetrics = null;
+  var lastHost = null;
+  var page = "overview";
+  var serviceTab = "ALL";
+  var groupTab = "ALL";
+  var chartRanges = {}; // chartId -> seconds
+  var hover = {};       // chartId -> hovered index or null
+  var selectedService = null;
+  var chartsBuilt = false;
+  var activityLoadedAt = 0;
+
+  function byId(id) { return document.getElementById(id); }
+  function esc(text) {
+    var div = document.createElement("div");
+    div.textContent = text === null || text === undefined ? "" : String(text);
+    return div.innerHTML;
+  }
+
+  // ---- HTTP helpers -------------------------------------------------------
+  function api(path, options) {
+    options = options || {};
+    if (options.method && options.method !== "GET") {
+      options.headers = Object.assign({}, options.headers, { "X-Requested-With": "XMLHttpRequest" });
+    }
+    if (options.body && typeof options.body === "string") {
+      options.headers["Content-Type"] = options.headers["Content-Type"] || "application/x-www-form-urlencoded";
+    }
+    options.credentials = "same-origin";
+    return fetch(path, options).then(function (response) {
+      if (response.status === 401) { showLogin(); throw new Error("unauthorized"); }
+      if (!response.ok) { return response.text().then(function (body) { throw new Error(body || (response.status + " " + response.statusText)); }); }
+      return response.text().then(function (body) { return body ? JSON.parse(body) : null; });
+    });
+  }
+  function form(fields) {
+    var parts = [];
+    Object.keys(fields).forEach(function (key) {
+      (fields[key] || []).forEach(function (value) { parts.push(encodeURIComponent(key) + "=" + encodeURIComponent(value)); });
+    });
+    return parts.join("&");
+  }
+
+  // ---- auth ---------------------------------------------------------------
+  function showLogin() {
+    login.classList.remove("hidden");
+    root.classList.add("hidden");
+  }
+  function showApp() {
+    login.classList.add("hidden");
+    root.classList.remove("hidden");
+    refreshAll();
+  }
+  byId("login-form").addEventListener("submit", function (event) {
+    event.preventDefault();
+    var submitted = byId("token").value;
+    byId("token").value = "";
+    byId("login-error").textContent = "";
+    fetch("/bridge/dashboard/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
+      body: form({ token: [submitted] }),
+      credentials: "same-origin",
+    }).then(function (response) {
+      submitted = null;
+      if (response.ok) { showApp(); return; }
+      if (response.status === 401) throw new Error("Invalid token.");
+      if (response.status === 429) throw new Error("Too many attempts — wait a minute and retry.");
+      throw new Error("Sign-in failed (" + response.status + ").");
+    }).catch(function (error) {
+      byId("login-error").textContent = error.message;
+    });
+  });
+  byId("logout").addEventListener("click", function () {
+    fetch("/bridge/dashboard/logout", { method: "POST", headers: { "X-Requested-With": "XMLHttpRequest" }, credentials: "same-origin" })
+      .catch(function () {})
+      .then(showLogin);
+  });
+
+  // ---- data ---------------------------------------------------------------
+  function refreshAll() {
+    Promise.all([
+      api("/bridge/status"),
+      api("/bridge/metrics").catch(function () { return null; }),
+      api("/bridge/host").catch(function () { return null; }),
+    ]).then(function (results) {
+      lastStatus = results[0];
+      lastMetrics = results[1];
+      lastHost = results[2];
+      renderAll();
+    }).catch(function () {});
+  }
+  function refresh() { refreshAll(); }
+
+  function services() { return (lastStatus && lastStatus.services) || []; }
+  function groups() { return (lastStatus && lastStatus.groups) || []; }
+  function metaOf(name) {
+    var list = (lastMetrics && lastMetrics.services) || [];
+    for (var i = 0; i < list.length; i++) if (list[i].name === name) return list[i];
+    return null;
+  }
+  function hostOf(name) { return (lastHost && lastHost.processes && lastHost.processes[name]) || null; }
+  function fmtTps(tps) { return tps === null || tps === undefined ? "—" : (Math.round(tps * 10) / 10).toFixed(1); }
+  function tpsClass(tps) { return tps === null || tps === undefined ? "" : (tps < 15 ? "bad" : (tps < 19 ? "warn" : "")); }
+  function fmtRam(ratio) { return ratio === null || ratio === undefined ? "—" : Math.round(ratio * 100) + "%"; }
+  function ramClass(ratio) { return ratio === null || ratio === undefined ? "" : (ratio >= 0.9 ? "bad" : (ratio >= 0.75 ? "warn" : "")); }
+  function fmtCpu(ratio) { return ratio === null || ratio === undefined ? "—" : Math.round(ratio * 100) + "%"; }
+  function cpuClass(ratio) { return ratio === null || ratio === undefined ? "" : (ratio >= 0.9 ? "bad" : (ratio >= 0.6 ? "warn" : "")); }
+  function fmtUptime(seconds) {
+    if (seconds === null || seconds === undefined) return "—";
+    var d = Math.floor(seconds / 86400), h = Math.floor((seconds % 86400) / 3600), m = Math.floor((seconds % 3600) / 60);
+    return d > 0 ? d + "d " + h + "h" : (h > 0 ? h + "h " + m + "m" : m + "m");
+  }
+  function fmtMb(value) { return value === null || value === undefined ? "—" : Math.round(value) + " MB"; }
+
+  // ---- routing ------------------------------------------------------------
+  var PAGE_TITLES = { overview: "Overview", players: "Players", services: "Services", groups: "Groups", console: "Console", system: "Host & Health", activity: "Activity" };
+  function navigate(target) {
+    page = PAGE_TITLES[target] ? target : "overview";
+    try { history.replaceState(null, "", "#" + page); } catch (error) {}
+    Array.prototype.forEach.call(document.querySelectorAll(".nav-item"), function (item) {
+      item.classList.toggle("active", item.getAttribute("data-page") === page);
+    });
+    Array.prototype.forEach.call(document.querySelectorAll(".page-section"), function (section) {
+      section.classList.toggle("hidden", section.id !== "page-" + page);
+    });
+    byId("page-title").textContent = PAGE_TITLES[page];
+    if (page === "console") loadConsole();
+    if (page === "activity") loadActivity();
+    renderCharts();
+  }
+  Array.prototype.forEach.call(document.querySelectorAll(".nav-item"), function (item) {
+    item.addEventListener("click", function () { navigate(item.getAttribute("data-page")); });
+  });
+  window.addEventListener("hashchange", function () { navigate((location.hash || "#overview").slice(1)); });
+
+  // ---- rendering ----------------------------------------------------------
+  function renderAll() {
+    byId("updated-at").textContent = "updated " + new Date().toLocaleTimeString();
+    var totals = lastStatus.totals || {};
+    byId("nav-players").textContent = totals["players-online"] || 0;
+    byId("nav-services").textContent = services().length;
+    byId("nav-groups").textContent = groups().length;
+    if (lastHost && lastHost.version) byId("sidebar-version").textContent = "VibeCloud v" + lastHost.version;
+    renderAlert();
+    renderStats(totals);
+    buildCharts();
+    renderCharts();
+    renderGroupDistribution();
+    renderServices();
+    renderGroups();
+    renderPlayers();
+    renderConsoleTarget();
+    renderSystem();
+  }
+
+  function renderAlert() {
+    var crashed = services().filter(function (service) { return service.state === "CRASHED"; });
+    var box = byId("alert-banner");
+    if (!crashed.length) { box.innerHTML = ""; return; }
+    var names = crashed.map(function (service) { return esc(service.name); }).join(", ");
+    box.innerHTML = '<div class="alert"><span class="pip"></span>' +
+      "<span><strong>" + crashed.length + " service" + (crashed.length > 1 ? "s" : "") + " crashed</strong> — " + names +
+      ". Check the console and restart from the services page.</span></div>";
+  }
+
+  function renderStats(totals) {
+    var list = services();
+    var reporting = 0, ramSum = 0, tpsSum = 0, cpuSum = 0, cpuReports = 0;
+    list.forEach(function (service) {
+      var meta = metaOf(service.name);
+      if (meta && meta.tps !== null && meta.tps !== undefined) {
+        reporting++;
+        ramSum += (meta.heap_used_mb || 0);
+        tpsSum += meta.tps;
+      }
+      var proc = hostOf(service.name);
+      if (proc && proc.cpu !== null && proc.cpu !== undefined) { cpuSum += proc.cpu; cpuReports++; }
+    });
+    var html = "";
+    html += statCard("Players online", totals["players-online"] || 0, "across all services", deltaPlayers());
+    html += statCard("Services running", (totals.online || 0) + " / " + (totals.services || 0), "provisioned · " + (totals["agents-online"] || 0) + " agents online");
+    html += statCard("Groups", totals.groups || 0, "configured groups");
+    html += statCard("Avg. backend TPS", reporting ? (tpsSum / reporting).toFixed(1) : "—", reporting + " backend(s) reporting");
+    html += statCard("Backend memory", reporting ? Math.round(ramSum) + " MB" : "—", "heap used, all backends");
+    html += statCard("Cloud CPU load", lastHost && lastHost.cpu !== null && lastHost.cpu !== undefined ? Math.round(lastHost.cpu * 100) + "%" : "—", "host CPU, all processes");
+    html += statCard("Host uptime", lastHost ? fmtUptime(lastHost["uptime-seconds"]) : "—", lastHost && lastHost["os-name"] ? lastHost["os-name"] : "host system");
+    byId("stats").innerHTML = html;
+
+    function deltaPlayers() {
+      var points = historyPoints();
+      if (points.length < 2) return null;
+      var diff = points[points.length - 1].players - points[points.length - 2].players;
+      return diff === 0 ? null : diff;
+    }
+  }
+  function statCard(label, value, hint, delta) {
+    var trend = "";
+    if (delta !== null && delta !== undefined) {
+      trend = '<span class="trend ' + (delta > 0 ? "up" : "down") + '">' + (delta > 0 ? "▲ +" : "▼ ") + delta + "</span>";
+    }
+    return '<div class="card stat"><h2 style="margin-bottom:4px;">' + esc(label) + "</h2>" +
+      '<div class="value">' + esc(value) + trend + "</div>" +
+      '<div class="hint">' + esc(hint) + "</div></div>";
+  }
+
+  function renderGroupDistribution() {
+    var totals = {};
+    services().forEach(function (service) {
+      if (service.state === "RUNNING") totals[service.group] = (totals[service.group] || 0) + 1;
+    });
+    var names = Object.keys(totals).sort(function (a, b) { return totals[b] - totals[a]; });
+    var max = names.length ? totals[names[0]] : 1;
+    byId("group-distribution").innerHTML = names.length ? names.map(function (name) {
+      return '<div class="dist-row"><div class="d-name">' + esc(name) + "</div>" +
+        '<div class="d-bar"><span style="width:' + Math.round(totals[name] * 100 / max) + '%"></span></div>' +
+        '<div class="d-num">' + totals[name] + " running</div></div>";
+    }).join("") : '<div class="empty">No running services yet.</div>';
+  }
+
+  // ---- players page -------------------------------------------------------
+  function renderPlayers() {
+    var filter = (byId("player-filter").value || "").trim().toLowerCase();
+    var running = {};
+    services().forEach(function (service) {
+      if (service.state === "RUNNING" && service.players) running[service.name] = service.players;
+    });
+    var rows = [];
+    Object.keys(running).sort().forEach(function (serviceName) {
+      running[serviceName].forEach(function (playerName) {
+        rows.push({ name: playerName, server: serviceName });
+      });
+    });
+    rows.sort(function (a, b) { return a.name.toLowerCase().localeCompare(b.name.toLowerCase()); });
+    var visible = rows.filter(function (row) {
+      return !filter || row.name.toLowerCase().indexOf(filter) >= 0 || row.server.toLowerCase().indexOf(filter) >= 0;
+    });
+    byId("players-count").textContent = visible.length === rows.length
+      ? "· " + rows.length : "· " + visible.length + " of " + rows.length;
+
+    var options = Object.keys(running).sort().map(function (name) {
+      return '<option value="' + esc(name) + '">' + esc(name) + "</option>";
+    }).join("");
+
+    byId("player-grid").innerHTML = visible.length ? visible.map(function (row) {
+      var initial = esc(row.name.charAt(0).toUpperCase());
+      // No inline onerror (CSP): failed avatar loads are handled after insertion.
+      var head = '<img class="head" alt="" loading="lazy" src="https://mc-heads.net/avatar/' + encodeURIComponent(row.name) + '/36">' +
+        '<div class="fallback-head" style="display:none;">' + initial + "</div>";
+      return '<div class="player">' + head +
+        '<div class="who"><div class="name">' + esc(row.name) + "</div>" +
+        '<div class="on">on ' + esc(row.server) + "</div></div>" +
+        '<select data-player="' + esc(row.name) + '" data-from="' + esc(row.server) + '">' +
+        '<option value="">Move to…</option>' + options + "</select>" +
+        '<button class="btn small danger" data-kick="' + esc(row.name) + '">Kick</button>' +
+        "</div>";
+    }).join("") : '<div class="empty">No players online.</div>';
+
+    Array.prototype.forEach.call(byId("player-grid").querySelectorAll("select"), function (select) {
+      select.addEventListener("change", function () {
+        var target = select.value;
+        var player = select.getAttribute("data-player");
+        if (!target) return;
+        api("/bridge/players", { method: "POST", body: form({ player: [player], action: ["transfer"], target: [target] }) })
+          .then(function () { toast("Sending " + player + " to " + target + "…"); })
+          .catch(function (error) { toast("Transfer failed: " + error.message); })
+          .then(function () { select.value = ""; refresh(); });
+      });
+    });
+    Array.prototype.forEach.call(byId("player-grid").querySelectorAll("button[data-kick]"), function (button) {
+      button.addEventListener("click", function () {
+        var player = button.getAttribute("data-kick");
+        if (!window.confirm("Kick " + player + "?")) return;
+        api("/bridge/players", { method: "POST", body: form({ player: [player], action: ["kick"], reason: ["Kicked from the dashboard"] }) })
+          .then(function () { toast(player + " was kicked."); })
+          .catch(function (error) { toast("Kick failed: " + error.message); })
+          .then(refresh);
+      });
+    });
+    // CSP-safe avatar fallback: swap to the letter tile when the CDN image fails.
+    Array.prototype.forEach.call(byId("player-grid").querySelectorAll("img.head"), function (image) {
+      image.addEventListener("error", function () {
+        image.style.display = "none";
+        var fallback = image.nextElementSibling;
+        if (fallback) fallback.style.display = "flex";
+      });
+    });
+  }
+  byId("player-filter").addEventListener("input", renderPlayers);
+
+  // ---- services page ------------------------------------------------------
+  function renderServices() {
+    var list = services().slice().sort(function (a, b) { return a.name.localeCompare(b.name); });
+    var counts = { ALL: list.length, RUNNING: 0, STARTING: 0, STOPPED: 0, CRASHED: 0 };
+    list.forEach(function (service) {
+      var key = service.state === "STOPPING" ? "STARTING" : (service.state === "CREATED" ? "STOPPED" : service.state);
+      if (counts[key] === undefined) counts[key] = 0;
+      counts[key]++;
+    });
+    var tabs = ["ALL", "RUNNING", "STARTING", "STOPPED", "CRASHED"];
+    byId("service-tabs").innerHTML = tabs.filter(function (tab) { return counts[tab] > 0; }).map(function (tab) {
+      return '<button class="tab' + (serviceTab === tab ? " active" : "") + '" data-tab="' + tab + '">' +
+        (tab === "ALL" ? "All" : tab.charAt(0) + tab.slice(1).toLowerCase()) + '<span class="n">' + counts[tab] + "</span></button>";
+    }).join("");
+    Array.prototype.forEach.call(byId("service-tabs").querySelectorAll("button"), function (button) {
+      button.addEventListener("click", function () {
+        serviceTab = button.getAttribute("data-tab");
+        renderServices();
+      });
+    });
+
+    var visible = list.filter(function (service) {
+      if (serviceTab === "ALL") return true;
+      if (serviceTab === "STARTING") return service.state === "STARTING" || service.state === "STOPPING";
+      if (serviceTab === "STOPPED") return service.state === "STOPPED" || service.state === "CREATED";
+      return service.state === serviceTab;
+    });
+    var body = visible.map(function (service) {
+      var meta = metaOf(service.name);
+      var proc = hostOf(service.name);
+      var tps = meta ? meta.tps : null;
+      var ram = meta ? meta.ram_usage : null;
+      var cpu = proc ? proc.cpu : null;
+      var heap = meta && meta.heap_used_mb !== null && meta.heap_used_mb !== undefined
+        ? Math.round(meta.heap_used_mb) + " / " + Math.round(meta.heap_max_mb || 0) + " MB" : "";
+      var players = service["players-online"];
+      var detail = "";
+      if (service["agent-version"]) detail += " · agent v" + esc(service["agent-version"]);
+      if (service.restarts) detail += " · " + esc(service.restarts) + " restarts";
+      if (service["last-error"]) detail += ' · <span class="dim" title="' + esc(service["last-error"]) + '">error</span>';
+      var actions =
+        '<button class="btn small" data-act="start" data-name="' + esc(service.name) + '">Start</button> ' +
+        '<button class="btn small" data-act="restart" data-name="' + esc(service.name) + '">Restart</button> ' +
+        '<button class="btn small danger" data-act="stop" data-name="' + esc(service.name) + '">Stop</button>';
+      return '<tr class="clickable" data-service="' + esc(service.name) + '">' +
+        "<td>" + esc(service.name) + detail + "</td>" +
+        "<td>" + esc(service.group) + "</td>" +
+        '<td><span class="badge ' + esc(service.state) + '"><span class="pip"></span>' + esc(service.state) + "</span></td>" +
+        "<td>" + esc(service.type) + "</td>" +
+        '<td class="num">' + esc(service.port) + "</td>" +
+        '<td class="num ' + cpuClass(cpu) + '">' + esc(fmtCpu(cpu)) + "</td>" +
+        '<td class="num ' + tpsClass(tps) + '">' + esc(fmtTps(tps)) + "</td>" +
+        "<td>" + (ram === null || ram === undefined ? '<span class="dim">—</span>' :
+          '<span class="meter"><span class="' + ramClass(ram) + '" style="width:' + Math.round(ram * 100) + '%"></span></span>' +
+          ' <span class="dim" style="font-size:11px;">' + esc(heap) + "</span>") + "</td>" +
+        '<td class="num">' + esc(players === null || players === undefined ? "—" : players) + "</td>" +
+        '<td style="text-align:right;">' + actions + "</td>" +
+        "</tr>";
+    }).join("");
+    byId("services-body").innerHTML = body || '<tr><td colspan="10" class="empty">No services in this view.</td></tr>';
+
+    Array.prototype.forEach.call(byId("services-body").querySelectorAll("button"), function (button) {
+      button.addEventListener("click", function (event) {
+        event.stopPropagation();
+        runCloudCommand([button.getAttribute("data-act"), button.getAttribute("data-name")]);
+      });
+    });
+    Array.prototype.forEach.call(byId("services-body").querySelectorAll("tr.clickable"), function (row) {
+      row.addEventListener("click", function () {
+        selectedService = row.getAttribute("data-service");
+        navigate("console");
+      });
+    });
+  }
+
+  // ---- groups page --------------------------------------------------------
+  var IS_PROXY = { VELOCITY: true, BUNGEECORD: true };
+  function renderGroups() {
+    var list = groups().slice().sort(function (a, b) { return a.name.localeCompare(b.name); });
+    var runningByGroup = {}, provisionedByGroup = {}, playersByGroup = {};
+    services().forEach(function (service) {
+      provisionedByGroup[service.group] = (provisionedByGroup[service.group] || 0) + 1;
+      playersByGroup[service.group] = (playersByGroup[service.group] || 0) + (service["players-online"] || 0);
+      if (service.state === "RUNNING" || service.state === "STARTING") {
+        runningByGroup[service.group] = (runningByGroup[service.group] || 0) + 1;
+      }
+    });
+    var kinds = { ALL: list.length, BACKEND: 0, PROXY: 0 };
+    list.forEach(function (group) { kinds[IS_PROXY[group.type] ? "PROXY" : "BACKEND"]++; });
+    byId("group-tabs").innerHTML = ["ALL", "BACKEND", "PROXY"].map(function (tab) {
+      return '<button class="tab' + (groupTab === tab ? " active" : "") + '" data-tab="' + tab + '">' +
+        (tab === "ALL" ? "All" : tab.charAt(0) + tab.slice(1).toLowerCase() + "s") + '<span class="n">' + kinds[tab] + "</span></button>";
+    }).join("");
+    Array.prototype.forEach.call(byId("group-tabs").querySelectorAll("button"), function (button) {
+      button.addEventListener("click", function () {
+        groupTab = button.getAttribute("data-tab");
+        renderGroups();
+      });
+    });
+
+    byId("group-cards").innerHTML = list.map(function (group) {
+      var running = runningByGroup[group.name] || 0;
+      var provisioned = provisionedByGroup[group.name] || 0;
+      var desired = group["min-services"] || 0;
+      var max = group["max-services"] || 0;
+      var players = playersByGroup[group.name] || 0;
+      var pct = max > 0 ? Math.min(100, Math.round(provisioned * 100 / max)) : 0;
+      return '<div class="card group-card">' +
+        '<div class="g-head"><div class="g-name">' + esc(group.name) + "</div>" +
+        '<span class="badge ' + (IS_PROXY[group.type] ? "" : "RUNNING") + '"><span class="pip"></span>' + esc(group.type) + "</span></div>" +
+        '<div class="g-meta">' + esc(group.version) + (group.static ? " · static" : "") + "</div>" +
+        '<div class="g-row"><span class="k">Running</span><span>' + running + " / " + desired + "</span></div>" +
+        '<div class="g-row"><span class="k">Provisioned</span><span>' + provisioned + " / " + max + " max</span></div>" +
+        '<div class="g-row"><span class="k">Players</span><span>' + players + "</span></div>" +
+        '<div class="g-bar"><span style="width:' + pct + '%"></span></div>' +
+        '<div style="margin-top:12px;text-align:right;">' +
+        (provisioned >= max && running >= desired
+          ? '<span class="dim" style="font-size:12px;">at capacity</span>'
+          : '<button class="btn small" data-group="' + esc(group.name) + '">Start another</button>') +
+        "</div></div>";
+    }).join("");
+    Array.prototype.forEach.call(byId("group-cards").querySelectorAll("button"), function (button) {
+      button.addEventListener("click", function () {
+        runCloudCommand(["group", "start", button.getAttribute("data-group")]);
+      });
+    });
+
+    var visible = list.filter(function (group) {
+      if (groupTab === "ALL") return true;
+      return groupTab === (IS_PROXY[group.type] ? "PROXY" : "BACKEND");
+    });
+    byId("groups-body").innerHTML = visible.length ? visible.map(function (group) {
+      var running = runningByGroup[group.name] || 0;
+      var provisioned = provisionedByGroup[group.name] || 0;
+      var desired = group["min-services"] || 0;
+      var max = group["max-services"] || 0;
+      var atCapacity = provisioned >= max;
+      return "<tr>" +
+        "<td>" + esc(group.name) + "</td>" +
+        "<td>" + esc(group.type) + "</td>" +
+        "<td>" + esc(group.version) + "</td>" +
+        '<td class="num">' + running + "</td>" +
+        '<td class="num">' + desired + "</td>" +
+        '<td class="num">' + provisioned + "</td>" +
+        '<td class="num">' + max + "</td>" +
+        '<td class="num">' + (playersByGroup[group.name] || 0) + "</td>" +
+        '<td style="text-align:right;">' +
+        (atCapacity
+          ? '<span class="dim" style="font-size:12px;">at max</span>'
+          : '<button class="btn small" data-group-row="' + esc(group.name) + '">Start another</button>') +
+        "</td></tr>";
+    }).join("") : '<tr><td colspan="9" class="empty">No groups in this view.</td></tr>';
+
+    Array.prototype.forEach.call(byId("groups-body").querySelectorAll("button"), function (button) {
+      button.addEventListener("click", function () {
+        runCloudCommand(["group", "start", button.getAttribute("data-group-row")]);
+      });
+    });
+  }
+
+  // ---- charts (smooth curved gradient areas with floating tooltip) ----------
+  var CHARTS = [
+    { id: "players", title: "Players online", static: true, series: [
+      { label: "Players", pick: function (p) { return p.players; }, color: "#22d3ee" },
+    ] },
+    { id: "tps", title: "Worst backend TPS", series: [
+      { label: "TPS", pick: function (p) { return p.tps; }, color: "#34d399" },
+    ], max: 20 },
+    { id: "ram", title: "Avg. backend memory", suffix: "%", series: [
+      { label: "Memory", pick: function (p) { return p.ram === null || p.ram === undefined ? null : p.ram * 100; }, color: "#fbbf24" },
+    ], max: 100 },
+    { id: "services", title: "Services running", series: [
+      { label: "Running", pick: function (p) { return p.running; }, color: "#a78bfa" },
+      { label: "Provisioned", pick: function (p) { return p.services; }, color: "#52525b", lineOnly: true },
+    ] },
+    { id: "cpu", title: "Host CPU load", static: true, suffix: "%", series: [
+      { label: "CPU", pick: function (p) { return p.cpu === null || p.cpu === undefined ? null : p.cpu * 100; }, color: "#22d3ee" },
+    ], max: 100 },
+    { id: "sysram", title: "System memory", static: true, suffix: "%", series: [
+      { label: "System RAM", pick: function (p) { return p.sysram === null || p.sysram === undefined ? null : p.sysram * 100; }, color: "#a78bfa" },
+      { label: "Cloud JVM heap", pick: function (p) { return p.jvmheap === null || p.jvmheap === undefined ? null : p.jvmheap * 100; }, color: "#22d3ee" },
+    ], max: 100 },
+  ];
+  var RANGES = [
+    { label: "15m", seconds: 900 },
+    { label: "30m", seconds: 1800 },
+    { label: "1h", seconds: 3600 },
+  ];
+  CHARTS.forEach(function (chart) {
+    if (chartRanges[chart.id] === undefined) chartRanges[chart.id] = 1800;
+    hover[chart.id] = null;
+  });
+
+  function historyPoints() {
+    return (lastMetrics && lastMetrics.history && lastMetrics.history.points) || [];
+  }
+
+  function buildCharts() {
+    if (chartsBuilt) return;
+    chartsBuilt = true;
+    // Charts not statically present in the HTML get their card built here.
+    byId("charts").innerHTML = CHARTS.filter(function (chart) { return !chart.static; }).map(function (chart) {
+      var tabs = RANGES.map(function (range) {
+        return '<button data-range="' + range.seconds + '"' +
+          (chartRanges[chart.id] === range.seconds ? ' class="active"' : "") + ">" + range.label + "</button>";
+      }).join("");
+      return '<div class="card"><div class="card-head"><h2>' + esc(chart.title) + "</h2>" +
+        '<div class="range-tabs" data-chart="' + chart.id + '">' + tabs + "</div></div>" +
+        '<div class="chart-wrap"><canvas id="chart-' + chart.id + '"></canvas>' +
+        '<div class="tooltip" id="tip-' + chart.id + '"></div></div></div>';
+    }).join("");
+    CHARTS.forEach(function (chart) {
+      var canvas = byId("chart-" + chart.id);
+      if (!canvas) return;
+      canvas.addEventListener("mousemove", function (event) {
+        var rect = canvas.getBoundingClientRect();
+        onChartHover(chart, event.clientX - rect.left, rect.width);
+      });
+      canvas.addEventListener("mouseleave", function () {
+        hover[chart.id] = null;
+        byId("tip-" + chart.id).style.display = "none";
+        drawChart(chart);
+      });
+      Array.prototype.forEach.call(
+        document.querySelectorAll('.range-tabs[data-chart="' + chart.id + '"] button'),
+        function (button) {
+          button.addEventListener("click", function () {
+            chartRanges[chart.id] = parseInt(button.getAttribute("data-range"), 10);
+            Array.prototype.forEach.call(
+              document.querySelectorAll('.range-tabs[data-chart="' + chart.id + '"] button'),
+              function (other) { other.classList.toggle("active", other === button); },
+            );
+            drawChart(chart);
+          });
+        },
+      );
+    });
+    window.addEventListener("resize", function () { CHARTS.forEach(drawChart); });
+  }
+
+  function chartPoints(chart) {
+    var cutoff = Math.floor(Date.now() / 1000) - chartRanges[chart.id];
+    var points = historyPoints().filter(function (point) { return point.t >= cutoff; });
+    return points.length ? points : historyPoints();
+  }
+
+  function onChartHover(chart, offsetX, width) {
+    var points = chartPoints(chart);
+    if (points.length < 2) return;
+    var canvas = byId("chart-" + chart.id);
+    var pad = chartPad(width);
+    var innerWidth = width - pad.left - pad.right;
+    var ratio = (offsetX - pad.left) / innerWidth;
+    var index = Math.round(ratio * (points.length - 1));
+    index = Math.max(0, Math.min(points.length - 1, index));
+    hover[chart.id] = index;
+    drawChart(chart);
+    var tip = byId("tip-" + chart.id);
+    var rows = chart.series.map(function (series) {
+      var value = series.pick(points[index]);
+      return '<div class="row"><span class="swatch" style="background:' + series.color + '"></span>' +
+        esc(series.label) + ' <span class="t-val">' + esc(fmtChartValue(value, chart.suffix)) + "</span></div>";
+    }).join("");
+    tip.innerHTML = '<div class="t-label">' + new Date(points[index].t * 1000).toLocaleTimeString() + "</div>" + rows;
+    tip.style.display = "block";
+    var wrap = canvas.parentElement;
+    var left = Math.min(Math.max(offsetX + 14, 0), wrap.clientWidth - tip.offsetWidth - 4);
+    tip.style.left = left + "px";
+    tip.style.top = "6px";
+  }
+
+  function fmtChartValue(value, suffix) {
+    if (value === null || value === undefined) return "—";
+    return (Math.round(value * 10) / 10) + (suffix || "");
+  }
+
+  function chartPad(width) {
+    return { top: 12, right: width < 260 ? 12 : 44, bottom: 20, left: 12 };
+  }
+
+  /** Catmull-Rom spline through the given points, returned as canvas path commands. */
+  function splinePath(pts) {
+    if (pts.length < 3) {
+      var simple = "";
+      pts.forEach(function (p, i) { simple += (i === 0 ? "M" : "L") + p.x.toFixed(1) + " " + p.y.toFixed(1) + " "; });
+      return simple;
+    }
+    var d = "M" + pts[0].x.toFixed(1) + " " + pts[0].y.toFixed(1) + " ";
+    for (var i = 0; i < pts.length - 1; i++) {
+      var p0 = pts[Math.max(0, i - 1)], p1 = pts[i], p2 = pts[i + 1], p3 = pts[Math.min(pts.length - 1, i + 2)];
+      var c1x = p1.x + (p2.x - p0.x) / 6, c1y = p1.y + (p2.y - p0.y) / 6;
+      var c2x = p2.x - (p3.x - p1.x) / 6, c2y = p2.y - (p3.y - p1.y) / 6;
+      d += "C" + c1x.toFixed(1) + " " + c1y.toFixed(1) + " " + c2x.toFixed(1) + " " + c2y.toFixed(1) + " " +
+        p2.x.toFixed(1) + " " + p2.y.toFixed(1) + " ";
+    }
+    return d;
+  }
+
+  function drawChart(chart) {
+    var canvas = byId("chart-" + chart.id);
+    if (!canvas) return;
+    var points = chartPoints(chart);
+    var ratio = window.devicePixelRatio || 1;
+    var width = canvas.clientWidth || 320;
+    var height = canvas.parentElement.classList.contains("tall") ? 240 : 190;
+    canvas.width = width * ratio;
+    canvas.height = height * ratio;
+    var context = canvas.getContext("2d");
+    context.setTransform(1, 0, 0, 1, 0, 0);
+    context.scale(ratio, ratio);
+    context.clearRect(0, 0, width, height);
+
+    var pad = chartPad(width);
+    var innerWidth = width - pad.left - pad.right;
+    var innerHeight = height - pad.top - pad.bottom;
+
+    var seriesValues = chart.series.map(function (series) {
+      return points.map(series.pick);
+    });
+    var flat = [];
+    seriesValues.forEach(function (values) {
+      values.forEach(function (value) { if (value !== null && value !== undefined) flat.push(value); });
+    });
+    var lo = 0;
+    var hi = flat.length ? Math.max.apply(null, flat) : 1;
+    if (chart.max) hi = Math.max(hi, chart.max);
+    if (hi === lo) hi = lo + 1;
+    var span = hi - lo;
+
+    function x(index) { return pad.left + (points.length <= 1 ? innerWidth / 2 : innerWidth * index / (points.length - 1)); }
+    function y(value) { return pad.top + innerHeight - innerHeight * (value - lo) / span; }
+
+    // grid + axis labels
+    context.strokeStyle = "#1a1a20";
+    context.lineWidth = 1;
+    context.fillStyle = "#6f6f78";
+    context.font = "10.5px ui-sans-serif, system-ui, sans-serif";
+    for (var g = 0; g <= 4; g++) {
+      var gy = pad.top + innerHeight * g / 4;
+      context.beginPath(); context.moveTo(pad.left, gy); context.lineTo(pad.left + innerWidth, gy); context.stroke();
+      if (width >= 260) context.fillText(String(Math.round((hi - span * g / 4) * 10) / 10), pad.left + innerWidth + 6, gy + 3);
+    }
+    if (points.length > 1 && width >= 300) {
+      context.textAlign = "center";
+      [0, Math.floor((points.length - 1) / 2), points.length - 1].forEach(function (index) {
+        context.fillText(new Date(points[index].t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }), x(index), height - 6);
+      });
+      context.textAlign = "left";
+    }
+
+    // areas + smooth lines, split into contiguous runs around nulls
+    chart.series.forEach(function (series, seriesIndex) {
+      var values = seriesValues[seriesIndex];
+      var runs = [];
+      var current = null;
+      values.forEach(function (value, index) {
+        if (value === null || value === undefined) {
+          if (current && current.length > 1) runs.push(current);
+          current = null;
+        } else {
+          if (!current) current = [];
+          current.push({ x: x(index), y: y(value) });
+        }
+      });
+      if (current && current.length > 1) runs.push(current);
+
+      runs.forEach(function (run) {
+        var line = splinePath(run);
+        if (!series.lineOnly) {
+          var gradient = context.createLinearGradient(0, pad.top, 0, pad.top + innerHeight);
+          gradient.addColorStop(0, series.color + "52");
+          gradient.addColorStop(1, series.color + "05");
+          var area = new Path2D(line +
+            "L" + run[run.length - 1].x.toFixed(1) + " " + (pad.top + innerHeight) + " " +
+            "L" + run[0].x.toFixed(1) + " " + (pad.top + innerHeight) + " Z");
+          context.fillStyle = gradient;
+          context.fill(area);
+        }
+        context.strokeStyle = series.color;
+        context.lineWidth = series.lineOnly ? 1.2 : 2;
+        context.setLineDash(series.lineOnly ? [4, 4] : []);
+        context.lineJoin = "round";
+        context.stroke(new Path2D(line));
+        context.setLineDash([]);
+      });
+    });
+
+    // hover crosshair + dots (drawn last so refreshes never hide it)
+    var hoverIndex = hover[chart.id];
+    if (hoverIndex !== null && hoverIndex !== undefined && points[hoverIndex]) {
+      var hx = x(hoverIndex);
+      context.strokeStyle = "#3f3f46";
+      context.beginPath(); context.moveTo(hx, pad.top); context.lineTo(hx, pad.top + innerHeight); context.stroke();
+      chart.series.forEach(function (series, seriesIndex) {
+        var value = seriesValues[seriesIndex][hoverIndex];
+        if (value === null || value === undefined) return;
+        context.beginPath();
+        context.arc(hx, y(value), 3.5, 0, Math.PI * 2);
+        context.fillStyle = series.color;
+        context.fill();
+        context.strokeStyle = "#09090b";
+        context.stroke();
+      });
+    }
+  }
+
+  function renderCharts() {
+    // While the pointer hovers a chart, skip its data redraw so the tooltip stays stable.
+    CHARTS.forEach(function (chart) {
+      if (hover[chart.id] === null || hover[chart.id] === undefined) drawChart(chart);
+    });
+  }
+
+  // ---- system page ----------------------------------------------------------
+  function renderSystem() {
+    var box = byId("system-stats");
+    if (!lastHost) { box.innerHTML = ""; byId("system-details").innerHTML = ""; return; }
+    var html = "";
+    html += statCard("Host CPU load", lastHost.cpu === null || lastHost.cpu === undefined ? "—" : Math.round(lastHost.cpu * 100) + "%",
+      lastHost["cores"] + " cores · " + (lastHost["process-cpu"] === null || lastHost["process-cpu"] === undefined ? "—" : Math.round(lastHost["process-cpu"] * 100) + "%") + " used by the cloud");
+    html += statCard("System memory", lastHost["memory-used-mb"] === null || lastHost["memory-used-mb"] === undefined ? "—" :
+      Math.round(lastHost["memory-used-mb"]) + " / " + Math.round(lastHost["memory-total-mb"] || 0) + " MB", "RAM of the root server");
+    html += statCard("Cloud JVM heap", lastHost["jvm-used-mb"] === null || lastHost["jvm-used-mb"] === undefined ? "—" :
+      Math.round(lastHost["jvm-used-mb"]) + " / " + Math.round(lastHost["jvm-max-mb"] || 0) + " MB", "controller process");
+    html += statCard("Uptime", fmtUptime(lastHost["uptime-seconds"]), "since " + (lastHost["started-at"] ? new Date(lastHost["started-at"] * 1000).toLocaleString() : "—"));
+    box.innerHTML = html;
+
+    var rows = [
+      ["Operating system", (lastHost["os-name"] || "—") + " " + (lastHost["os-version"] || "") + " (" + (lastHost["os-arch"] || "—") + ")"],
+      ["Processor cores", lastHost["cores"] === undefined ? "—" : String(lastHost["cores"])],
+      ["Cloud version", lastHost.version ? "v" + lastHost.version : "—"],
+      ["Java version", lastHost["java-version"] || "—"],
+      ["Bridge bind address", lastHost["bind-address"] || "—"],
+      ["Heartbeat interval", lastHost["heartbeat-interval-seconds"] === undefined ? "—" : lastHost["heartbeat-interval-seconds"] + "s"],
+      ["Reconciliation interval", lastHost["reconcile-interval-seconds"] === undefined ? "—" : lastHost["reconcile-interval-seconds"] + "s"],
+      ["Backend agents reporting", String((lastHost.processes && Object.keys(lastHost.processes).length) || 0)],
+    ];
+    byId("system-details").innerHTML = rows.map(function (row) {
+      return "<tr><td class='dim'>" + esc(row[0]) + "</td><td>" + esc(row[1]) + "</td></tr>";
+  }).join("");
+  }
+
+  // ---- activity page ----------------------------------------------------------
+  var ACTIVITY_COLORS = {
+    started: "#34d399", stopped: "#71717a", crashed: "#f87171",
+    created: "#a78bfa", deleted: "#fbbf24", warning: "#fbbf24", info: "#22d3ee",
+  };
+  function loadActivity() {
+    api("/bridge/activity").then(function (result) {
+      activityLoadedAt = Date.now();
+      var items = (result && result.events) || [];
+      byId("activity-list").innerHTML = items.length ? items.map(function (item) {
+        var color = ACTIVITY_COLORS[item.kind] || "#52525b";
+        return '<div class="tl-item">' +
+          '<span class="tl-time">' + new Date(item.t * 1000).toLocaleTimeString() + "</span>" +
+          '<span class="tl-dot" style="background:' + color + ';box-shadow:0 0 6px ' + color + ';"></span>' +
+          '<span class="tl-msg">' + esc(item.message) + "</span></div>";
+      }).join("") : '<div class="empty">Nothing has happened yet — events appear here as services start, stop and crash.</div>';
+    }).catch(function (error) {
+      byId("activity-list").innerHTML = '<div class="empty">Failed to load activity: ' + esc(error.message) + "</div>";
+    });
+  }
+  byId("activity-refresh").addEventListener("click", loadActivity);
+
+  // ---- cloud commands ------------------------------------------------------
+  function runCloudCommand(args) {
+    return api("/bridge/cloud", { method: "POST", body: form({ arg: args }) })
+      .then(function (result) {
+        toast((result.lines || []).map(function (line) { return line.replace(/\u00a7./g, ""); }).join("\n") || "OK");
+        return refresh();
+      })
+      .catch(function (error) { toast("Failed: " + error.message); });
+  }
+  function toast(message) {
+    var element = document.createElement("div");
+    element.className = "toast";
+    element.textContent = message;
+    byId("toasts").appendChild(element);
+    setTimeout(function () { element.remove(); }, 5000);
+  }
+
+  byId("quick-run").addEventListener("click", function () {
+    var input = byId("quick-command");
+    var args = input.value.trim().split(/\s+/).filter(Boolean);
+    if (!args.length) return;
+    runCloudCommand(args);
+    input.value = "";
+  });
+  byId("quick-command").addEventListener("keydown", function (event) {
+    if (event.key === "Tab") {
+      event.preventDefault();
+      var input = byId("quick-command");
+      var args = input.value.split(/\s+/).filter(Boolean);
+      api("/bridge/cloud", { method: "POST", body: form({ arg: args, mode: ["complete"] }) })
+        .then(function (result) {
+          var suggestions = result.suggestions || [];
+          if (suggestions.length === 1) {
+            args[args.length - 1] = suggestions[0];
+            input.value = args.join(" ");
+          } else if (suggestions.length > 1) {
+            toast(suggestions.join("  "));
+          }
+        }).catch(function () {});
+    } else if (event.key === "Enter") {
+      byId("quick-run").click();
+    }
+  });
+
+  // ---- console -------------------------------------------------------------
+  function renderConsoleTarget() {
+    var select = byId("console-service");
+    var running = services().filter(function (service) { return service.state === "RUNNING"; });
+    select.innerHTML = '<option value="">— running service —</option>' + running.map(function (service) {
+      var selected = service.name === selectedService ? " selected" : "";
+      return '<option value="' + esc(service.name) + '"' + selected + ">" + esc(service.name) + "</option>";
+    }).join("");
+    if (selectedService && !running.some(function (service) { return service.name === selectedService; })) {
+      selectedService = null;
+      select.selectedIndex = 0;
+    }
+  }
+  byId("console-service").addEventListener("change", function () {
+    selectedService = byId("console-service").value || null;
+    loadConsole();
+  });
+  byId("console-refresh").addEventListener("click", loadConsole);
+  function loadConsole() {
+    if (page !== "console" || !selectedService) { byId("console-output").textContent = ""; return; }
+    api("/bridge/console?service=" + encodeURIComponent(selectedService))
+      .then(function (result) {
+        var box = byId("console-output");
+        box.textContent = (result.lines || []).join("\n");
+        box.scrollTop = box.scrollHeight;
+      })
+      .catch(function (error) { byId("console-output").textContent = "Failed to load console: " + error.message; });
+  }
+  byId("console-send").addEventListener("click", function () {
+    var input = byId("console-command");
+    var line = input.value.trim();
+    if (!line || !selectedService) return;
+    input.value = "";
+    api("/bridge/services/command", {
+      method: "POST",
+      body: form({ service: [selectedService], action: ["command"], command: [line] }),
+    }).then(function () {
+      byId("console-output").textContent += "\n> " + line;
+      setTimeout(loadConsole, 600);
+    }).catch(function (error) { toast("Failed: " + error.message); });
+  });
+  byId("console-command").addEventListener("keydown", function (event) {
+    if (event.key === "Enter") byId("console-send").click();
+  });
+
+  // ---- boot ----------------------------------------------------------------
+  // A valid HttpOnly session cookie (if any) is proven by a probe request; the token itself never
+  // touches JavaScript — the browser attaches the cookie automatically.
+  api("/bridge/status").then(function () {
+    showApp();
+    navigate((location.hash || "#overview").slice(1));
+  }).catch(function () { showLogin(); });
+  window.setInterval(function () {
+    if (!root.classList.contains("hidden")) {
+      refresh();
+      if (page === "console" && byId("console-follow").checked) loadConsole();
+      if (page === "activity" && Date.now() - activityLoadedAt > 10000) loadActivity();
+    }
+  }, 5000);
+})();

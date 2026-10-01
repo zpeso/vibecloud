@@ -20,6 +20,8 @@ class BridgeAgentRegistry(private val staleness: () -> Duration) {
         val tps: Double?,
         val heapUsedMb: Double?,
         val heapMaxMb: Double?,
+        /** CPU usage of the server's own JVM (0..1), reported by the agent. */
+        val processCpu: Double?,
         val lastHeartbeat: Instant,
     )
 
@@ -35,11 +37,12 @@ class BridgeAgentRegistry(private val staleness: () -> Duration) {
         tps: Double? = null,
         heapUsedMb: Double? = null,
         heapMaxMb: Double? = null,
+        processCpu: Double? = null,
         now: Instant = Instant.now(),
     ) {
         entries[serviceId] = Entry(
             serviceId, serviceName, groupName, agentVersion, players, maxPlayers,
-            tps, heapUsedMb, heapMaxMb, now,
+            tps, heapUsedMb, heapMaxMb, processCpu, now,
         )
     }
 
@@ -67,6 +70,8 @@ class BridgeAgentRegistry(private val staleness: () -> Duration) {
         val tps: Double? = null,
         val heapUsedMb: Double? = null,
         val heapMaxMb: Double? = null,
+        /** CPU usage of the server JVM (0..1); null when the agent did not report it. */
+        val processCpu: Double? = null,
         val lastHeartbeat: Instant,
     ) {
         /** Used/max heap as a 0..1 ratio; null when the agent did not report memory. */
@@ -87,6 +92,7 @@ class BridgeAgentRegistry(private val staleness: () -> Duration) {
                 entry.tps,
                 entry.heapUsedMb,
                 entry.heapMaxMb,
+                entry.processCpu,
                 entry.lastHeartbeat,
             )
         }

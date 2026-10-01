@@ -233,6 +233,48 @@ class BridgeHttpServerTest {
     }
 
     @Test
+    fun `host endpoint exposes cpu memory and per-process values and requires a token`() {
+        val running = startServer(listOf(service("lobby-1", ServiceState.RUNNING)))
+        try {
+            val noToken = http.send(
+                HttpRequest.newBuilder(URI.create("http://127.0.0.1:${running.server.boundPort()}/bridge/host"))
+                    .GET().build(),
+                HttpResponse.BodyHandlers.ofString(),
+            )
+            assertEquals(401, noToken.statusCode())
+
+            val response = get(running, "http://127.0.0.1:${running.server.boundPort()}/bridge/host")
+            assertEquals(200, response.statusCode())
+            assertTrue(response.body().contains("\"cores\":"), response.body())
+            assertTrue(response.body().contains("\"uptime-seconds\":"), response.body())
+            assertTrue(response.body().contains("\"memory-total-mb\":"), response.body())
+            assertTrue(response.body().contains("\"processes\":"), response.body())
+        } finally {
+            running.server.stop()
+        }
+    }
+
+    @Test
+    fun `activity endpoint returns events newest first and requires a token`() {
+        val running = startServer(listOf(service("lobby-1", ServiceState.RUNNING)))
+        try {
+            val noToken = http.send(
+                HttpRequest.newBuilder(URI.create("http://127.0.0.1:${running.server.boundPort()}/bridge/activity"))
+                    .GET().build(),
+                HttpResponse.BodyHandlers.ofString(),
+            )
+            assertEquals(401, noToken.statusCode())
+
+            // No activity log wired: the endpoint still answers with an empty feed.
+            val response = get(running, "http://127.0.0.1:${running.server.boundPort()}/bridge/activity")
+            assertEquals(200, response.statusCode())
+            assertTrue(response.body().contains("\"events\":[]"), response.body())
+        } finally {
+            running.server.stop()
+        }
+    }
+
+    @Test
     fun `metrics endpoint requires a token and reports history plus per-service values`() {
         val running = startServer(listOf(service("lobby-1", ServiceState.RUNNING)))
         try {

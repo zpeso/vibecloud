@@ -1,9 +1,15 @@
 package dev.vibecloud.core.cloud
 
 import dev.vibecloud.api.cloud.Cloud
+import dev.vibecloud.api.event.ServiceCreatedEvent
+import dev.vibecloud.api.event.ServiceCrashedEvent
+import dev.vibecloud.api.event.ServiceDeletedEvent
+import dev.vibecloud.api.event.ServiceStartedEvent
+import dev.vibecloud.api.event.ServiceStoppedEvent
 import dev.vibecloud.api.server.ServerCatalog
 import dev.vibecloud.common.config.CloudConfigRepository
 import dev.vibecloud.common.logging.Logger
+import dev.vibecloud.core.bridge.ActivityLog
 import dev.vibecloud.core.bridge.BridgeAgentInstaller
 import dev.vibecloud.core.bridge.BridgeAgentRegistry
 import dev.vibecloud.core.bridge.BridgeCommandQueue
@@ -11,6 +17,7 @@ import dev.vibecloud.core.bridge.BridgeCloudCommands
 import dev.vibecloud.core.bridge.BridgeHttpServer
 import dev.vibecloud.core.bridge.BridgeManager
 import dev.vibecloud.core.bridge.BridgeTokenStore
+import dev.vibecloud.core.bridge.HostMetrics
 import dev.vibecloud.core.bridge.JsonWriter
 import dev.vibecloud.core.bridge.MetricsHistory
 import dev.vibecloud.core.bridge.ServicePlayerTracker
@@ -40,6 +47,13 @@ class CloudBootstrap(
     private val serverAdapters: Collection<ServerAdapter> = defaultServerAdapters().all(),
     private val serverCatalog: ServerCatalog = PaperMcServerCatalog(),
 ) {
+    /**
+     * Release version for the dashboard and `/bridge/host`: the core jar's implementation
+     * version (stamped by the release build), or empty when running from an unversioned build.
+     */
+    private fun cloudVersion(): String = runCatching {
+        CloudBootstrap::class.java.getPackage()?.implementationVersion.orEmpty()
+    }.getOrDefault("")
     fun create(configFile: Path): Cloud {
         val repository = CloudConfigRepository(configFile)
         val config = repository.loadOrCreate()
@@ -116,6 +130,21 @@ class CloudBootstrap(
             var commandQueueHolder: BridgeCommandQueue? = null
             // Shared rolling metrics history: the manager samples it, the HTTP endpoint renders it.
             val metricsHistory = MetricsHistory()
+            // Host-level metrics (CPU load, memory, uptime of the root server) plus per-process
+            // CPU of the running services; sampled by the reconciler, rendered by the dashboard.
+            val hostMetrics = HostMetrics()
+            // In-memory activity feed for the dashboard: lifecycle events, newest first.
+            val activityLog = ActivityLog()
+            events.subscribe { event ->
+                when (event) {
+                    is ServiceCreatedEvent -> activityLog.add("created", "Service ${event.service.name} created for group ${event.service.groupName}")
+                    is ServiceStartedEvent -> activityLog.add("started", "Service ${event.service.name} started (port ${event.service.port})")
+                    is ServiceStoppedEvent -> activityLog.add("stopped", "Service ${event.service.name} stopped")
+                    is ServiceCrashedEvent -> activityLog.add("crashed", "Service ${event.service.name} crashed: ${event.reason.take(160)}")
+                    is ServiceDeletedEvent -> activityLog.add("deleted", "Service ${event.service.name} deleted")
+                    else -> Unit
+                }
+            }
             val cloudCommands: () -> BridgeCloudCommands? = {
                 serviceManagerReference.get()?.let { manager ->
                     BridgeCloudCommands(
@@ -156,6 +185,9 @@ class CloudBootstrap(
                 tracker = bridgeTracker,
                 settings = config.bridge,
                 logger = logger,
+                hostMetrics = hostMetrics,
+                activityLog = activityLog,
+                cloudVersion = cloudVersion(),
             )
             commandQueueHolder = bridgeServer.commandQueue
             val bridgeManager = BridgeManager(

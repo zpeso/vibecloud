@@ -273,6 +273,8 @@ class BridgeSecurityTest {
                 assertTrue(csp.contains("frame-ancestors 'none'"), "CSP must forbid framing: $csp")
                 assertTrue(csp.contains("connect-src 'self'"), "CSP must restrict connections: $csp")
                 assertFalse(csp.contains("script-src *"), "CSP must not allow all scripts")
+                assertFalse(csp.contains("script-src 'unsafe-inline'"), "CSP must not allow inline scripts: $csp")
+                assertTrue(csp.contains("script-src 'self'"), "CSP must lock scripts to same-origin assets: $csp")
                 assertFalse(authorized.headers().allValues("Strict-Transport-Security").isNotEmpty(), "plain HTTP must not emit HSTS")
             }
         } finally {
@@ -289,6 +291,27 @@ class BridgeSecurityTest {
             assertFalse(html.contains("onerror="), "inline event handlers break the CSP")
             assertFalse(html.contains("localStorage"), "tokens must not be persisted in localStorage")
             assertFalse(html.contains(running.tokenStore.obtain()), "the page must never contain the token")
+            assertTrue(html.contains("/assets/app.js"), "the shell must load the external script")
+
+            // The stylesheet and script are served as public same-origin assets; neither may
+            // contain secrets, and the JS must carry the CSRF header for state-changing calls.
+            val css = request(running, "GET", "/assets/app.css")
+            assertEquals(200, css.statusCode())
+            assertTrue(css.headers().firstValue("Content-Type").orElse("").startsWith("text/css"), css.headers().firstValue("Content-Type").orElse(""))
+            assertFalse(css.body().contains(running.tokenStore.obtain()))
+
+            val js = request(running, "GET", "/assets/app.js")
+            assertEquals(200, js.statusCode())
+            assertTrue(js.headers().firstValue("Content-Type").orElse("").startsWith("application/javascript"))
+            assertFalse(js.body().contains(running.tokenStore.obtain()))
+            assertTrue(js.body().contains("X-Requested-With"), "the app must send the CSRF header")
+
+            // Path traversal and near-miss asset paths must never reach the classpath loader.
+            for (bad in listOf("/assets/app.css%00.js", "/assets/../bridge.token", "/assets/app.js/extra", "/assets/", "/assets/app.ts")) {
+                val probe = request(running, "GET", bad)
+                assertEquals(200, probe.statusCode(), "$bad must fall through to the shell, not error or leak")
+                assertTrue(probe.headers().firstValue("Content-Type").orElse("").startsWith("text/html"), "$bad must not be served as an asset")
+            }
         } finally {
             running.server.stop()
         }

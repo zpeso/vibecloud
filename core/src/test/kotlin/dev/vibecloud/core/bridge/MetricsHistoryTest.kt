@@ -45,7 +45,31 @@ class MetricsHistoryTest {
         assertTrue(document.contains("\"players\":4"), document)
         assertTrue(document.contains("\"tps\":19.5"), document)
         assertTrue(document.contains("\"ram\":null"), document)
+        assertTrue(document.contains("\"cpu\":null"), document)
+        assertTrue(document.contains("\"sysram\":null"), document)
         assertTrue(document.contains("\"samples\":1"), document)
+    }
+
+    @Test
+    fun `host metrics render in the document when sampled`() {
+        val history = MetricsHistory()
+        history.record(
+            MetricsHistory.Sample(
+                timestamp = Instant.ofEpochSecond(1_000),
+                playersOnline = 0,
+                runningServices = 0,
+                totalServices = 0,
+                worstTps = null,
+                averageRamUsage = null,
+                hostCpu = 0.42,
+                hostSysRam = 0.75,
+                hostJvmHeap = 0.3,
+            ),
+        )
+        val document = MetricsJson.document(history)
+        assertTrue(document.contains("\"cpu\":0.42"), document)
+        assertTrue(document.contains("\"sysram\":0.75"), document)
+        assertTrue(document.contains("\"jvmheap\":0.3"), document)
     }
 
     @Test

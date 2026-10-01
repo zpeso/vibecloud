@@ -24,6 +24,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Endpoints (all JSON):
  *  - `GET  /`                → the built-in dashboard (static HTML shell — public, carries no
  *    data; every API it loads requires authentication)
+ *  - `GET  /assets/app.css|app.js` → the dashboard's stylesheet and script (public static assets)
  *  - `POST /bridge/dashboard/login` → exchange the bridge token for an HttpOnly session cookie
  *    (rate limited per client)
  *  - `POST /bridge/dashboard/logout` → revoke the browser session and clear the cookie
@@ -31,6 +32,9 @@ import java.util.concurrent.atomic.AtomicBoolean
  *  - `GET  /bridge/services` → alias of `/bridge/status`
  *  - `GET  /bridge/metrics`  → rolling metric samples for the dashboard charts + per-service
  *    TPS/memory of the last agent heartbeats
+ *  - `GET  /bridge/host`     → host system metrics (CPU load, memory, uptime, controller heap)
+ *    plus per-service process CPU
+ *  - `GET  /bridge/activity` → recent cloud events (service lifecycle), newest first
  *  - `GET  /bridge/console?service=<name>` → recent console output of one service
  *  - `POST /bridge/heartbeat` → agent heartbeat; requires `Authorization: Bearer <token>`;
  *    the response carries queued player/service commands for that service
@@ -65,8 +69,14 @@ class BridgeHttpServer(
     private val cloudCommands: () -> BridgeCloudCommands? = { null },
     /** Rolling cloud statistics sampled by the reconciler; rendered for the dashboard charts. */
     private val metricsHistory: MetricsHistory = MetricsHistory(),
+    /** Host-level metrics (CPU, memory, uptime) for the dashboard's system page. */
+    private val hostMetrics: HostMetrics = HostMetrics(),
+    /** Recent cloud events for the dashboard's activity feed; null disables the endpoint. */
+    private val activityLog: ActivityLog? = null,
     /** Console output history per service name (maxLines), shown in the dashboard console. */
     private val consoleHistory: ((serviceName: String, maxLines: Int) -> List<String>)? = null,
+    /** Human-readable release version shown on the dashboard and in `/bridge/host`. */
+    private val cloudVersion: String = "",
     /** Server-side browser sessions backing the dashboard cookie (invalidated on restart). */
     private val sessions: DashboardSessions = DashboardSessions(clock = clock),
 ) {
@@ -116,6 +126,8 @@ class BridgeHttpServer(
             created.createContext("/bridge/status") { exchange -> safe(exchange, "status") { handleStatus(it) } }
             created.createContext("/bridge/services") { exchange -> safe(exchange, "status") { handleStatus(it) } }
             created.createContext("/bridge/metrics") { exchange -> safe(exchange, "metrics") { handleMetrics(it) } }
+            created.createContext("/bridge/host") { exchange -> safe(exchange, "host") { handleHost(it) } }
+            created.createContext("/bridge/activity") { exchange -> safe(exchange, "activity") { handleActivity(it) } }
             created.createContext("/bridge/console") { exchange -> safe(exchange, "console") { handleConsole(it) } }
             created.createContext("/bridge/heartbeat") { exchange -> safe(exchange, "heartbeat") { handleHeartbeat(it) } }
             created.createContext("/bridge/players") { exchange -> safe(exchange, "players") { handlePlayerAction(it) } }
@@ -227,6 +239,7 @@ class BridgeHttpServer(
                 tps = fields["tps"]?.trim()?.toDoubleOrNull(),
                 heapUsedMb = fields["heap-used-mb"]?.trim()?.toDoubleOrNull(),
                 heapMaxMb = fields["heap-max-mb"]?.trim()?.toDoubleOrNull(),
+                processCpu = fields["process-cpu"]?.trim()?.toDoubleOrNull(),
                 now = Instant.now(clock),
             )
             if (firstHeartbeat) {
@@ -511,15 +524,26 @@ class BridgeHttpServer(
         ?.let { Duration.between(it, now) <= settings.offlineTimeout } == true
 
     /**
-     * `GET /` — the built-in dashboard. The page itself carries no data, so it is served without
-     * a token; every API it calls requires the same bearer token as the rest of the bridge.
+     * `GET /` and `GET /assets/app.css|app.js` — the built-in dashboard, loaded from classpath
+     * resources. The page itself carries no data, so it is served without a token; every API it
+     * calls requires the same bearer token as the rest of the bridge. Only the three exact
+     * asset paths are served from the classpath — everything else falls through to the shell
+     * (SPA routing never needs more, and unknown paths must not leak anything).
      */
     private fun handleRoot(exchange: HttpExchange) {
         try {
             when (exchange.requestMethod) {
                 "GET", "HEAD" -> {
-                    val bytes = DashboardPage.html.toByteArray(StandardCharsets.UTF_8)
-                    exchange.responseHeaders.set("Content-Type", "text/html; charset=utf-8")
+                    val path = exchange.requestURI.path?.trimEnd('/') ?: "/"
+                    val asset: DashboardAssets.Asset? = when (path) {
+                        "", "/" -> DashboardAssets.index
+                        "/assets/app.css" -> DashboardAssets.css
+                        "/assets/app.js" -> DashboardAssets.js
+                        else -> null
+                    }
+                    val bytes = (asset ?: DashboardAssets.index).bytes
+                    val contentType = asset?.contentType ?: "text/html; charset=utf-8"
+                    exchange.responseHeaders.set("Content-Type", contentType)
                     applySecurityHeaders(exchange)
                     exchange.sendResponseHeaders(200, if (exchange.requestMethod == "HEAD") -1 else bytes.size.toLong())
                     if (exchange.requestMethod == "GET") exchange.responseBody.use { it.write(bytes) }
@@ -545,6 +569,53 @@ class BridgeHttpServer(
             respond(exchange, 200, metricsDocument())
         } catch (failure: IOException) {
             logger.debug("Bridge metrics request failed: ${failure.message}")
+        } finally {
+            exchange.close()
+        }
+    }
+
+    /** `GET /bridge/host` — host system metrics plus per-service process CPU. */
+    private fun handleHost(exchange: HttpExchange) {
+        try {
+            if (exchange.requestMethod != "GET" && exchange.requestMethod != "HEAD") {
+                respond(exchange, 405, errorJson("method not allowed"))
+                return
+            }
+            if (!authorize(exchange)) return
+            respond(exchange, 200, hostDocument())
+        } catch (failure: IOException) {
+            logger.debug("Bridge host request failed: ${failure.message}")
+        } finally {
+            exchange.close()
+        }
+    }
+
+    /** `GET /bridge/activity` — recent cloud events, newest first. */
+    private fun handleActivity(exchange: HttpExchange) {
+        try {
+            if (exchange.requestMethod != "GET" && exchange.requestMethod != "HEAD") {
+                respond(exchange, 405, errorJson("method not allowed"))
+                return
+            }
+            if (!authorize(exchange)) return
+            val events = activityLog?.recent(100).orEmpty()
+            respond(
+                exchange,
+                200,
+                JsonWriter.obj(
+                    "events" to JsonWriter.arr(
+                        events.map { entry ->
+                            JsonWriter.obj(
+                                "t" to JsonWriter.num(entry.timestamp.epochSecond),
+                                "kind" to JsonWriter.str(entry.kind),
+                                "message" to JsonWriter.str(entry.message),
+                            )
+                        },
+                    ),
+                ),
+            )
+        } catch (failure: IOException) {
+            logger.debug("Bridge activity request failed: ${failure.message}")
         } finally {
             exchange.close()
         }
@@ -591,12 +662,45 @@ class BridgeHttpServer(
                 "ram_usage" to (report?.heapUsageRatio()?.let { JsonWriter.num(it) } ?: "null"),
                 "heap_used_mb" to (report?.heapUsedMb?.let { JsonWriter.num(it) } ?: "null"),
                 "heap_max_mb" to (report?.heapMaxMb?.let { JsonWriter.num(it) } ?: "null"),
+                "cpu" to (report?.processCpu?.let { JsonWriter.num(it) } ?: "null"),
                 "agent-online" to JsonWriter.bool(isAgentOnline(service.id, Instant.now(clock))),
             )
         }
         return JsonWriter.obj(
             "history" to MetricsJson.document(metricsHistory),
             "services" to JsonWriter.arr(servicesJson),
+        )
+    }
+
+    /** Host document: system metrics, controller JVM info, and per-service process CPU. */
+    private fun hostDocument(): String {
+        val snapshot = hostMetrics.snapshot()
+        val agentsByServiceName = registry.all().associateBy { it.serviceName }
+        val processesJson = cloudView.services().mapNotNull { service ->
+            agentsByServiceName[service.name]?.processCpu?.let { cpu ->
+                service.name to JsonWriter.num(cpu)
+            }
+        }
+        val processesObj = if (processesJson.isEmpty()) "{}" else JsonWriter.obj(*processesJson.toTypedArray())
+        return JsonWriter.obj(
+            "cpu" to (snapshot.cpuLoad?.let { JsonWriter.num(it) } ?: "null"),
+            "process-cpu" to (snapshot.processCpuLoad?.let { JsonWriter.num(it) } ?: "null"),
+            "cores" to JsonWriter.num(snapshot.cores),
+            "memory-total-mb" to (snapshot.totalMemoryMb?.let { JsonWriter.num(it) } ?: "null"),
+            "memory-used-mb" to (snapshot.usedMemoryMb?.let { JsonWriter.num(it) } ?: "null"),
+            "swap-total-mb" to (snapshot.totalSwapMb?.let { JsonWriter.num(it) } ?: "null"),
+            "swap-used-mb" to (snapshot.usedSwapMb?.let { JsonWriter.num(it) } ?: "null"),
+            "jvm-used-mb" to JsonWriter.num(snapshot.jvmUsedMb),
+            "jvm-max-mb" to JsonWriter.num(snapshot.jvmMaxMb),
+            "uptime-seconds" to JsonWriter.num(snapshot.uptimeSeconds),
+            "load-average" to (snapshot.systemLoadAverage?.let { JsonWriter.num(it) } ?: "null"),
+            "os-name" to JsonWriter.str(System.getProperty("os.name", "")),
+            "os-version" to JsonWriter.str(System.getProperty("os.version", "")),
+            "os-arch" to JsonWriter.str(System.getProperty("os.arch", "")),
+            "java-version" to JsonWriter.str(System.getProperty("java.version", "")),
+            "version" to JsonWriter.str(cloudVersion),
+            "started-at" to JsonWriter.num(Instant.now(clock).epochSecond - snapshot.uptimeSeconds),
+            "processes" to processesObj,
         )
     }
 
@@ -623,6 +727,10 @@ class BridgeHttpServer(
                 "ram_usage" to (report?.heapUsageRatio()?.let { JsonWriter.num(it) } ?: "null"),
                 "heap-used-mb" to (report?.heapUsedMb?.let { JsonWriter.num(it) } ?: "null"),
                 "heap-max-mb" to (report?.heapMaxMb?.let { JsonWriter.num(it) } ?: "null"),
+                "cpu" to (report?.processCpu?.let { JsonWriter.num(it) } ?: "null"),
+                "agent-version" to (report?.agentVersion?.takeIf { it.isNotBlank() }?.let { JsonWriter.str(it) } ?: "null"),
+                "restarts" to JsonWriter.num(service.restartCount),
+                "last-error" to (service.lastError?.takeIf { it.isNotBlank() }?.let { JsonWriter.str(it.take(MAX_LAST_ERROR_LENGTH)) } ?: "null"),
             )
         }
         return JsonWriter.obj(
@@ -846,15 +954,19 @@ class BridgeHttpServer(
         const val MAX_KICK_REASON_LENGTH = 200
         const val MAX_COMMAND_LENGTH = 256
         const val MAX_SERVICE_NAME_LENGTH = 64
+        const val MAX_LAST_ERROR_LENGTH = 200
         const val COOKIE_PAIR = DashboardSessions.COOKIE_NAME
 
         /**
-         * The dashboard is a same-origin SPA with inline script/style (it ships as one file).
-         * 'unsafe-inline' is required for both, everything else is locked down: no frames, no
-         * objects, no form actions, connections restricted to same origin plus the avatar CDN
-         * the players page explicitly loads images from.
+         * The dashboard ships as external same-origin assets (`/assets/app.css`, `/assets/app.js`
+         * served by this server), so scripts no longer need 'unsafe-inline' — the actual XSS
+         * vector — and are locked to 'self'. Styles keep 'unsafe-inline' because the UI sets
+         * many inline style attributes dynamically (meter/bar widths); CSS cannot execute script
+         * in modern browsers, so this carries no meaningful risk. Everything else stays fully
+         * locked down: no frames, no objects, connections restricted to same origin plus the
+         * avatar CDN the players page explicitly loads images from.
          */
-        const val CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; " +
+        const val CSP = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
                 "img-src 'self' https://mc-heads.net; connect-src 'self'; frame-ancestors 'none'; " +
                 "base-uri 'none'; form-action 'self'"
 
