@@ -59,12 +59,21 @@ class ConsoleCommandHandler(
             }
         } catch (failure: CancellationException) {
             throw failure
+        } catch (failure: WizardAbortedException) {
+            println(Cli.dim("Cancelled — nothing was changed."))
         } catch (failure: Exception) {
             logger.warn("Command failed: ${failure.message}")
             println(Cli.error("Error: ${failure.message ?: failure::class.simpleName}"))
         }
         return true
     }
+
+    /** Thrown when the user types 'exit'/'cancel' at an interactive wizard prompt. */
+    private class WizardAbortedException : RuntimeException("wizard aborted")
+
+    /** True when the typed answer asks to leave the interactive wizard. */
+    private fun wantsExit(input: String): Boolean =
+        input.trim().lowercase(Locale.ROOT) in setOf("exit", "quit", "cancel", "abort")
 
     /** Routes group subcommands; delete/version run asynchronously with a [commandTag]. */
     private suspend fun dispatchGroup(args: List<String>) {
@@ -169,7 +178,12 @@ class ConsoleCommandHandler(
                 }
                 println(Cli.success("Started ${service.name}") + Cli.dim(" (group '") + Cli.accent(group.name) + Cli.dim("', port ") + Cli.highlight(service.port.toString()) + Cli.dim(")"))
                 if (group.desiredRunningServices < group.maxServices) {
-                    println(Cli.warn("Note: the reconciler keeps ${group.desiredRunningServices} service(s) of '${group.name}' running; extras may be stopped automatically."))
+                    println(
+                        Cli.dim(
+                            "Note: the reconciler keeps ${group.desiredRunningServices} service(s) of '${group.name}' running as a minimum — " +
+                                "extras you start stay up until you stop them.",
+                        ),
+                    )
                 }
                 println(Cli.dim("Watch its console with ") + Cli.command("service screen ${service.name}"))
             }
@@ -199,11 +213,17 @@ class ConsoleCommandHandler(
         val version = args.getOrNull(1) ?: throw IllegalArgumentException("Usage: group version <name> <version>")
         val group = cloud.groups.get(name.trim().lowercase(Locale.ROOT))
             ?: throw NoSuchElementException("Group '$name' does not exist")
-        val switch = GroupVersionSwitch(cloud.groups, cloud.templates, cloud.serverCatalog)
+        val switch = GroupVersionSwitch(cloud.groups, cloud.services, cloud.templates, cloud.serverCatalog)
         val outcome = switch.switch(group.name, version)
         println(Cli.success("Group '${group.name}' is now on ${group.type.name.lowercase()} ${outcome.group.version}."))
         outcome.installedFileName?.let { println(Cli.dim("  Downloaded: $it")) }
-        println(Cli.dim("  Applies on the services' next start/restart."))
+        if (outcome.updatedServices.isNotEmpty()) {
+            println(Cli.dim("  Services re-pinned: ${outcome.updatedServices.joinToString(", ")}"))
+        }
+        if (outcome.restartNeeded.isNotEmpty()) {
+            println(Cli.warn("  Restart to apply: ${outcome.restartNeeded.joinToString(", ")}"))
+        }
+        outcome.forwardingMode?.let { println(Cli.dim("  Proxy forwarding: $it")) }
     }
 
     private suspend fun handleService(args: List<String>) {
@@ -319,6 +339,10 @@ class ConsoleCommandHandler(
     private fun serviceSuffix(name: String): Int = name.substringAfterLast('-', "0").toIntOrNull() ?: 0
 
     private suspend fun createGroup(args: List<String>) {
+        println(
+            Cli.dim("Group wizard — answer the prompts; type ") + Cli.command("exit") +
+                Cli.dim(" at any question to cancel without changes."),
+        )
         val nameArgument = args.firstOrNull()?.takeUnless { it.startsWith("--") }
         val options = parseOptions(if (nameArgument == null) args else args.drop(1))
         val name = if (nameArgument == null) {
@@ -505,10 +529,11 @@ class ConsoleCommandHandler(
 
     private suspend fun askRequired(prompt: String): String {
         while (true) {
-            print(Cli.accent("$prompt: "))
+            print(Cli.accent("$prompt: ") + Cli.dim("(exit cancels) "))
             System.out.flush()
             val value = readInput()?.trim()
                 ?: throw IllegalStateException("Input ended before '$prompt' was provided")
+            if (wantsExit(value)) throw WizardAbortedException()
             if (value.isNotEmpty()) return value
             println(Cli.warn("A value is required."))
         }
@@ -538,10 +563,11 @@ class ConsoleCommandHandler(
         require(choices.isNotEmpty()) { "No choices are available for $prompt" }
         choices.forEachIndexed { index, choice -> println(Cli.dim("${index + 1}) ") + label(choice)) }
         while (true) {
-            print(Cli.accent("$prompt [1-${choices.size}]: "))
+            print(Cli.accent("$prompt [1-${choices.size}]: ") + Cli.dim("(exit cancels) "))
             System.out.flush()
             val input = readInput()?.trim()
                 ?: throw IllegalStateException("Input ended while choosing $prompt")
+            if (wantsExit(input)) throw WizardAbortedException()
             if (input.isEmpty()) {
                 println(Cli.warn("Choose one of the listed options."))
                 continue
@@ -577,10 +603,11 @@ class ConsoleCommandHandler(
             return value
         }
         while (true) {
-            print(Cli.accent("$prompt [") + Cli.highlight(default.toString()) + Cli.accent("]: "))
+            print(Cli.accent("$prompt [") + Cli.highlight(default.toString()) + Cli.accent("]: ") + Cli.dim("(exit cancels) "))
             System.out.flush()
             val raw = readInput()?.trim()
                 ?: throw IllegalStateException("Input ended while entering $prompt")
+            if (wantsExit(raw)) throw WizardAbortedException()
             val value = if (raw.isEmpty()) default else raw.toIntOrNull()
             if (value != null && value in minimum..maximum) return value
             println(Cli.warn("Enter a whole number between $minimum and $maximum (or press Enter for $default)."))
@@ -597,9 +624,10 @@ class ConsoleCommandHandler(
             return configured.toBoolean()
         }
         while (true) {
-            print(Cli.accent("Static (keep files between restarts) [") + Cli.highlight("true") + Cli.accent("]: "))
+            print(Cli.accent("Static (keep files between restarts) [") + Cli.highlight("true") + Cli.accent("]: ") + Cli.dim("(exit cancels) "))
             System.out.flush()
             val raw = readInput()?.trim()?.lowercase(Locale.ROOT) ?: return true
+            if (wantsExit(raw)) throw WizardAbortedException()
             when (raw) {
                 "" -> return true
                 "true", "yes", "y" -> return true

@@ -172,13 +172,16 @@ desired running services = max(minServices, alwaysRunningServices)
   Existing stopped services are reused before new instances are created. `minServices <= maxServices` and
   `0 <= alwaysRunningServices <= maxServices` are validated.
 - Therefore `alwaysRunningServices: 0` does not disable the minimum: if `minServices` is 1, the target is still 1.
-- Scale-down stops excess processes but keeps their directories, names, and ports for reuse. `service delete`
-  permanently removes one record and its directory and frees its port. If a group still needs that capacity,
-  reconciliation may provision a replacement.
+- The desired count is a **floor, not a ceiling**: reconciliation starts services while fewer are running, and it never
+  stops the extras you started — with `min-services: 1` and `max-services: 2` you can run two services and both stay up.
+  Stop them with `service stop`; their directories, names, and ports are kept for reuse.
+- `service delete` permanently removes one record and its directory and frees its port. If a group still needs that
+  capacity, reconciliation may provision a replacement.
 - Unexpected exits are marked `CRASHED` and restarted with bounded exponential backoff. A manual stop is respected only
   while the group's desired count is already met; otherwise reconciliation brings the group back to target.
-- Type/version are recorded on each service when it is created. Editing a group's type/version affects future services;
-  stop and delete old services (after backing up their data) to migrate them.
+- Type/version are recorded on each service when it is created. `group version <name> <version>` re-pins the group and
+  all of its service records to a new version within the same server system; services pick it up on their next start,
+  and the proxy's forwarding mode follows the network's new versions.
 
 ## Configuration
 

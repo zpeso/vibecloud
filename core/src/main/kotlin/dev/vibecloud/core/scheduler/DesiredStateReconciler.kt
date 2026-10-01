@@ -15,7 +15,13 @@ import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.min
 
-/** The single place where configured desired state is compared with actual service state. */
+/**
+ * The single place where configured desired state is compared with actual service state.
+ *
+ * `desiredRunningServices` is a floor: the reconciler starts services until the group has at
+ * least that many running, and it never stops services for running above it — extras an operator
+ * started stay up until they are stopped explicitly. `maxServices` caps the provisioned records.
+ */
 class DesiredStateReconciler(
     private val scope: CoroutineScope,
     private val groups: GroupManager,
@@ -84,18 +90,10 @@ class DesiredStateReconciler(
         }
         val desired = group.desiredRunningServices
 
-        if (runningOrStarting > desired) {
-            val excess = groupServices
-                .filter { it.state == ServiceState.RUNNING }
-                .maxByOrNull { serviceSuffix(it.name) }
-            if (excess != null) {
-                logger.info("Reconciling '${group.name}': stopping excess service ${excess.name} ($runningOrStarting/$desired running)")
-                services.stop(excess.name)
-                retries.remove(group.name)
-            }
-            return
-        }
-
+        // The desired count is a floor, not a ceiling: services the operator started beyond it
+        // stay running until they are stopped explicitly (or the cloud shuts down). Stopping
+        // "excess" services here used to fight manual starts — with maxServices=2 and one
+        // desired, starting a second instance would immediately kill it again.
         if (runningOrStarting >= desired) {
             retries.remove(group.name)
             return
@@ -153,6 +151,7 @@ class DesiredStateReconciler(
         )
     }
 
+    /** Ordering for which record to (re)start first when the group is below its floor. */
     private fun candidatePriority(service: Service): Int = when (service.state) {
         ServiceState.CREATED -> 0
         ServiceState.STOPPED -> 1

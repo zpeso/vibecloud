@@ -8,6 +8,8 @@ import dev.vibecloud.api.service.ServiceManager
 import dev.vibecloud.api.service.ServiceState
 import dev.vibecloud.api.template.TemplateManager
 import dev.vibecloud.core.server.GroupInUseException
+import dev.vibecloud.core.server.ProxyForwarding
+import dev.vibecloud.core.server.ServerVersionProfiles
 import kotlinx.coroutines.delay
 import java.util.Locale
 
@@ -73,10 +75,21 @@ class GroupCascade(private val services: ServiceManager, private val groups: Gro
  */
 class GroupVersionSwitch(
     private val groups: GroupManager,
+    private val services: ServiceManager,
     private val templates: TemplateManager,
     private val catalog: ServerCatalog?,
 ) {
-    data class Outcome(val group: Group, val previousVersion: String, val installedFileName: String?)
+    data class Outcome(
+        val group: Group,
+        val previousVersion: String,
+        val installedFileName: String?,
+        /** Service records re-pinned to the new version; they boot it on their next start. */
+        val updatedServices: List<String>,
+        /** Running services that keep the old bits until they are restarted. */
+        val restartNeeded: List<String>,
+        /** Proxy forwarding mode the network now uses ("modern"/"legacy"), when computable. */
+        val forwardingMode: String?,
+    )
 
     /**
      * @param requestedVersion a catalog version id/display name (e.g. `1.8.8` or `Paper 1.8.8`),
@@ -111,7 +124,7 @@ class GroupVersionSwitch(
             requireDifferent(localKey)
             val updated = group.copy(version = localKey)
             groups.update(updated)
-            return Outcome(updated, group.version, null)
+            return finish(updated, group.version, null)
         }
 
         // 2) online catalog: match the version, pick the build, download, pin its key
@@ -133,7 +146,40 @@ class GroupVersionSwitch(
         templates.install(build)
         val updated = group.copy(version = build.key)
         groups.update(updated)
-        return Outcome(updated, group.version, build.fileName)
+        return finish(updated, group.version, build.fileName)
+    }
+
+    /**
+     * Re-pins every service record of the group to the new version — the piece that makes a
+     * switch real: static services merge the new artifact on their next start (the template
+     * fingerprint includes the version), non-static services re-provision from it anyway, and
+     * the backend table/forwarding-mode resync runs so the proxy's `velocity.toml` follows the
+     * network's new versions (legacy pre-1.13 backends → BungeeCord forwarding, otherwise modern).
+     */
+    private suspend fun finish(updated: Group, previousVersion: String, installedFileName: String?): Outcome {
+        val updatedNames = mutableListOf<String>()
+        val restartNeeded = mutableListOf<String>()
+        services.all()
+            .filter { it.groupName == updated.name }
+            .sortedBy { it.name }
+            .forEach { service ->
+                if (service.version != updated.version) {
+                    services.updateVersion(service.name, updated.version)
+                    updatedNames += service.name
+                    if (service.state == ServiceState.RUNNING) restartNeeded += service.name
+                }
+            }
+        val forwardingMode = runCatching {
+            when (
+                ServerVersionProfiles.forwardingModeForVersions(
+                    services.all().filter { !it.type.isProxy }.map { it.version },
+                )
+            ) {
+                ProxyForwarding.Mode.VELOCITY_MODERN -> "modern"
+                ProxyForwarding.Mode.BUNGEECORD_LEGACY -> "legacy"
+            }
+        }.getOrNull()
+        return Outcome(updated, previousVersion, installedFileName, updatedNames, restartNeeded, forwardingMode)
     }
 
     private fun resolveBuild(requested: String, builds: List<ServerBuild>): ServerBuild {

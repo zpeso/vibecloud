@@ -453,6 +453,34 @@ class LocalServiceManager(
         stopInternal(requireSlot(name))
     }
 
+    /**
+     * Re-pins a service to a new template version (group version switches). The start path
+     * computes the template fingerprint from the record's version, so the next start merges the
+     * new artifact into the directory; `notifyServicesChanged()` re-runs the Velocity backend
+     * sync so the proxy's forwarding mode follows the network's new versions immediately.
+     */
+    override suspend fun updateVersion(name: String, version: String) = operationGate.withOperation {
+        val slot = requireSlot(name)
+        var changed = false
+        slot.mutex.withLock {
+            val current = slot.service
+            if (current.state == ServiceState.STARTING || current.state == ServiceState.STOPPING) {
+                throw IllegalStateException(
+                    "Service '${current.name}' is ${current.state.name.lowercase()}; change its version once it has settled",
+                )
+            }
+            if (current.version == version) return@withLock
+            val updated = current.copy(version = version, updatedAt = Instant.now())
+            slot.service = updated
+            saveMetadataBestEffort(updated)
+            changed = true
+        }
+        if (changed) {
+            logger.info("Service $name re-pinned to $version (applies on its next start)")
+            notifyServicesChanged()
+        }
+    }
+
     private suspend fun stopInternal(slot: ServiceSlot) {
         bridgeTracker?.clear(slot.service.name)
         var process: ManagedProcess? = null

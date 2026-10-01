@@ -59,7 +59,7 @@ val lobby1 = cloud.services.get("lobby-1")      // null if missing
 
 group?.type                 // ServerType: PAPER, SPIGOT, VELOCITY, BUNGEECORD
 group?.version              // pinned build key, e.g. "paper-26.2-129"
-group?.desiredRunningServices // max(minServices, alwaysRunningServices) — what the reconciler targets
+group?.desiredRunningServices // max(minServices, alwaysRunningServices) — the floor the reconciler maintains
 
 service?.state              // CREATED, STARTING, RUNNING, STOPPING, STOPPED, CRASHED
 service?.port               // allocated port
@@ -274,7 +274,9 @@ interactive console:
 /cloud groups                    Group table (type, version, desired/max/provisioned)
 /cloud group start <name>        Start another service of a group (reuses stopped records first)
 /cloud group delete <name>       Delete a group together with all of its services
-/cloud group version <n> <v>     Switch the group's version (same system only, e.g. paper → paper)
+/cloud group version <n> <v>     Switch the group's version (same system only): downloads the build,
+                                 re-pins every service record, and resyncs the proxy forwarding mode
+/cloud service <name>            Details for one service ('ser' is a shortcut)
 /cloud services                  Service table (group, state, type, port)
 /cloud service <name>            Details for one service ('ser' is a shortcut)
 /cloud players                   Rosters per service

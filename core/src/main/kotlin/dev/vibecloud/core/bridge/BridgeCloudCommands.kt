@@ -30,7 +30,7 @@ class BridgeCloudCommands(
 ) {
     private val cascade = GroupCascade(services, groups)
     private val versionSwitch = serverCatalog?.let { catalog ->
-        templates?.let { tpl -> GroupVersionSwitch(groups, tpl, catalog) }
+        templates?.let { tpl -> GroupVersionSwitch(groups, services, tpl, catalog) }
     }
 
 
@@ -219,8 +219,8 @@ class BridgeCloudCommands(
                 add(success("Started $serviceName (group '${group.name}')."))
                 if (group.desiredRunningServices < group.maxServices) {
                     add(
-                        dim("The reconciler keeps ${group.desiredRunningServices} service(s) of '${group.name}' running; " +
-                                "extras may be stopped automatically."),
+                        dim("The reconciler keeps ${group.desiredRunningServices} service(s) of '${group.name}' running as a minimum — " +
+                                "extras you start stay up until you stop them."),
                     )
                 }
             }
@@ -277,7 +277,13 @@ class BridgeCloudCommands(
                 buildList {
                     add(success("Group '${group.name}' is now on ${group.type.name.lowercase()} ${outcome.group.version}."))
                     outcome.installedFileName?.let { add(dim("  Downloaded: $it")) }
-                    add(dim("  Applies on the services' next start/restart."))
+                    if (outcome.updatedServices.isNotEmpty()) {
+                        add(dim("  Services re-pinned: ${outcome.updatedServices.joinToString(", ")}"))
+                    }
+                    if (outcome.restartNeeded.isNotEmpty()) {
+                        add(error("  Restart to apply: ${outcome.restartNeeded.joinToString(", ")}"))
+                    }
+                    outcome.forwardingMode?.let { add(dim("  Proxy forwarding: $it")) }
                 }
             } catch (failure: NoSuchElementException) {
                 listOf(error(failure.message ?: "Version or group not found"))

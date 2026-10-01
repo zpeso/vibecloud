@@ -6,9 +6,10 @@ import java.util.*
 /**
  * A desired-state template for a family of services.
  *
- * The reconciler targets [desiredRunningServices], i.e. max(minServices,
- * alwaysRunningServices). maxServices caps all provisioned records, including
- * stopped and crashed records.
+ * The reconciler maintains [desiredRunningServices], i.e. max(minServices,
+ * alwaysRunningServices), as a floor: it starts services while fewer are running, but never
+ * stops the extras an operator started — those stay up until stopped explicitly.
+ * maxServices caps all provisioned records, including stopped and crashed records.
  */
 data class Group(
     val name: String,

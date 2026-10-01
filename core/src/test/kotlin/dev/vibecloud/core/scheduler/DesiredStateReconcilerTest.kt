@@ -44,7 +44,7 @@ class DesiredStateReconcilerTest {
         }
     }
     @Test
-    fun `reconciles to desired running count and scales down to updated target`() = runBlocking {
+    fun `reconciles up to the desired floor and keeps operator-started extras`() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val groups = MutableGroups(
             Group(
@@ -66,9 +66,37 @@ class DesiredStateReconcilerTest {
             assertEquals(2, services.all().count { it.state == ServiceState.RUNNING })
             assertEquals(2, services.all().size)
 
+            // Lowering the desired count must not stop the running services: the desired count
+            // is a floor, and operator-started extras stay up until stopped explicitly.
             groups.group = groups.group.copy(minServices = 1, alwaysRunningServices = 0)
             reconciler.reconcileOnce()
-            assertEquals(1, services.all().count { it.state == ServiceState.RUNNING })
+            reconciler.reconcileOnce()
+            assertEquals(2, services.all().count { it.state == ServiceState.RUNNING })
+        } finally {
+            reconciler.stop()
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun `manual start above the desired count is not stopped again`() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        // The reported case: maxServices=2, desired=1, one running; the operator starts a second
+        // service and the reconciler used to kill it right back.
+        val groups = MutableGroups(
+            Group(name = "lobby", type = ServerType.PAPER, version = "26.3", minServices = 1, maxServices = 2),
+        )
+        val services = FakeServices()
+        services.create("lobby")
+        services.start("lobby-1")
+        services.create("lobby")
+        services.start("lobby-2")
+        val reconciler = DesiredStateReconciler(scope, groups, services, 1000, SilentLogger())
+
+        try {
+            reconciler.reconcileOnce()
+            reconciler.reconcileOnce()
+            assertEquals(2, services.all().count { it.state == ServiceState.RUNNING })
         } finally {
             reconciler.stop()
             scope.cancel()
@@ -139,6 +167,10 @@ class DesiredStateReconcilerTest {
             services.keys.toList().forEach { stop(it) }
         }
 
+        override suspend fun updateVersion(name: String, version: String) {
+            services[name] = requireNotNull(services[name]).copy(version = version)
+        }
+
         override fun get(name: String): Service? = services[name]
         override fun all(): Collection<Service> = services.values.toList()
     }
@@ -204,6 +236,7 @@ class DesiredStateReconcilerTest {
         override suspend fun restart(name: String) = Unit
         override suspend fun delete(name: String) = Unit
         override suspend fun stopAll() = Unit
+        override suspend fun updateVersion(name: String, version: String) = Unit
 
         override fun get(name: String): Service? = created[name]
         override fun all(): Collection<Service> = created.values.toList()

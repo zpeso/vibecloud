@@ -21,6 +21,7 @@ internal class FakeServiceManager(vararg initial: Service) : ServiceManager {
     val stoppedNames = mutableListOf<String>()
     val restartedNames = mutableListOf<String>()
     val deletedNames = mutableListOf<String>()
+    val versionUpdates = mutableListOf<Pair<String, String>>()
 
     fun setState(name: String, state: ServiceState) {
         services[name] = requireNotNull(services[name]) { "no such service $name" }.copy(state = state)
@@ -58,6 +59,12 @@ internal class FakeServiceManager(vararg initial: Service) : ServiceManager {
     }
 
     override suspend fun stopAll() = Unit
+
+    override suspend fun updateVersion(name: String, version: String) {
+        requireKnown(name)
+        services[name] = services.getValue(name).copy(version = version)
+        versionUpdates += name to version
+    }
 
     override fun get(name: String): Service? = services[name]
 

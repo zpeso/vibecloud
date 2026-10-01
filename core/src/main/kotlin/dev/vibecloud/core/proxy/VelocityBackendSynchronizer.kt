@@ -95,7 +95,8 @@ internal class VelocityBackendSynchronizer(
             logger.warn("Cannot sync Velocity backends for ${proxy.name}: missing config $config")
             return
         }
-        forwardingProvider()?.let { forwarding -> repairForwardingSecretFile(proxy, forwarding) }
+        val forwarding = forwardingProvider()
+        forwarding?.let { repairForwardingSecretFile(proxy, forwarding) }
         try {
             val changed = VelocityTomlBackendTable.update(
                 config = config,
@@ -103,6 +104,17 @@ internal class VelocityBackendSynchronizer(
                 defaultServer = defaultServer,
                 legacyGroupAliases = legacyGroupAliases,
                 preservedTry = preservedTry,
+                // The forwarding mode is proxy-global and derived from the backends' versions —
+                // a version switch (e.g. 1.8 → 26.2) must move the proxy between legacy and
+                // modern forwarding even though the proxy's own template never changed.
+                forwardingMode = forwarding?.let { current ->
+                    when (current.mode) {
+                        ProxyForwarding.Mode.VELOCITY_MODERN ->
+                            VelocityConfigNormalizer.ProxyForwardingMode.VELOCITY_MODERN
+                        ProxyForwarding.Mode.BUNGEECORD_LEGACY ->
+                            VelocityConfigNormalizer.ProxyForwardingMode.BUNGEECORD_LEGACY
+                    }
+                },
             )
             if (reloadProxy == null) {
                 if (changed) {
@@ -201,6 +213,7 @@ internal object VelocityTomlBackendTable {
         defaultServer: String,
         legacyGroupAliases: Set<String> = emptySet(),
         preservedTry: List<String>? = null,
+        forwardingMode: VelocityConfigNormalizer.ProxyForwardingMode? = null,
     ): Boolean {
         require(serverAddresses.isNotEmpty()) { "At least one Velocity backend entry is required" }
         require(defaultServer in serverAddresses) { "Default Velocity server '$defaultServer' is not registered" }
@@ -210,7 +223,7 @@ internal object VelocityTomlBackendTable {
         // inline secret keeps proxies from sharing the cloud-managed secret file.
         val normalized = VelocityConfigNormalizer.ensureForcedHostsSection(
             VelocityConfigNormalizer.applyForwardingSecretFile(source),
-        )
+        ).let { base -> forwardingMode?.let { VelocityConfigNormalizer.applyForwardingMode(base, it) } ?: base }
         if (normalized != source) {
             VelocityConfigNormalizer.writeAtomically(config, normalized)
         }
