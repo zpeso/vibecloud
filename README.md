@@ -8,6 +8,7 @@
 BungeeCord) with exact pinned builds — VibeCloud provisions, launches, watches, and reconciles your servers, with a
 built-in web dashboard, a live HTTP bridge, and a plugin API. One zip, one config, zero dependencies.
 
+**It supports 1.8 up to always the newest paper & velocity version!**
 <img width="1864" height="911" alt="grafik" src="https://github.com/user-attachments/assets/c13d5c5d-452f-480e-a747-c960895ea6fd" />
 
 
