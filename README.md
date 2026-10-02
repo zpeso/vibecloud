@@ -8,17 +8,8 @@
 BungeeCord) with exact pinned builds — VibeCloud provisions, launches, watches, and reconciles your servers, with a
 built-in web dashboard, a live HTTP bridge, and a plugin API. One zip, one config, zero dependencies.
 
-```text
-┌────────────────────────── one machine ──────────────────────────┐
-│  VibeCloud controller (CLI + dashboard + reconciler + bridge)   │
-│        ▲ HTTP bridge (token)              │ process control     │
-│        │                                  ▼                     │
-│  ┌─────┴──────┐   ┌────────────┐   ┌───────────┐   ┌─────────┐  │
-│  │  Velocity  │   │  lobby-1   │   │  lobby-2  │   │ cityb-1 │  │
-│  │  (proxy)   │──▶│ + agent    │   │ + agent   │   │ + agent │  │
-│  └────────────┘   └────────────┘   └───────────┘   └─────────┘  │
-└──────────────────────────────────────────────────────────────────┘
-```
+<img width="1864" height="911" alt="grafik" src="https://github.com/user-attachments/assets/c13d5c5d-452f-480e-a747-c960895ea6fd" />
+
 
 ## Highlights
 
