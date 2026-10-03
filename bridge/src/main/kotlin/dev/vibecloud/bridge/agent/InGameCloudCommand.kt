@@ -1,6 +1,9 @@
 package dev.vibecloud.bridge.agent
 
 import dev.vibecloud.api.bridge.VibeCloud
+import net.kyori.adventure.text.Component
+import net.kyori.adventure.text.minimessage.MiniMessage
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer
 import org.bukkit.ChatColor
 import org.bukkit.command.Command
 import org.bukkit.command.CommandExecutor
@@ -13,6 +16,10 @@ import org.bukkit.command.TabCompleter
  * authority — subcommands, lifecycle actions, listings and completions all behave exactly
  * like the cloud console.
  *
+ * Output is branded with the cloud's service-log prefix (leading the first line of every
+ * response block, matching the agent's other messages). The response lines carry legacy
+ * `§`-codes, so they are converted to components before being sent.
+ *
  * Permission: `minetropia.cloud` (declared in plugin.yml, default: op).
  */
 class InGameCloudCommand(private val plugin: VibeCloudAgentPlugin) : CommandExecutor, TabCompleter {
@@ -20,7 +27,9 @@ class InGameCloudCommand(private val plugin: VibeCloudAgentPlugin) : CommandExec
     override fun onCommand(sender: CommandSender, command: Command, label: String, args: Array<out String>): Boolean {
         val cloud = VibeCloud.instanceOrNull()
         if (cloud == null) {
-            sender.sendMessage(PREFIX + ChatColor.RED + "Cloud connection unavailable on this server.")
+            sender.sendMessage(
+                branded(ChatColor.RED.toString() + "Cloud connection unavailable on this server."),
+            )
             return true
         }
         // The bridge call is a blocking HTTP round-trip (local, sub-millisecond typical): run it
@@ -37,12 +46,33 @@ class InGameCloudCommand(private val plugin: VibeCloudAgentPlugin) : CommandExec
                 }
                 plugin.server.scheduler.runTask(
                     plugin,
-                    Runnable { result.forEach { sender.sendMessage(it) } },
+                    Runnable { sendResponse(sender, result) },
                 )
             },
         )
         return true
     }
+
+    /**
+     * Prints a response block with the branded prefix leading the first line; remaining lines
+     * follow unchanged so console-style tables and listings keep their alignment.
+     */
+    private fun sendResponse(sender: CommandSender, lines: List<String>) {
+        if (lines.isEmpty()) return
+        lines.forEachIndexed { index, line ->
+            sender.sendMessage(if (index == 0) branded(line) else legacy(line))
+        }
+    }
+
+    /** The branded cloud prefix (MiniMessage) followed by a `§`-coded line. */
+    private fun branded(line: String): Component =
+        MiniMessage.miniMessage()
+            .deserialize(VibeCloudAgentPlugin.SERVICE_LOG_PREFIX)
+            .append(legacy(line))
+
+    /** Converts a legacy `§`-coded line into a component (visually identical to raw sending). */
+    private fun legacy(line: String): Component =
+        LegacyComponentSerializer.legacySection().deserialize(line)
 
     override fun onTabComplete(
         sender: CommandSender,
@@ -57,9 +87,5 @@ class InGameCloudCommand(private val plugin: VibeCloudAgentPlugin) : CommandExec
         } catch (_: Exception) {
             emptyList()
         }
-    }
-
-    private companion object {
-        const val PREFIX = "§8[§bVibeCloud§8]§r "
     }
 }

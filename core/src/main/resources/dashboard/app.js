@@ -120,6 +120,23 @@
     return d > 0 ? d + "d " + h + "h" : (h > 0 ? h + "h " + m + "m" : m + "m");
   }
   function fmtMb(value) { return value === null || value === undefined ? "—" : Math.round(value) + " MB"; }
+  function pingClass(ms) { return ms === null || ms === undefined ? "" : (ms >= 250 ? "bad" : (ms >= 100 ? "warn" : "good")); }
+  function fmtPing(ms) { return ms === null || ms === undefined ? "—" : ms + " ms"; }
+  function detailOf(serviceName) {
+    var list = (serviceName && services()) || [];
+    for (var i = 0; i < list.length; i++) if (list[i].name === serviceName) return list[i];
+    return null;
+  }
+  function detailFind(serviceName, playerName) {
+    var service = detailOf(serviceName);
+    if (!service || !service["player-details"]) return null;
+    for (var i = 0; i < service["player-details"].length; i++) {
+      if (service["player-details"][i].name.toLowerCase() === String(playerName).toLowerCase()) {
+        return service["player-details"][i];
+      }
+    }
+    return null;
+  }
 
   // ---- routing ------------------------------------------------------------
   var PAGE_TITLES = { overview: "Overview", players: "Players", services: "Services", groups: "Groups", console: "Console", system: "Host & Health", activity: "Activity" };
@@ -228,6 +245,7 @@
 
   // ---- players page -------------------------------------------------------
   function renderPlayers() {
+    renderPlayerStats();
     var filter = (byId("player-filter").value || "").trim().toLowerCase();
     var running = {};
     services().forEach(function (service) {
@@ -241,7 +259,11 @@
     });
     rows.sort(function (a, b) { return a.name.toLowerCase().localeCompare(b.name.toLowerCase()); });
     var visible = rows.filter(function (row) {
-      return !filter || row.name.toLowerCase().indexOf(filter) >= 0 || row.server.toLowerCase().indexOf(filter) >= 0;
+      if (!filter) return true;
+      var detail = detailFind(row.server, row.name);
+      return row.name.toLowerCase().indexOf(filter) >= 0 ||
+        row.server.toLowerCase().indexOf(filter) >= 0 ||
+        (detail && detail.world && detail.world.toLowerCase().indexOf(filter) >= 0);
     });
     byId("players-count").textContent = visible.length === rows.length
       ? "· " + rows.length : "· " + visible.length + " of " + rows.length;
@@ -251,38 +273,30 @@
     }).join("");
 
     byId("player-grid").innerHTML = visible.length ? visible.map(function (row) {
+      var detail = detailFind(row.server, row.name);
       var initial = esc(row.name.charAt(0).toUpperCase());
       // No inline onerror (CSP): failed avatar loads are handled after insertion.
-      var head = '<img class="head" alt="" loading="lazy" src="https://mc-heads.net/avatar/' + encodeURIComponent(row.name) + '/36">' +
+      var head = '<img class="head" alt="" loading="lazy" src="https://mc-heads.net/avatar/' + encodeURIComponent(row.name) + '/44">' +
         '<div class="fallback-head" style="display:none;">' + initial + "</div>";
-      return '<div class="player">' + head +
+      var meta = "on " + esc(row.server);
+      if (detail && detail.world) meta += '<span class="sep">·</span>' + esc(detail.world);
+      if (detail && detail.gamemode) meta += '<span class="sep">·</span>' + esc(detail.gamemode.toLowerCase());
+      var ping = detail && detail.ping !== null && detail.ping !== undefined
+        ? '<span class="ping ' + pingClass(detail.ping) + '"><span class="bar"></span>' + detail.ping + " ms</span>"
+        : "";
+      return '<div class="player" tabindex="0" role="button" data-player="' + esc(row.name) + '" data-server="' + esc(row.server) + '">' +
+        head +
         '<div class="who"><div class="name">' + esc(row.name) + "</div>" +
-        '<div class="on">on ' + esc(row.server) + "</div></div>" +
-        '<select data-player="' + esc(row.name) + '" data-from="' + esc(row.server) + '">' +
-        '<option value="">Move to…</option>' + options + "</select>" +
-        '<button class="btn small danger" data-kick="' + esc(row.name) + '">Kick</button>' +
+        '<div class="on">' + meta + "</div></div>" +
+        ping +
         "</div>";
     }).join("") : '<div class="empty">No players online.</div>';
 
-    Array.prototype.forEach.call(byId("player-grid").querySelectorAll("select"), function (select) {
-      select.addEventListener("change", function () {
-        var target = select.value;
-        var player = select.getAttribute("data-player");
-        if (!target) return;
-        api("/bridge/players", { method: "POST", body: form({ player: [player], action: ["transfer"], target: [target] }) })
-          .then(function () { toast("Sending " + player + " to " + target + "…"); })
-          .catch(function (error) { toast("Transfer failed: " + error.message); })
-          .then(function () { select.value = ""; refresh(); });
-      });
-    });
-    Array.prototype.forEach.call(byId("player-grid").querySelectorAll("button[data-kick]"), function (button) {
-      button.addEventListener("click", function () {
-        var player = button.getAttribute("data-kick");
-        if (!window.confirm("Kick " + player + "?")) return;
-        api("/bridge/players", { method: "POST", body: form({ player: [player], action: ["kick"], reason: ["Kicked from the dashboard"] }) })
-          .then(function () { toast(player + " was kicked."); })
-          .catch(function (error) { toast("Kick failed: " + error.message); })
-          .then(refresh);
+    Array.prototype.forEach.call(byId("player-grid").querySelectorAll(".player"), function (card) {
+      function open() { openPlayerModal(card.getAttribute("data-player"), card.getAttribute("data-server")); }
+      card.addEventListener("click", open);
+      card.addEventListener("keydown", function (event) {
+        if (event.key === "Enter" || event.key === " ") { event.preventDefault(); open(); }
       });
     });
     // CSP-safe avatar fallback: swap to the letter tile when the CDN image fails.
@@ -293,8 +307,154 @@
         if (fallback) fallback.style.display = "flex";
       });
     });
+    // Keep the open modal in sync with fresh data — but never while the operator is typing
+    // or focused inside it, so a background refresh cannot wipe an unsent message.
+    if (openModalPlayer) {
+      var input = byId("pm-message");
+      var active = document.activeElement;
+      var focused = active && byId("modal-root").contains(active);
+      if ((!input || !input.value) && !focused) openPlayerModal(openModalPlayer.name, openModalPlayer.server);
+    }
+  }
+
+  function renderPlayerStats() {
+    var online = 0, pingSum = 0, pingCount = 0, best = null, worst = null;
+    services().forEach(function (service) {
+      var count = service["players-online"];
+      if (service.state === "RUNNING" && count) online += count;
+      (service["player-details"] || []).forEach(function (player) {
+        if (player.ping === null || player.ping === undefined) return;
+        pingSum += player.ping;
+        pingCount++;
+        if (best === null || player.ping < best) best = player.ping;
+        if (worst === null || player.ping > worst) worst = player.ping;
+      });
+    });
+    var html = "";
+    html += statCard("Players online", online, "across running backends");
+    html += statCard("Average ping", pingCount ? Math.round(pingSum / pingCount) + " ms" : "—", pingCount + " player(s) reporting");
+    html += statCard("Best / worst ping", pingCount ? best + " / " + worst + " ms" : "—", "live round-trip times");
+    html += statCard("Services running", (lastStatus.totals ? lastStatus.totals.online : 0) + " / " + (lastStatus.totals ? lastStatus.totals.services : 0), "open a card for player details");
+    byId("player-stats").innerHTML = html;
   }
   byId("player-filter").addEventListener("input", renderPlayers);
+
+  // ---- player details modal -------------------------------------------------
+  var openModalPlayer = null; // { name, server } while the modal is visible
+
+  function closeModal() {
+    openModalPlayer = null;
+    byId("modal-root").innerHTML = "";
+  }
+
+  function openPlayerModal(playerName, serviceName) {
+    openModalPlayer = { name: playerName, server: serviceName };
+    var service = detailOf(serviceName);
+    var detail = detailFind(serviceName, playerName);
+    var uuid = detail ? detail.uuid : null;
+    var initial = esc(String(playerName).charAt(0).toUpperCase());
+    var render = '<img alt="" src="https://mc-heads.net/body/' + encodeURIComponent(uuid || playerName) + '/left">';
+
+    var stats = "";
+    stats += modalStat("Server", esc(serviceName), service ? esc(service.group) + " · " + esc(service.type) : "");
+    stats += modalStat("World", detail && detail.world ? esc(detail.world) : "—", "current world");
+    stats += modalStat("Gamemode", detail && detail.gamemode ? esc(detail.gamemode.toLowerCase()) : "—", "player state");
+    stats += modalStat("Ping", detail && detail.ping !== null && detail.ping !== undefined
+      ? '<span class="' + pingClass(detail.ping) + '">' + esc(fmtPing(detail.ping)) + "</span>"
+      : "—", "round-trip to this backend");
+    if (service) {
+      stats += modalStat("TPS", esc(fmtTps(service.tps)), "last 1m · 20 is ideal", tpsClass(service.tps));
+      stats += modalStat("Memory", service.ram_usage === null || service.ram_usage === undefined ? "—" :
+        Math.round(service.ram_usage * 100) + "%",
+        service["heap-used-mb"] !== null && service["heap-used-mb"] !== undefined
+          ? Math.round(service["heap-used-mb"]) + " / " + Math.round(service["heap-max-mb"] || 0) + " MB" : "server heap",
+        ramClass(service.ram_usage));
+      stats += modalStat("Server CPU", esc(fmtCpu(service.cpu)), "of the backend JVM", cpuClass(service.cpu));
+      stats += modalStat("Port", esc(service.port), service["agent-online"] ? "agent v" + esc(service["agent-version"]) : "no agent reporting");
+    }
+
+    var transferOptions = services()
+      .filter(function (candidate) { return candidate.state === "RUNNING" && candidate.name !== serviceName; })
+      .map(function (candidate) { return '<option value="' + esc(candidate.name) + '">' + esc(candidate.name) + "</option>"; })
+      .join("");
+
+    byId("modal-root").innerHTML =
+      '<div class="modal-backdrop" id="modal-backdrop"><div class="player-modal" role="dialog" aria-modal="true" aria-label="Player details">' +
+        '<div class="pm-top"><button class="pm-close" id="pm-close" title="Close (Esc)">✕</button>' +
+          '<div class="pm-hero">' +
+            '<div class="pm-render">' + render + "</div>" +
+            '<div class="pm-id">' +
+              '<div class="pm-name">' + esc(playerName) + "</div>" +
+              '<div class="pm-sub">online on <strong>' + esc(serviceName) + "</strong></div>" +
+              '<div class="pm-uuid"><span class="dim">UUID</span> ' +
+                (uuid ? "<code>" + esc(uuid) + "</code>" : '<span class="dim">not reported</span>') + "</div>" +
+              '<div class="pm-links">' +
+                '<a href="https://namemc.com/profile/' + encodeURIComponent(playerName) + '" target="_blank" rel="noopener noreferrer">NameMC</a>' +
+                '<a href="https://plancke.io/hypixel/player/stats/' + encodeURIComponent(playerName) + '" target="_blank" rel="noopener noreferrer">Plancke</a>' +
+                '<a href="https://laby.net/@' + encodeURIComponent(playerName) + '" target="_blank" rel="noopener noreferrer">laby.net</a>' +
+              "</div>" +
+            "</div>" +
+          "</div>" +
+        "</div>" +
+        '<div class="pm-stats">' + stats + "</div>" +
+        '<div class="pm-actions">' +
+          '<div class="pm-action"><input type="text" id="pm-message" placeholder="Message ' + esc(playerName) + '…"></div>' +
+          '<button class="btn small" id="pm-send">Send</button>' +
+          '<div class="pm-action"><select id="pm-transfer"><option value="">Move to…</option>' + transferOptions + "</select></div>" +
+          '<button class="btn small danger" id="pm-kick">Kick</button>' +
+          '<div class="pm-hint">Actions apply live: the message is delivered by the backend agent, transfers run through the proxy console.</div>' +
+        "</div>" +
+      "</div></div>";
+
+    byId("pm-close").addEventListener("click", closeModal);
+    byId("modal-backdrop").addEventListener("click", function (event) {
+      if (event.target === byId("modal-backdrop")) closeModal();
+    });
+    byId("pm-send").addEventListener("click", function () {
+      var input = byId("pm-message");
+      var text = input.value.trim();
+      if (!text) return;
+      api("/bridge/players", { method: "POST", body: form({ player: [playerName], action: ["message"], lines: [text] }) })
+        .then(function () { toast("Message sent to " + playerName + "."); input.value = ""; })
+        .catch(function (error) { toast("Message failed: " + error.message); });
+    });
+    byId("pm-message").addEventListener("keydown", function (event) {
+      if (event.key === "Enter") byId("pm-send").click();
+    });
+    byId("pm-transfer").addEventListener("change", function () {
+      var target = byId("pm-transfer").value;
+      if (!target) return;
+      api("/bridge/players", { method: "POST", body: form({ player: [playerName], action: ["transfer"], target: [target] }) })
+        .then(function () { toast("Sending " + playerName + " to " + target + "…"); })
+        .catch(function (error) { toast("Transfer failed: " + error.message); });
+      byId("pm-transfer").value = "";
+    });
+    byId("pm-kick").addEventListener("click", function () {
+      var reason = window.prompt("Kick " + playerName + " from " + serviceName + " — reason:", "Kicked from the dashboard");
+      if (reason === null) return;
+      api("/bridge/players", { method: "POST", body: form({ player: [playerName], action: ["kick"], reason: [reason || "Kicked from the dashboard"] }) })
+        .then(function () { toast(playerName + " was kicked."); closeModal(); refresh(); })
+        .catch(function (error) { toast("Kick failed: " + error.message); });
+    });
+    // CSP-safe body-render fallback: swap to the letter tile when the CDN image fails.
+    Array.prototype.forEach.call(byId("modal-root").querySelectorAll(".pm-render img"), function (image) {
+      image.addEventListener("error", function () {
+        image.outerHTML = '<div class="fallback-head">' + initial + "</div>";
+      });
+    });
+    var first = byId("pm-close");
+    if (first) first.focus();
+  }
+
+  function modalStat(label, value, hint, stateClass) {
+    var valueClass = stateClass ? ' class="v ' + stateClass + '"' : '"v"';
+    return '<div class="pm-stat"><div class="k">' + esc(label) + "</div>" +
+      "<div" + valueClass + ">" + value + "</div>" +
+      '<div class="s">' + esc(hint) + "</div></div>";
+  }
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape" && openModalPlayer) closeModal();
+  });
 
   // ---- services page ------------------------------------------------------
   function renderServices() {

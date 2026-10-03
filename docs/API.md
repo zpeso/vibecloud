@@ -267,7 +267,7 @@ requires a running proxy service.
 
 Every server running the agent gets a `/cloud` command (permission `minetropia.cloud`, default: op). It executes
 server-side — the cloud is the authority — so subcommands, lifecycle actions and completions behave exactly like the
-interactive console:
+interactive console. Output is branded with the cloud prefix (`ᴄʟᴏᴜᴅ »`) matching the agent's other messages:
 
 ```text
 /cloud info                      Cloud overview: running/starting/crashed counts, players online

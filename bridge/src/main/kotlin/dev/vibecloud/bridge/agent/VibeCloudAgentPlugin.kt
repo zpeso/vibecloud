@@ -125,6 +125,16 @@ class VibeCloudAgentPlugin : JavaPlugin() {
         val current = this.config ?: return
         try {
             val names = server.onlinePlayers.map { it.name }
+            // Rich per-player metadata (uuid/ping/world/gamemode) for the dashboard's player
+            // view. Each entry is URL-encoded individually so world names containing the
+            // `|`/`,` separators survive the form-encoded round trip.
+            val playerMeta = server.onlinePlayers.joinToString(",") { player ->
+                URLEncoder.encode(
+                    player.name + "|" + player.uniqueId + "|" + player.ping + "|" +
+                            player.world.name + "|" + player.gameMode.name,
+                    StandardCharsets.UTF_8,
+                )
+            }
             val tpsField = runCatching { Bukkit.getTPS()[0] }.getOrNull()
             val memory = Runtime.getRuntime()
             val heapUsedMb = (memory.totalMemory() - memory.freeMemory()) / BYTES_PER_MB
@@ -141,6 +151,7 @@ class VibeCloudAgentPlugin : JavaPlugin() {
                 "service-id" to current.serviceId,
                 "service-name" to current.serviceName,
                 "players" to names.joinToString(","),
+                "player-meta" to playerMeta,
                 "max-players" to server.maxPlayers.toString(),
                 "agent-version" to description.version,
                 "tps" to (tpsField?.let { String.format(Locale.US, "%.2f", it) } ?: ""),
@@ -215,11 +226,14 @@ class VibeCloudAgentPlugin : JavaPlugin() {
             URLEncoder.encode(key, StandardCharsets.UTF_8) + "=" + URLEncoder.encode(value, StandardCharsets.UTF_8)
         }
 
-    private companion object {
+    internal companion object {
         const val HEARTBEAT_DELAY_SECONDS = 2L
         const val BYTES_PER_MB = 1024L * 1024L
 
-        /** Branded prefix for agent service-log messages (cloud red, small-caps name, separator). */
+        /**
+         * Branded prefix for agent messages (cloud red, small-caps name, separator) — used for
+         * the service-stop broadcast and the in-game `/cloud` command output alike.
+         */
         const val SERVICE_LOG_PREFIX = "<#ed3030>ᴄʟᴏᴜᴅ <dark_gray>» "
         const val CLOUD_LOGS_PERMISSION = "cloud.logs"
     }

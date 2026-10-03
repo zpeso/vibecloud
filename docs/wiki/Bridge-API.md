@@ -156,7 +156,7 @@ curl -H "Authorization: Bearer $(cat bridge.token)" http://127.0.0.1:25580/bridg
 
 | Endpoint | Returns |
 |---|---|
-| `GET /bridge/status` | Totals, groups, per-service state/port/players/TPS/heap/CPU/agent version |
+| `GET /bridge/status` | Totals, groups, per-service state/port/players (plus enriched `player-details`: UUID/ping/world/gamemode when the agent reports them)/TPS/heap/CPU/agent version |
 | `GET /bridge/metrics` | Rolling history (players, TPS, RAM, host CPU…) + per-service metrics |
 | `GET /bridge/host` | Root-server CPU/memory/swap/uptime/load/OS/Java + per-process CPU |
 | `GET /bridge/activity` | Recent lifecycle events, newest first |

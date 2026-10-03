@@ -18,7 +18,7 @@ Without the token the dashboard shows the empty login page only — no data leak
 | Page | What you get |
 |---|---|
 | **Overview** | Stat cards (running/starting/crashed, players online), network activity chart, group distribution bars, per-group capacity cards, crash alert banner |
-| **Players** | Every online player with skin head, current server, one-click **transfer** (dropdown) and **kick** |
+| **Players** | Every online player as a clickable skin card (head + server/world/gamemode/ping), live ping stat strip, and a **details modal** (full body render, UUID, world, gamemode, ping, server TPS/memory/CPU, NameMC links) with message / transfer / kick actions |
 | **Services** | State tabs with counts (ALL/RUNNING/STARTING/STOPPED/CRASHED), CPU/TPS/memory meters per service, start/restart/stop buttons |
 | **Groups** | Per-group cards with capacity bars, backend/proxy tabs, `Start another`, delete with all services |
 | **Console** | Live per-service console output (auto-refresh) with a command input |

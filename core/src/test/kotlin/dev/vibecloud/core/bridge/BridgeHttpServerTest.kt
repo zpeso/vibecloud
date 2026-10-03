@@ -372,6 +372,39 @@ class BridgeHttpServerTest {
     }
 
     @Test
+    fun `heartbeat with player meta exposes enriched player details in status`() {
+        val running = startServer(listOf(service("lobby-1", ServiceState.RUNNING)))
+        try {
+            // Each entry is URL-encoded individually: Steve|uuid|ping|world|gamemode.
+            val meta = listOf(
+                "Steve%7C11111111-2222-3333-4444-555555555555%7C42%7Cworld%7CSURVIVAL",
+                "Alex%7Caaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee%7C120%7Cworld_nether%7CCREATIVE",
+            ).joinToString(",")
+            val response = http.send(
+                HttpRequest.newBuilder(URI.create("http://127.0.0.1:${running.server.boundPort()}/bridge/heartbeat"))
+                    .header("Authorization", "Bearer ${running.tokenStore.obtain()}")
+                    .header("Content-Type", "application/x-www-form-urlencoded")
+                    .POST(
+                        HttpRequest.BodyPublishers.ofString(
+                            "service-id=id-lobby-1&service-name=lobby-1&players=Steve%2CAlex&player-meta=$meta",
+                        ),
+                    )
+                    .build(),
+                HttpResponse.BodyHandlers.ofString(),
+            )
+            assertEquals(204, response.statusCode())
+            val status = get(running, "http://127.0.0.1:${running.server.boundPort()}/bridge/status")
+            assertTrue(status.body().contains("\"player-details\":"), status.body())
+            assertTrue(status.body().contains("\"uuid\":\"11111111-2222-3333-4444-555555555555\""), status.body())
+            assertTrue(status.body().contains("\"ping\":42"), status.body())
+            assertTrue(status.body().contains("\"world\":\"world_nether\""), status.body())
+            assertTrue(status.body().contains("\"gamemode\":\"CREATIVE\""), status.body())
+        } finally {
+            running.server.stop()
+        }
+    }
+
+    @Test
     fun `heartbeat with an unknown service is rejected`() {
         val running = startServer(listOf(service("lobby-1", ServiceState.RUNNING)))
         try {

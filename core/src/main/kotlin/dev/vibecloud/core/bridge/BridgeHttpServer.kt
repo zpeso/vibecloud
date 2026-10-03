@@ -235,6 +235,7 @@ class BridgeHttpServer(
                 groupName = known.groupName,
                 agentVersion = fields["agent-version"]?.trim().orEmpty(),
                 players = players,
+                playerDetails = parsePlayerMeta(fields["player-meta"]),
                 maxPlayers = fields["max-players"]?.trim()?.toIntOrNull() ?: 0,
                 tps = fields["tps"]?.trim()?.toDoubleOrNull(),
                 heapUsedMb = fields["heap-used-mb"]?.trim()?.toDoubleOrNull(),
@@ -704,6 +705,31 @@ class BridgeHttpServer(
         )
     }
 
+    /**
+     * Parses the agent's optional per-player metadata: URL-encoded `name|uuid|ping|world|gamemode`
+     * entries joined by commas. Each entry is encoded individually, so player names and world
+     * names containing the separators survive the round trip; unparsable entries are dropped.
+     */
+    private fun parsePlayerMeta(raw: String?): List<AgentPlayer> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return raw.split(',')
+            .mapNotNull { entry ->
+                val decoded = runCatching { URLDecoder.decode(entry, StandardCharsets.UTF_8) }.getOrNull()
+                    ?: return@mapNotNull null
+                val parts = decoded.split('|')
+                val name = parts.getOrNull(0)?.trim().orEmpty()
+                if (name.isEmpty()) return@mapNotNull null
+                AgentPlayer(
+                    name = name,
+                    uuid = parts.getOrNull(1)?.trim()?.takeIf { it.isNotEmpty() },
+                    pingMs = parts.getOrNull(2)?.trim()?.toIntOrNull(),
+                    world = parts.getOrNull(3)?.trim()?.takeIf { it.isNotEmpty() },
+                    gamemode = parts.getOrNull(4)?.trim()?.takeIf { it.isNotEmpty() },
+                )
+            }
+            .take(MAX_PLAYER_NAMES)
+    }
+
     private fun statusDocument(): String {
         val services = cloudView.services()
         val now = Instant.now(clock)
@@ -713,6 +739,10 @@ class BridgeHttpServer(
             val live = liveValues(service, now)
             live.count?.let { playersOnline += it }
             val report = agentsByServiceName[service.name]
+            // Agents without enriched metadata fall back to name-only entries so the dashboard
+            // still finds every tracked player in the details array.
+            val playerDetails = (report?.playerDetails.orEmpty())
+                .ifEmpty { live.names.map { AgentPlayer(it) } }
             JsonWriter.obj(
                 "name" to JsonWriter.str(service.name),
                 "group" to JsonWriter.str(service.groupName),
@@ -723,6 +753,7 @@ class BridgeHttpServer(
                 "agent-online" to JsonWriter.bool(isAgentOnline(service.id, now)),
                 "players-online" to (live.count?.let { JsonWriter.num(it) } ?: "null"),
                 "players" to (if (live.count == null) "null" else JsonWriter.strArray(live.names)),
+                "player-details" to (if (live.count == null) "null" else JsonWriter.arr(playerDetails.map(::playerDetailJson))),
                 "tps" to (report?.tps?.let { JsonWriter.num(it) } ?: "null"),
                 "ram_usage" to (report?.heapUsageRatio()?.let { JsonWriter.num(it) } ?: "null"),
                 "heap-used-mb" to (report?.heapUsedMb?.let { JsonWriter.num(it) } ?: "null"),
@@ -745,6 +776,15 @@ class BridgeHttpServer(
             "services" to JsonWriter.arr(serviceJson),
         )
     }
+
+    /** JSON for one enriched player entry; optional fields become null when the agent omitted them. */
+    private fun playerDetailJson(player: AgentPlayer) = JsonWriter.obj(
+        "name" to JsonWriter.str(player.name),
+        "uuid" to (player.uuid?.let { JsonWriter.str(it) } ?: "null"),
+        "ping" to (player.pingMs?.let { JsonWriter.num(it) } ?: "null"),
+        "world" to (player.world?.let { JsonWriter.str(it) } ?: "null"),
+        "gamemode" to (player.gamemode?.let { JsonWriter.str(it) } ?: "null"),
+    )
 
     /** Accepts the agent's form-encoded heartbeat and, best-effort, a JSON body with the same keys. */
     private fun parseBody(body: String): Map<String, String> {

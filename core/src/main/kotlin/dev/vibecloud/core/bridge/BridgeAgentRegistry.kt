@@ -5,6 +5,18 @@ import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
 
 /**
+ * One online player as reported by a backend agent. `uuid`, `pingMs`, `world` and `gamemode`
+ * are optional: agents that predate the enriched heartbeat only provide the name.
+ */
+data class AgentPlayer(
+    val name: String,
+    val uuid: String? = null,
+    val pingMs: Int? = null,
+    val world: String? = null,
+    val gamemode: String? = null,
+)
+
+/**
  * Tracks the last heartbeat of every backend bridge agent. Entries expire after
  * [BridgeSettings.offlineTimeout]-like staleness so the status endpoint reflects reality when a
  * server dies without saying goodbye.
@@ -16,6 +28,7 @@ class BridgeAgentRegistry(private val staleness: () -> Duration) {
         val groupName: String,
         val agentVersion: String,
         val players: List<String>,
+        val playerDetails: List<AgentPlayer>,
         val maxPlayers: Int,
         val tps: Double?,
         val heapUsedMb: Double?,
@@ -34,14 +47,18 @@ class BridgeAgentRegistry(private val staleness: () -> Duration) {
         agentVersion: String,
         players: List<String>,
         maxPlayers: Int,
+        playerDetails: List<AgentPlayer> = emptyList(),
         tps: Double? = null,
         heapUsedMb: Double? = null,
         heapMaxMb: Double? = null,
         processCpu: Double? = null,
         now: Instant = Instant.now(),
     ) {
+        // Without enriched metadata, fall back to name-only entries so consumers always find
+        // every reported player in playerDetails.
+        val details = if (playerDetails.isNotEmpty()) playerDetails else players.map { AgentPlayer(it) }
         entries[serviceId] = Entry(
-            serviceId, serviceName, groupName, agentVersion, players, maxPlayers,
+            serviceId, serviceName, groupName, agentVersion, players, details, maxPlayers,
             tps, heapUsedMb, heapMaxMb, processCpu, now,
         )
     }
@@ -66,6 +83,7 @@ class BridgeAgentRegistry(private val staleness: () -> Duration) {
         val groupName: String,
         val agentVersion: String,
         val players: List<String>,
+        val playerDetails: List<AgentPlayer> = emptyList(),
         val maxPlayers: Int,
         val tps: Double? = null,
         val heapUsedMb: Double? = null,
@@ -88,6 +106,7 @@ class BridgeAgentRegistry(private val staleness: () -> Duration) {
                 entry.groupName,
                 entry.agentVersion,
                 entry.players,
+                entry.playerDetails,
                 entry.maxPlayers,
                 entry.tps,
                 entry.heapUsedMb,

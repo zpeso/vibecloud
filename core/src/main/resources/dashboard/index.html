@@ -81,10 +81,11 @@
 
       <!-- ============ PLAYERS ============ -->
       <section id="page-players" class="page-section hidden" style="display:flex;flex-direction:column;gap:16px;">
+        <div class="stat-grid" id="player-stats"></div>
         <div class="card">
           <div class="card-head">
             <h2>Players online <span id="players-count" class="dim" style="text-transform:none;"></span></h2>
-            <input type="text" id="player-filter" placeholder="Filter by name or server…" style="width:220px;">
+            <input type="text" id="player-filter" placeholder="Filter by name, server or world…" style="width:240px;">
           </div>
           <div class="player-grid" id="player-grid"></div>
         </div>
@@ -191,6 +192,7 @@
   </div>
 </div>
 
+<div id="modal-root"></div>
 <div id="toasts"></div>
 </body>
 </html>
