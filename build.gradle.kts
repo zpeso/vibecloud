@@ -1,3 +1,7 @@
+import org.gradle.api.publish.PublishingExtension
+import org.gradle.api.publish.maven.MavenPublication
+import org.gradle.api.plugins.JavaPluginExtension
+
 plugins {
     kotlin("jvm") version "2.4.20" apply false
 }
@@ -19,6 +23,39 @@ subprojects {
         // Keep the test worker small; constrained hosts may run Gradle and a child JVM together.
         maxHeapSize = "64m"
         jvmArgs("-XX:MaxMetaspaceSize=128m", "-XX:+UseSerialGC", "-Xss512k")
+    }
+
+    // Publishing hygiene for the modules that publish (api, bridge): ship a sources jar and
+    // complete POM metadata so JitPack/Maven consumers get IDE sources and valid coordinates.
+    plugins.withId("maven-publish") {
+        extensions.configure<JavaPluginExtension> {
+            withSourcesJar()
+        }
+        extensions.configure<PublishingExtension> {
+            publications.withType<MavenPublication>().configureEach {
+                pom {
+                    name.set("VibeCloud ${project.name}")
+                    description.set(
+                        when (project.name) {
+                            "api" -> "Public models, manager interfaces and lifecycle events for embedding VibeCloud"
+                            "bridge" -> "VibeCloud SDK for Minecraft plugins: the VibeCloud facade and bridge HTTP client"
+                            else -> "VibeCloud — a single-node Minecraft cloud controller"
+                        },
+                    )
+                    url.set("https://github.com/zpeso/vibecloud")
+                    developers {
+                        developer {
+                            id.set("zpeso")
+                        }
+                    }
+                    scm {
+                        connection.set("scm:git:https://github.com/zpeso/vibecloud.git")
+                        developerConnection.set("scm:git:ssh://github.com/zpeso/vibecloud.git")
+                        url.set("https://github.com/zpeso/vibecloud/tree/master")
+                    }
+                }
+            }
+        }
     }
 }
 

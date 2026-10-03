@@ -69,7 +69,14 @@ class VibeCloudClient private constructor(
         /**
          * Convenience factory for agents/plugins running inside a cloud-managed service: reads the
          * cloud URL and token from the service's `plugins/VibeCloud/agent.properties`.
+         *
+         * Prefer [VibeCloud.forService] — it stores the [VibeCloud.instance] singleton and offers
+         * the full provider surface on top of the same transport.
          */
+        @Deprecated(
+            "Use VibeCloud.forService() instead",
+            ReplaceWith("VibeCloud.forService()", "dev.vibecloud.api.bridge.VibeCloud"),
+        )
         fun forService(): VibeCloudClient {
             val config = AgentConfig.load(
                 Path.of("plugins", "VibeCloud", "agent.properties"),

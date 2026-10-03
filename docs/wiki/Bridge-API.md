@@ -17,7 +17,7 @@ There are three ways to build on VibeCloud, depending on where your code runs:
 ```kotlin
 repositories { maven("https://jitpack.io") }
 dependencies {
-    compileOnly("com.github.zpeso.vibecloud:bridge:v0.7.2")  // dev.vibecloud.api.bridge.*
+    compileOnly("com.github.zpeso.vibecloud:bridge:v0.7.5")  // dev.vibecloud.api.bridge.*
 }
 ```
 

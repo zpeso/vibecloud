@@ -1,9 +1,18 @@
 package dev.vibecloud.api.event
 
+/**
+ * In-process publish/subscribe bus for [CloudEvent]s. Access it via `cloud.events`.
+ *
+ * Subscribers run on the cloud's dispatcher; publishing never throws into the cloud — a throwing
+ * listener is logged and skipped.
+ */
 interface EventBus {
-    /** The returned handle removes this listener when closed. */
+    /**
+     * Registers [listener] for all future events. The returned handle unsubscribes when closed
+     * (e.g. `use { ... }` or `handle.close()` on plugin disable).
+     */
     fun subscribe(listener: (CloudEvent) -> Unit): AutoCloseable
 
-    /** Implementations should keep subscriber failures from breaking cloud operations. */
+    /** Publishes [event] to all current subscribers; used by the cloud internals. */
     fun publish(event: CloudEvent)
 }

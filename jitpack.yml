@@ -1,6 +1,8 @@
-# JitPack build configuration (https://jitpack.io/#USER/vibecloud)
-# JitPack images ship several JDKs; the Gradle toolchain (Java 25) is provisioned automatically
-# because settings.gradle.kts applies the foojay-resolver plugin.
+# JitPack build configuration (https://jitpack.io/#zpeso/vibecloud)
+#
+# before_install provides a Java 21 launcher because the default image JDK is too old to run
+# Gradle 9. The project's Java 25 compile toolchain is then provisioned automatically by the
+# foojay-resolver-convention plugin (settings.gradle.kts) — 1.0.0+ is required for Gradle 9.
 before_install:
   - sdk install java 21.0.4-tem
   - sdk use java 21.0.4-tem

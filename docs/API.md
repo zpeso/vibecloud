@@ -41,7 +41,7 @@ To depend on the API from another Gradle project, add this repository's publishe
 
 ```kotlin
 dependencies {
-    implementation("dev.vibecloud:api:0.1.0")
+    implementation("com.github.zpeso.vibecloud:api:v0.7.5")
 }
 ```
 
@@ -202,7 +202,7 @@ repositories {
     mavenLocal()
 }
 dependencies {
-    compileOnly("dev.vibecloud:bridge:0.1.0") // brings dev.vibecloud.api.bridge.*
+    compileOnly("dev.vibecloud:bridge:<version>") // brings dev.vibecloud.api.bridge.*
 }
 ```
 
@@ -210,7 +210,7 @@ For GitHub-based consumption without running a repository, tag a release and let
 
 ```kotlin
 repositories { maven("https://jitpack.io") }
-dependencies { compileOnly("com.github.<your-github-user>.vibecloud:bridge:v0.1.0") }
+dependencies { compileOnly("com.github.zpeso.vibecloud:bridge:v0.7.5") }
 ```
 
 (The zero-dependency alternative: the agent jar already shades the `dev.vibecloud.api.bridge` SDK classes, so the
