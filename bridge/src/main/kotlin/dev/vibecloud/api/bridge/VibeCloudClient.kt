@@ -110,6 +110,16 @@ class ServiceStatus(
     val agentOnline: Boolean,
     val playersOnline: Int?,
     val players: List<String>,
+    val playerDetails: List<PlayerDetail> = emptyList(),
+)
+
+/** One enriched player entry from the status document (`player-details`), when the agent reports it. */
+data class PlayerDetail(
+    val name: String,
+    val uuid: String? = null,
+    val pingMs: Int? = null,
+    val world: String? = null,
+    val gamemode: String? = null,
 )
 
 /** Per-group entry of the status document. */
@@ -143,92 +153,63 @@ internal fun ServiceStatus.toCloudService(cloud: VibeCloud): CloudService = Clou
     players = players,
 )
 
-/** Minimal JSON reader for the status document (no third-party dependencies). */
+/** Minimal JSON reader for the status document, backed by [MiniJson] (no third-party dependencies). */
 internal object CloudStatusParser {
-    private val STRING_FIELD = Regex("\"([A-Za-z0-9_-]+)\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"")
-    private val NUMBER_FIELD = Regex("\"([A-Za-z0-9_-]+)\"\\s*:\\s*(-?[0-9]+)")
-    private val BOOL_FIELD = Regex("\"([A-Za-z0-9_-]+)\"\\s*:\\s*(true|false)")
-
     fun parse(json: String): CloudStatus {
-        val totals = section(json, "totals")
-        val servicesJson = arrayField(json, "services")
-        val services = Regex("\\{[^{}]*}").findAll(servicesJson).map { entry ->
-            val fields = mutableMapOf<String, String>()
-            STRING_FIELD.findAll(entry.value).forEach { fields[it.groupValues[1]] = unescape(it.groupValues[2]) }
-            NUMBER_FIELD.findAll(entry.value).forEach { fields.putIfAbsent(it.groupValues[1], it.groupValues[2]) }
-            BOOL_FIELD.findAll(entry.value).forEach { fields.putIfAbsent(it.groupValues[1], it.groupValues[2]) }
+        val root = MiniJson.parse(json) as? Map<*, *> ?: error("Status document must be a JSON object")
+        val totals = root["totals"] as? Map<*, *> ?: emptyMap<Any?, Any?>()
+        val services = (root["services"] as? List<*>).orEmpty().mapNotNull { entry ->
+            val fields = entry as? Map<*, *> ?: return@mapNotNull null
             ServiceStatus(
-                name = fields["name"].orEmpty(),
-                group = fields["group"].orEmpty(),
-                type = fields["type"].orEmpty(),
-                state = fields["state"].orEmpty(),
-                port = fields["port"]?.toIntOrNull() ?: 0,
-                agentOnline = fields["agent-online"] == "true",
-                playersOnline = fields["players-online"]?.takeIf { it != "null" }?.toIntOrNull(),
-                players = arrayField(entry.value, "players")
-                    .split(',')
-                    .mapNotNull { field ->
-                        val match = Regex("\"((?:[^\"\\\\]|\\\\.)*)\"").find(field.trim())
-                        match?.let { unescape(it.groupValues[1]) }
-                    }
-                    .filter { it.isNotEmpty() },
+                name = fields.text("name"),
+                group = fields.text("group"),
+                type = fields.text("type"),
+                state = fields.text("state"),
+                port = fields.int("port") ?: 0,
+                agentOnline = fields["agent-online"] == true,
+                playersOnline = fields.int("players-online"),
+                players = fields.stringList("players"),
+                playerDetails = (fields["player-details"] as? List<*>).orEmpty().mapNotNull { detail ->
+                    val values = detail as? Map<*, *> ?: return@mapNotNull null
+                    PlayerDetail(
+                        name = values.string("name") ?: return@mapNotNull null,
+                        uuid = values.string("uuid"),
+                        pingMs = values.int("ping"),
+                        world = values.string("world"),
+                        gamemode = values.string("gamemode"),
+                    )
+                },
             )
-        }.toList()
-        val groupsJson = arrayField(json, "groups")
-        val groups = Regex("\\{[^{}]*}").findAll(groupsJson).map { entry ->
-            val fields = mutableMapOf<String, String>()
-            STRING_FIELD.findAll(entry.value).forEach { fields[it.groupValues[1]] = unescape(it.groupValues[2]) }
-            NUMBER_FIELD.findAll(entry.value).forEach { fields.putIfAbsent(it.groupValues[1], it.groupValues[2]) }
-            BOOL_FIELD.findAll(entry.value).forEach { fields.putIfAbsent(it.groupValues[1], it.groupValues[2]) }
+        }
+        val groups = (root["groups"] as? List<*>).orEmpty().mapNotNull { entry ->
+            val fields = entry as? Map<*, *> ?: return@mapNotNull null
             GroupStatus(
-                name = fields["name"].orEmpty(),
-                type = fields["type"].orEmpty(),
-                version = fields["version"].orEmpty(),
-                static = fields["static"] == "true",
-                minServices = fields["min-services"]?.toIntOrNull() ?: 0,
-                maxServices = fields["max-services"]?.toIntOrNull() ?: 0,
-                alwaysRunningServices = fields["always-running-services"]?.toIntOrNull() ?: 0,
+                name = fields.text("name"),
+                type = fields.text("type"),
+                version = fields.text("version"),
+                static = fields["static"] == true,
+                minServices = fields.int("min-services") ?: 0,
+                maxServices = fields.int("max-services") ?: 0,
+                alwaysRunningServices = fields.int("always-running-services") ?: 0,
             )
-        }.toList()
+        }
         return CloudStatus(
-            groupCount = totals["groups"]?.toIntOrNull() ?: 0,
-            serviceCount = totals["services"]?.toIntOrNull() ?: 0,
-            onlineServices = totals["online"]?.toIntOrNull() ?: 0,
-            totalPlayersOnline = totals["players-online"]?.toIntOrNull() ?: 0,
+            groupCount = totals.int("groups") ?: 0,
+            serviceCount = totals.int("services") ?: 0,
+            onlineServices = totals.int("online") ?: 0,
+            totalPlayersOnline = totals.int("players-online") ?: 0,
             services = services,
             groups = groups,
             rawJson = json,
         )
     }
 
-    private fun section(json: String, key: String): Map<String, String> {
-        val match = Regex("\"$key\"\\s*:\\s*\\{([^{}]*)}").find(json) ?: return emptyMap()
-        val fields = mutableMapOf<String, String>()
-        NUMBER_FIELD.findAll(match.groupValues[1]).forEach { fields[it.groupValues[1]] = it.groupValues[2] }
-        return fields
-    }
+    private fun Map<*, *>.string(key: String): String? = (this[key] as? String)?.takeIf { it.isNotEmpty() }
 
-    /** Extracts the contents of the JSON array [key] by bracket depth, tolerating nested arrays. */
-    private fun arrayField(json: String, key: String): String {
-        val keyMatch = Regex("\"$key\"\\s*:\\s*\\[").find(json) ?: return ""
-        val start = keyMatch.range.last
-        var depth = 0
-        for (index in start until json.length) {
-            when (json[index]) {
-                '[' -> depth++
-                ']' -> {
-                    depth--
-                    if (depth == 0) return json.substring(start + 1, index)
-                }
-            }
-        }
-        return ""
-    }
+    private fun Map<*, *>.text(key: String): String = string(key).orEmpty()
 
-    private fun unescape(value: String): String = value
-        .replace("\\\"", "\"")
-        .replace("\\\\", "\\")
-        .replace("\\n", "\n")
-        .replace("\\r", "\r")
-        .replace("\\t", "\t")
+    private fun Map<*, *>.int(key: String): Int? = (this[key] as? Number)?.toInt()
+
+    private fun Map<*, *>.stringList(key: String): List<String> =
+        (this[key] as? List<*>).orEmpty().mapNotNull { it as? String }
 }

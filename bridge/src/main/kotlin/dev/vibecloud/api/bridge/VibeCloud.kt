@@ -97,33 +97,9 @@ class VibeCloud private constructor(
         java.net.URLEncoder.encode(value, Charsets.UTF_8).replace("+", "%20")
 
     private fun parseStringArray(json: String, key: String): List<String> {
-        val keyMatch = Regex("\"$key\"\\s*:\\s*\\[").find(json) ?: return emptyList()
-        val start = keyMatch.range.last
-        var depth = 0
-        for (index in start until json.length) {
-            when (json[index]) {
-                '[' -> depth++
-                ']' -> {
-                    depth--
-                    if (depth == 0) {
-                        val inner = json.substring(start + 1, index)
-                        if (inner.isBlank()) return emptyList()
-                        return Regex("\"((?:[^\"\\\\]|\\\\.)*)\"").findAll(inner)
-                            .map { unescapeJson(it.groupValues[1]) }
-                            .toList()
-                    }
-                }
-            }
-        }
-        return emptyList()
+        val root = runCatching { MiniJson.parse(json) }.getOrNull() as? Map<*, *> ?: return emptyList()
+        return (root[key] as? List<*>).orEmpty().mapNotNull { it as? String }
     }
-
-    private fun unescapeJson(value: String): String = value
-        .replace("\\\"", "\"")
-        .replace("\\\\", "\\")
-        .replace("\\n", "\n")
-        .replace("\\r", "\r")
-        .replace("\\t", "\t")
 
     // -- transport -----------------------------------------------------------
 

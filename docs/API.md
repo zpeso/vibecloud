@@ -184,6 +184,8 @@ Notes:
 - The agent reports every 5 seconds by default (`bridge.heartbeat-interval-seconds`), so counts are near-real-time.
 - `agentOnline` tells you whether the report comes from the authoritative agent or the console-line fallback.
 - The status JSON also carries `totals.online`, per-service `state`/`port`/`players`, and the group definitions.
+- `status().services` entries expose `playerDetails` (`PlayerDetail`: `name`, `uuid`, `pingMs`, `world`,
+  `gamemode`) when the agent reports enriched metadata; `players` always carries the plain names.
 - Inside a cloud-managed service you can skip the manual setup entirely: `VibeCloudClient.forService()` reads the
   cloud URL and token from the service's `plugins/VibeCloud/agent.properties`.
 
