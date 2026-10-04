@@ -120,6 +120,19 @@ data class PlayerDetail(
     val pingMs: Int? = null,
     val world: String? = null,
     val gamemode: String? = null,
+    /** Live vitals from the agent's roster snapshot; null on legacy agents. */
+    val health: Double? = null,
+    val food: Int? = null,
+    val level: Int? = null,
+    val exp: Double? = null,
+    val x: Double? = null,
+    val y: Double? = null,
+    val z: Double? = null,
+    val clientBrand: String? = null,
+    val firstPlayed: Long? = null,
+    val address: String? = null,
+    val isOp: Boolean? = null,
+    val isFlying: Boolean? = null,
 )
 
 /** Per-group entry of the status document. */
@@ -177,6 +190,18 @@ internal object CloudStatusParser {
                         pingMs = values.int("ping"),
                         world = values.string("world"),
                         gamemode = values.string("gamemode"),
+                        health = values.double("health"),
+                        food = values.int("food"),
+                        level = values.int("level"),
+                        exp = values.double("exp"),
+                        x = values.double("x"),
+                        y = values.double("y"),
+                        z = values.double("z"),
+                        clientBrand = values.string("client-brand"),
+                        firstPlayed = values.long("first-played"),
+                        address = values.string("address"),
+                        isOp = values.boolean("op"),
+                        isFlying = values.boolean("flying"),
                     )
                 },
             )
@@ -209,6 +234,12 @@ internal object CloudStatusParser {
     private fun Map<*, *>.text(key: String): String = string(key).orEmpty()
 
     private fun Map<*, *>.int(key: String): Int? = (this[key] as? Number)?.toInt()
+
+    private fun Map<*, *>.double(key: String): Double? = (this[key] as? Number)?.toDouble()
+
+    private fun Map<*, *>.long(key: String): Long? = (this[key] as? Number)?.toLong()
+
+    private fun Map<*, *>.boolean(key: String): Boolean? = this[key] as? Boolean
 
     private fun Map<*, *>.stringList(key: String): List<String> =
         (this[key] as? List<*>).orEmpty().mapNotNull { it as? String }

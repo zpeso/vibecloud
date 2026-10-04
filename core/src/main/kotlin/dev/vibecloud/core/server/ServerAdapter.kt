@@ -28,7 +28,12 @@ interface ServerAdapter {
 
     /** [forwarding] is null when the cloud has no proxy wiring to apply. */
     fun configure(service: Service, directory: Path, eulaAccepted: Boolean, forwarding: ProxyForwarding?)
-    fun command(service: Service, settings: RuntimeSettings): List<String>
+
+    /**
+     * Builds the launch command. [memoryOverrideMb] is the group's per-group heap ceiling
+     * (`Group.maxMemoryMb`) or `null` to use [RuntimeSettings.maxMemoryMb].
+     */
+    fun command(service: Service, settings: RuntimeSettings, memoryOverrideMb: Int? = null): List<String>
     fun isReadyLine(line: String): Boolean
 }
 

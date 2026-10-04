@@ -14,6 +14,7 @@ import java.security.SecureRandom
 import java.time.Clock
 import java.time.Duration
 import java.time.Instant
+import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -131,6 +132,7 @@ class BridgeHttpServer(
             created.createContext("/bridge/console") { exchange -> safe(exchange, "console") { handleConsole(it) } }
             created.createContext("/bridge/heartbeat") { exchange -> safe(exchange, "heartbeat") { handleHeartbeat(it) } }
             created.createContext("/bridge/players") { exchange -> safe(exchange, "players") { handlePlayerAction(it) } }
+            created.createContext("/bridge/players/inventory") { exchange -> safe(exchange, "player inventory") { handlePlayerInventory(it) } }
             created.createContext("/bridge/services/command") { exchange -> safe(exchange, "service command") { handleServiceAction(it) } }
             created.createContext("/bridge/cloud") { exchange -> safe(exchange, "cloud command") { handleCloudCommand(it) } }
             created.start()
@@ -246,6 +248,7 @@ class BridgeHttpServer(
             if (firstHeartbeat) {
                 logger.info("Bridge agent of ${serviceName} connected (v${fields["agent-version"]?.trim().orEmpty()})")
             }
+            storeInventorySnapshots(serviceName, fields["inspections"])
             tracker.applyAgentReport(serviceName, players)
             // Piggyback queued commands for this service on the heartbeat response. The agent
             // executes them on the server's main thread and reports back on the next beat.
@@ -337,6 +340,18 @@ class BridgeHttpServer(
                     respond(exchange, 200, JsonWriter.obj("transferred" to JsonWriter.bool(true)))
                     return
                 }
+                "inventory" -> {
+                    // Ask the agent to snapshot the player; the response arrives on the next
+                    // heartbeat and is served by GET /bridge/players/inventory.
+                    val requestId = UUID.randomUUID().toString().take(8)
+                    pendingInspections[requestId] = playerName
+                    BridgeCommand(
+                        id = backingQueue.nextId(),
+                        type = "inventory",
+                        playerName = playerName,
+                        payload = mapOf("request-id" to requestId),
+                    )
+                }
                 else -> {
                     respond(exchange, 400, errorJson("unknown player action '$action'"))
                     return
@@ -351,7 +366,7 @@ class BridgeHttpServer(
                 return
             }
             backingQueue.enqueue(target.id, command)
-            respond(exchange, 202, JsonWriter.obj("queued" to JsonWriter.bool(true)))
+            respond(exchange, 202, JsonWriter.obj("queued" to JsonWriter.bool(true), "request-id" to JsonWriter.str((command.payload["request-id"] ?: ""))))
         } catch (failure: IOException) {
             logger.debug("Bridge player action failed: ${failure.message}")
         } finally {
@@ -706,9 +721,14 @@ class BridgeHttpServer(
     }
 
     /**
-     * Parses the agent's optional per-player metadata: URL-encoded `name|uuid|ping|world|gamemode`
-     * entries joined by commas. Each entry is encoded individually, so player names and world
-     * names containing the separators survive the round trip; unparsable entries are dropped.
+     * Parses the agent's optional per-player metadata: URL-encoded pipe-joined field entries
+     * joined by commas. Each entry is encoded individually, so player names and world names
+     * containing the separators survive the round trip; unparsable entries are dropped.
+     *
+     * Wire contract (agent `PlayerInspector.rosterEntry`), append-only:
+     * 0 name, 1 uuid, 2 ping, 3 world, 4 gamemode, 5 health, 6 food, 7 level, 8 exp,
+     * 9 x, 10 y, 11 z, 12 client-brand, 13 first-played, 14 address, 15 op, 16 flying.
+     * Indices past the sending agent's field count are simply absent — never reorder.
      */
     private fun parsePlayerMeta(raw: String?): List<AgentPlayer> {
         if (raw.isNullOrBlank()) return emptyList()
@@ -719,12 +739,25 @@ class BridgeHttpServer(
                 val parts = decoded.split('|')
                 val name = parts.getOrNull(0)?.trim().orEmpty()
                 if (name.isEmpty()) return@mapNotNull null
+                fun field(index: Int): String? = parts.getOrNull(index)?.trim()?.takeIf { it.isNotEmpty() }
                 AgentPlayer(
                     name = name,
-                    uuid = parts.getOrNull(1)?.trim()?.takeIf { it.isNotEmpty() },
-                    pingMs = parts.getOrNull(2)?.trim()?.toIntOrNull(),
-                    world = parts.getOrNull(3)?.trim()?.takeIf { it.isNotEmpty() },
-                    gamemode = parts.getOrNull(4)?.trim()?.takeIf { it.isNotEmpty() },
+                    uuid = field(1),
+                    pingMs = field(2)?.toIntOrNull(),
+                    world = field(3),
+                    gamemode = field(4),
+                    health = field(5)?.toDoubleOrNull(),
+                    food = field(6)?.toIntOrNull(),
+                    level = field(7)?.toIntOrNull(),
+                    exp = field(8)?.toDoubleOrNull(),
+                    x = field(9)?.toDoubleOrNull(),
+                    y = field(10)?.toDoubleOrNull(),
+                    z = field(11)?.toDoubleOrNull(),
+                    clientBrand = field(12),
+                    firstPlayed = field(13)?.toLongOrNull(),
+                    address = field(14),
+                    isOp = field(15)?.toBooleanStrictOrNull(),
+                    isFlying = field(16)?.toBooleanStrictOrNull(),
                 )
             }
             .take(MAX_PLAYER_NAMES)
@@ -784,6 +817,18 @@ class BridgeHttpServer(
         "ping" to (player.pingMs?.let { JsonWriter.num(it) } ?: "null"),
         "world" to (player.world?.let { JsonWriter.str(it) } ?: "null"),
         "gamemode" to (player.gamemode?.let { JsonWriter.str(it) } ?: "null"),
+        "health" to (player.health?.let { JsonWriter.num(it) } ?: "null"),
+        "food" to (player.food?.let { JsonWriter.num(it) } ?: "null"),
+        "level" to (player.level?.let { JsonWriter.num(it) } ?: "null"),
+        "exp" to (player.exp?.let { JsonWriter.num(it) } ?: "null"),
+        "x" to (player.x?.let { JsonWriter.num(it) } ?: "null"),
+        "y" to (player.y?.let { JsonWriter.num(it) } ?: "null"),
+        "z" to (player.z?.let { JsonWriter.num(it) } ?: "null"),
+        "client-brand" to (player.clientBrand?.let { JsonWriter.str(it) } ?: "null"),
+        "first-played" to (player.firstPlayed?.let { JsonWriter.num(it) } ?: "null"),
+        "address" to (player.address?.let { JsonWriter.str(it) } ?: "null"),
+        "op" to (player.isOp?.let { JsonWriter.bool(it) } ?: "null"),
+        "flying" to (player.isFlying?.let { JsonWriter.bool(it) } ?: "null"),
     )
 
     /** Accepts the agent's form-encoded heartbeat and, best-effort, a JSON body with the same keys. */
@@ -947,6 +992,119 @@ class BridgeHttpServer(
         }
     }
 
+    /**
+     * `GET /bridge/players/inventory?service=<name>&player=<name>` — returns the last inventory
+     * snapshot the service's agent collected for the player (agents capture snapshots when the
+     * dashboard requests one and deliver them with the next heartbeat, typically within a few
+     * seconds). Fields: `service`, `player`, `captured-at`, `items` (array of
+     * `{slot,material,count,durability,name,lore[],enchantments[]}`, `slot` is `helmet`,
+     * `chestplate`, `leggings`, `boots`, `offhand` or a 1-based hotbar/inventory index).
+     */
+    private fun handlePlayerInventory(exchange: HttpExchange) {
+        try {
+            if (exchange.requestMethod != "GET" && exchange.requestMethod != "HEAD") {
+                respond(exchange, 405, errorJson("method not allowed"))
+                return
+            }
+            if (!authorize(exchange)) return
+            val query = parseQuery(exchange.requestURI.rawQuery.orEmpty())
+            val serviceName = query["service"]?.trim().orEmpty()
+            val playerName = query["player"]?.trim().orEmpty()
+            if (serviceName.isEmpty() || playerName.isEmpty()) {
+                respond(exchange, 400, errorJson("requires 'service' and 'player'"))
+                return
+            }
+            val snapshot = inventorySnapshots[serviceName.lowercase() to playerName.lowercase()]
+            if (snapshot == null) {
+                respond(exchange, 404, errorJson("no inventory snapshot yet — request one and retry in a few seconds"))
+                return
+            }
+            respond(exchange, 200, snapshot)
+        } catch (failure: IOException) {
+            logger.debug("Player inventory request failed: ${failure.message}")
+        } finally {
+            exchange.close()
+        }
+    }
+
+    /** Last inventory snapshot JSON per (service, player), keyed lowercase. */
+    private val inventorySnapshots = java.util.concurrent.ConcurrentHashMap<Pair<String, String>, String>()
+
+    /**
+     * Serializes one decoded item entry (`slot|material|count|durability|name|lore|enchants`)
+     * into the inventory document. Malformed entries are skipped defensively.
+     */
+    private fun inventoryItemJson(entry: String): String? {
+        val parts = entry.split('|')
+        if (parts.size < 5) return null
+        val slot = parts[0]
+        val material = parts[1]
+        val count = parts[2].toIntOrNull() ?: return null
+        val durability = parts[3].toIntOrNull()
+        val name = parts[4]
+        val lore = parts.getOrNull(5).orEmpty().split('\u001f').filter { it.isNotBlank() }
+        val enchants = parts.getOrNull(6).orEmpty().split('\u001f').filter { it.isNotBlank() }
+            .mapNotNull { raw ->
+                val split = raw.lastIndexOf(':')
+                if (split <= 0) return@mapNotNull null
+                JsonWriter.obj(
+                    "type" to JsonWriter.str(raw.substring(0, split)),
+                    "level" to (raw.substring(split + 1).toIntOrNull()?.let { JsonWriter.num(it) } ?: "null"),
+                )
+            }
+        return JsonWriter.obj(
+            "slot" to JsonWriter.str(slot),
+            "material" to JsonWriter.str(material),
+            "count" to JsonWriter.num(count),
+            "durability" to (durability?.let { JsonWriter.num(it) } ?: "null"),
+            "name" to (name.takeIf { it.isNotBlank() }?.let { JsonWriter.str(it) } ?: "null"),
+            "lore" to JsonWriter.strArray(lore),
+            "enchantments" to JsonWriter.arr(enchants),
+        )
+    }
+
+    /** Parses `a=1&b=two` into a map, URL-decoding keys and values; repeated keys keep the last. */
+    private fun parseQuery(rawQuery: String): Map<String, String> = rawQuery.split('&')
+        .filter { it.contains('=') }
+        .associate { pair ->
+            val index = pair.indexOf('=')
+            val key = runCatching { URLDecoder.decode(pair.substring(0, index), StandardCharsets.UTF_8) }.getOrDefault("")
+            val value = runCatching { URLDecoder.decode(pair.substring(index + 1), StandardCharsets.UTF_8) }.getOrDefault("")
+            key to value
+        }
+        .filterKeys { it.isNotEmpty() }
+
+    /**
+     * Decodes the agent's `inspections` heartbeat field (`request-id\u0002payload` entries joined
+     * by `\u0001`) and stores each finished snapshot under its (service, player) key. The agent
+     * only returns the request id, so the player is resolved from the pending request the
+     * dashboard's inspect call queued; payloads are pre-rendered item strings.
+     */
+    private fun storeInventorySnapshots(serviceName: String, raw: String?) {
+        if (raw.isNullOrBlank()) return
+        raw.split('\u0001').forEach { inspection ->
+            val separator = inspection.indexOf('\u0002')
+            if (separator <= 0) return@forEach
+            val requestId = inspection.substring(0, separator)
+            val payload = inspection.substring(separator + 1)
+            val pending = pendingInspections.remove(requestId) ?: return@forEach
+            if (payload == "offline" || payload.startsWith("error\u0002")) return@forEach
+            val items = payload.split('\u0001')
+                .filter { it.isNotBlank() }
+                .mapNotNull(::inventoryItemJson)
+            val document = JsonWriter.obj(
+                "service" to JsonWriter.str(serviceName),
+                "player" to JsonWriter.str(pending),
+                "captured-at" to JsonWriter.num(Instant.now(clock).epochSecond),
+                "items" to JsonWriter.arr(items),
+            )
+            inventorySnapshots[serviceName.lowercase() to pending.lowercase()] = document
+        }
+    }
+
+    /** Inspect requests queued for agents, keyed by request id → player name. */
+    private val pendingInspections = java.util.concurrent.ConcurrentHashMap<String, String>()
+
     /** Reads the request body, rejecting payloads beyond [MAX_BODY_BYTES] instead of buffering them. */
     private fun readBodyCapped(exchange: HttpExchange): String? {
         val buffer = exchange.requestBody.readNBytes(MAX_BODY_BYTES + 1)
@@ -1007,8 +1165,8 @@ class BridgeHttpServer(
          * avatar CDN the players page explicitly loads images from.
          */
         const val CSP = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
-                "img-src 'self' https://mc-heads.net; connect-src 'self'; frame-ancestors 'none'; " +
-                "base-uri 'none'; form-action 'self'"
+                "img-src 'self' https://mc-heads.net https://minecraft-api.vercel.app; connect-src 'self'; " +
+                "frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
 
         private fun String.isLoopbackAddress(): Boolean =
             this == "127.0.0.1" || this == "localhost" || this == "::1"

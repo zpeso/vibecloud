@@ -49,6 +49,34 @@ class VibeCloudClientParserTest {
      * `status().totalPlayersOnline` was correct.
      */
     @Test
+    fun `enriched player details carry vitals and connection metadata`() {
+        val json = """
+            {"totals":{"groups":1,"services":1,"online":1,"players-online":1},
+             "groups":[],
+             "services":[{"name":"lobby-1","group":"lobby","type":"PAPER","state":"RUNNING","port":25566,
+                "agent-online":true,"players-online":1,"players":["Steve"],
+                "player-details":[{"name":"Steve","uuid":"uuid-1","ping":42,"world":"world","gamemode":"SURVIVAL",
+                    "health":14.5,"food":18,"level":33,"exp":0.5,"x":100.5,"y":64,"z":-200.25,
+                    "client-brand":"vanilla","first-played":1600000000000,"address":"10.0.0.5",
+                    "op":true,"flying":false}]}]}
+        """.trimIndent()
+
+        val status = CloudStatusParser.parse(json)
+        val steve = status.services.single().playerDetails.single()
+        assertEquals(14.5, steve.health)
+        assertEquals(18, steve.food)
+        assertEquals(33, steve.level)
+        assertEquals(0.5, steve.exp)
+        assertEquals(100.5, steve.x)
+        assertEquals(-200.25, steve.z)
+        assertEquals("vanilla", steve.clientBrand)
+        assertEquals(1600000000000, steve.firstPlayed)
+        assertEquals("10.0.0.5", steve.address)
+        assertEquals(true, steve.isOp)
+        assertEquals(false, steve.isFlying)
+    }
+
+    @Test
     fun `nested player-details do not break service parsing`() {
         val json = """
             {"totals":{"groups":1,"services":1,"online":1,"players-online":1,"agents-online":1},

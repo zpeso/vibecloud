@@ -26,13 +26,14 @@ class PaperAdapter : ServerAdapter {
         configurePaperGlobal(directory.resolve("config/paper-global.yml"), forwarding)
     }
 
-    override fun command(service: Service, settings: RuntimeSettings): List<String> {
+    override fun command(service: Service, settings: RuntimeSettings, memoryOverrideMb: Int?): List<String> {
         val profile = ServerVersionProfiles.profile(service.version)
         return javaCommand(
             settings = settings,
             service = service,
             useLegacyJava = profile.usesLegacyJava,
             extraServerArgs = profile.launchArgs(),
+            memoryOverrideMb = memoryOverrideMb,
         )
     }
 
@@ -56,13 +57,14 @@ class SpigotAdapter : ServerAdapter {
         )
     }
 
-    override fun command(service: Service, settings: RuntimeSettings): List<String> {
+    override fun command(service: Service, settings: RuntimeSettings, memoryOverrideMb: Int?): List<String> {
         val profile = ServerVersionProfiles.profile(service.version)
         return javaCommand(
             settings = settings,
             service = service,
             useLegacyJava = profile.usesLegacyJava,
             extraServerArgs = profile.launchArgs(),
+            memoryOverrideMb = memoryOverrideMb,
         )
     }
 
@@ -105,7 +107,8 @@ class VelocityAdapter : ServerAdapter {
         VelocityConfigNormalizer.writeAtomically(config, updated)
     }
 
-    override fun command(service: Service, settings: RuntimeSettings): List<String> = javaCommand(settings, service)
+    override fun command(service: Service, settings: RuntimeSettings, memoryOverrideMb: Int?): List<String> =
+        javaCommand(settings, service, memoryOverrideMb = memoryOverrideMb)
 
     override fun isReadyLine(line: String): Boolean =
         line.contains("Done (", ignoreCase = true) || line.contains("Listening on", ignoreCase = true)
@@ -129,11 +132,11 @@ class BungeeCordAdapter : ServerAdapter {
             pattern.find(source) ?: throw IllegalStateException("Could not parse BungeeCord host setting in $config")
         val updated = source.replaceRange(match.range, match.groupValues[1] + "0.0.0.0:" + service.port)
         VelocityConfigNormalizer.writeAtomically(config, updated)
-    }
+    }    override fun command(service: Service, settings: RuntimeSettings, memoryOverrideMb: Int?): List<String> =
+        javaCommand(settings, service, memoryOverrideMb = memoryOverrideMb)
 
-    override fun command(service: Service, settings: RuntimeSettings): List<String> = javaCommand(settings, service)
-
-    override fun isReadyLine(line: String): Boolean = line.contains("Listening on", ignoreCase = true)
+    override fun isReadyLine(line: String): Boolean =
+        line.contains("Listening on", ignoreCase = true)
 }
 
 fun defaultServerAdapters(): ServerAdapterRegistry = ServerAdapterRegistry(
@@ -145,12 +148,13 @@ private fun javaCommand(
     service: Service,
     useLegacyJava: Boolean = false,
     extraServerArgs: List<String> = emptyList(),
+    memoryOverrideMb: Int? = null,
 ): List<String> = buildList {
     val java =
         if (useLegacyJava && settings.legacyJavaCommand.isNotBlank()) settings.legacyJavaCommand else settings.javaCommand
     add(java)
     add("-Xms" + settings.minMemoryMb + "M")
-    add("-Xmx" + settings.maxMemoryMb + "M")
+    add("-Xmx" + (memoryOverrideMb ?: settings.maxMemoryMb) + "M")
     addAll(settings.jvmArgs)
     add("-jar")
     add(service.directory.resolve("server.jar").toAbsolutePath().normalize().toString())

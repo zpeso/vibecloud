@@ -45,6 +45,16 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock as withThreadLock
 
+/** Real host probe: a connectable 127.0.0.1 listener means the port is taken. */
+internal fun defaultPortInUseExternal(port: Int): Boolean = try {
+    java.net.Socket().use { socket ->
+        socket.connect(java.net.InetSocketAddress("127.0.0.1", port), 250)
+        true
+    }
+} catch (_: Exception) {
+    false
+}
+
 class LocalServiceManager(
     private val groupManager: GroupManager,
     serviceDirectory: Path,
@@ -61,6 +71,8 @@ class LocalServiceManager(
     internal val velocityResynchronizer: (suspend (Service, List<String>?) -> Unit)? = null,
     internal val bridgeTracker: ServicePlayerTracker? = null,
     private val agentInstaller: BridgeAgentInstaller? = null,
+    /** Overridable so tests do not depend on which ports the host happens to have busy. */
+    internal val portInUse: (Int) -> Boolean = ::defaultPortInUseExternal,
 ) : ServiceManager {
     internal val console = ServiceConsoleManager()
     private val configRepairer = ServiceConfigRepairer(adapters, runtime, logger, forwardingProvider)
@@ -295,7 +307,7 @@ class LocalServiceManager(
             // before ready" crash loop, which is miserable to diagnose. Any listener on the
             // assigned port at this point is foreign (e.g. an orphaned server from a previous
             // cloud process), because this slot holds no running process.
-            if (isPortInUse(starting.port)) {
+            if (portInUse(starting.port)) {
                 val reason = "Port ${starting.port} is already in use by another process " +
                         "(likely an orphaned server from a previous cloud run) — stop that process first"
                 recordCrashLocked(slot, null, reason)
@@ -306,9 +318,12 @@ class LocalServiceManager(
             val token = UUID.randomUUID().toString()
             slot.processToken = token
             try {
+                // Per-group heap override: groups may pin their own -Xmx; null falls back to the
+                // global runtime.max-memory-mb. Read live so config reloads pick up changes.
+                val memoryOverrideMb = runCatching { groupManager.get(starting.groupName)?.maxMemoryMb }.getOrNull()
                 val spec = ProcessLaunchSpec(
                     serviceName = starting.name,
-                    command = adapter.command(starting, runtime),
+                    command = adapter.command(starting, runtime, memoryOverrideMb),
                     workingDirectory = starting.directory,
                     isReadyLine = adapter::isReadyLine,
                     onOutput = { output ->
@@ -552,14 +567,14 @@ class LocalServiceManager(
      * launch so crash-restarts and restarts all get a fresh environment.
      */
     /** True when something accepts TCP connections on [port] on the loopback interface. */
-    private fun isPortInUse(port: Int): Boolean = try {
-        java.net.Socket().use { socket ->
-            socket.connect(java.net.InetSocketAddress("127.0.0.1", port), 250)
-            true
-        }
-    } catch (_: Exception) {
-        false
-    }
+    /**
+     * Fail fast on a busy port: a server that cannot bind exits with a generic "exited before
+     * ready" crash loop, which is miserable to diagnose. A listener at this point is foreign
+     * (e.g. an orphaned server from a previous cloud process), because this slot holds no
+     * running process. The probe is a file-level function so the constructor default can use it
+     * without touching an uninitialized instance.
+     */
+    internal fun defaultPortInUse(port: Int): Boolean = defaultPortInUseExternal(port)
 
     private suspend fun reProvisionFromTemplate(service: Service) {
         withContext(Dispatchers.IO + kotlinx.coroutines.NonCancellable) {

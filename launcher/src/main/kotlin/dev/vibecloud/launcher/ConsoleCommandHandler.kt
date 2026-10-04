@@ -158,6 +158,7 @@ class ConsoleCommandHandler(
             }
 
             "create" -> createGroup(args.drop(1))
+            "memory" -> setGroupMemory(args.drop(1))
             "start" -> {
                 val name = args.getOrNull(1)?.lowercase(Locale.ROOT)
                     ?: throw IllegalArgumentException("Usage: group start <name>")
@@ -187,7 +188,49 @@ class ConsoleCommandHandler(
                 }
                 println(Cli.dim("Watch its console with ") + Cli.command("service screen ${service.name}"))
             }
-            else -> throw IllegalArgumentException("Usage: group <list|info|create|start|version|delete> [name]")
+            else -> throw IllegalArgumentException("Usage: group <list|info|create|start|memory|version|delete> [name]")
+        }
+    }
+
+    /**
+     * `group memory <name> <amount>`: sets the group's per-group heap ceiling. The amount is
+     * MiB or a G/M suffix (e.g. `4096`, `4G`, `512m`); `default` (or `0`) clears the override
+     * so the group uses the global `runtime.max-memory-mb` again. Applies on next restart.
+     */
+    private suspend fun setGroupMemory(args: List<String>) {
+        val name = args.getOrNull(0)?.lowercase(Locale.ROOT)
+            ?: throw IllegalArgumentException("Usage: group memory <name> <amount|default>")
+        val raw = args.getOrNull(1)?.trim()?.lowercase(Locale.ROOT)
+            ?: throw IllegalArgumentException("Usage: group memory <name> <amount|default>")
+        val group = cloud.groups.get(name) ?: throw NoSuchElementException("Group '$name' does not exist")
+
+        val memoryMb: Int? = when (raw) {
+            "default", "0", "auto" -> null
+            else -> {
+                val number = raw.dropLastWhile { it.isLetter() }
+                val unit = raw.takeLastWhile { it.isLetter() }
+                val value = number.toLongOrNull()
+                    ?: throw IllegalArgumentException("Invalid memory amount '$raw'. Use e.g. 4096, 4G or 512m.")
+                val megabytes = when (unit) {
+                    "", "m", "mb" -> value
+                    "g", "gb" -> value * 1024
+                    else -> throw IllegalArgumentException("Unknown memory unit '$unit'. Use M (MiB) or G (GiB).")
+                }
+                if (megabytes !in 256..1_048_576) {
+                    throw IllegalArgumentException("Memory must be between 256M and 1T ($megabytes MiB given).")
+                }
+                megabytes.toInt()
+            }
+        }
+
+        val updated = group.copy(maxMemoryMb = memoryMb)
+        cloud.groups.update(updated)
+        val applied = memoryMb?.let { "${it / 1024.0} GiB (-Xmx${it}M)" } ?: "global runtime.max-memory-mb"
+        println(Cli.success("Group '${group.name}' memory: ") + Cli.accent(applied))
+        println(Cli.dim("Applies when services restart. Currently running servers keep their old heap."))
+        val running = cloud.services.all().filter { it.groupName == group.name && it.state == ServiceState.RUNNING }
+        if (running.isNotEmpty()) {
+            println(Cli.dim("  Running now: " + running.joinToString(", ") { formatServiceName(it) }))
         }
     }
 

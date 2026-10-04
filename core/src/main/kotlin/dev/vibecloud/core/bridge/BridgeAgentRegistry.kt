@@ -5,8 +5,8 @@ import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * One online player as reported by a backend agent. `uuid`, `pingMs`, `world` and `gamemode`
- * are optional: agents that predate the enriched heartbeat only provide the name.
+ * One online player as reported by a backend agent. Fields beyond `name` are optional: agents
+ * that predate the enriched heartbeat only provide the name.
  */
 data class AgentPlayer(
     val name: String,
@@ -14,6 +14,19 @@ data class AgentPlayer(
     val pingMs: Int? = null,
     val world: String? = null,
     val gamemode: String? = null,
+    /** Live vitals reported by the agent's roster snapshot (all null on legacy agents). */
+    val health: Double? = null,
+    val food: Int? = null,
+    val level: Int? = null,
+    val exp: Double? = null,
+    val x: Double? = null,
+    val y: Double? = null,
+    val z: Double? = null,
+    val clientBrand: String? = null,
+    val firstPlayed: Long? = null,
+    val address: String? = null,
+    val isOp: Boolean? = null,
+    val isFlying: Boolean? = null,
 )
 
 /**

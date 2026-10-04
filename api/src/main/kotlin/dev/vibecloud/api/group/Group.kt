@@ -20,6 +20,12 @@ data class Group(
     val alwaysRunningServices: Int = 0,
     /** Static services keep their files between restarts; non-static ones re-provision from the template. */
     val static: Boolean = true,
+    /**
+     * Heap ceiling (`-Xmx`) for this group's servers in MiB. `null` (the default) falls back to
+     * the global `runtime.max-memory-mb`. Only checked at process start, so a change applies on
+     * the services' next restart.
+     */
+    val maxMemoryMb: Int? = null,
 ) {
     init {
         require(name == name.lowercase(Locale.ROOT)) { "Group name must be lowercase: '$name'" }
@@ -35,6 +41,9 @@ data class Group(
         require(minServices <= maxServices) { "minServices ($minServices) must be <= maxServices ($maxServices)" }
         require(alwaysRunningServices in 0..maxServices) {
             "alwaysRunningServices ($alwaysRunningServices) must be between 0 and maxServices ($maxServices)"
+        }
+        require(maxMemoryMb == null || maxMemoryMb in 256..1_048_576) {
+            "maxMemoryMb ($maxMemoryMb) must be between 256 and 1048576 MiB"
         }
     }
 

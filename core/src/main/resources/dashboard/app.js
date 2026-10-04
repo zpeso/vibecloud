@@ -281,13 +281,23 @@
       var meta = "on " + esc(row.server);
       if (detail && detail.world) meta += '<span class="sep">·</span>' + esc(detail.world);
       if (detail && detail.gamemode) meta += '<span class="sep">·</span>' + esc(detail.gamemode.toLowerCase());
+      if (detail && detail.level !== null && detail.level !== undefined) meta += '<span class="sep">·</span>lvl ' + esc(detail.level);
       var ping = detail && detail.ping !== null && detail.ping !== undefined
         ? '<span class="ping ' + pingClass(detail.ping) + '"><span class="bar"></span>' + detail.ping + " ms</span>"
         : "";
+      var vitals = "";
+      if (detail && detail.health !== null && detail.health !== undefined) {
+        vitals += '<span class="card-vital hp" title="Health">♥ ' + detail.health + "</span>";
+      }
+      if (detail && detail.food !== null && detail.food !== undefined) {
+        vitals += '<span class="card-vital food" title="Hunger">🍖 ' + detail.food + "</span>";
+      }
       return '<div class="player" tabindex="0" role="button" data-player="' + esc(row.name) + '" data-server="' + esc(row.server) + '">' +
         head +
         '<div class="who"><div class="name">' + esc(row.name) + "</div>" +
-        '<div class="on">' + meta + "</div></div>" +
+        '<div class="on">' + meta + "</div>" +
+        (vitals ? '<div class="card-vitals">' + vitals + "</div>" : "") +
+        "</div>" +
         ping +
         "</div>";
     }).join("") : '<div class="empty">No players online.</div>';
@@ -341,6 +351,7 @@
 
   // ---- player details modal -------------------------------------------------
   var openModalPlayer = null; // { name, server } while the modal is visible
+  var modalTab = "inventory"; // selected tab inside the player modal
 
   function closeModal() {
     openModalPlayer = null;
@@ -394,8 +405,14 @@
                 '<a href="https://laby.net/@' + encodeURIComponent(playerName) + '" target="_blank" rel="noopener noreferrer">laby.net</a>' +
               "</div>" +
             "</div>" +
+            '<div class="pm-vitals">' + vitalsHtml(detail) + "</div>" +
           "</div>" +
         "</div>" +
+        '<div class="pm-tabs">' +
+          '<button class="tab' + (modalTab === "inventory" ? " active" : "") + '" data-mtab="inventory">Inventory</button>' +
+          '<button class="tab' + (modalTab === "extras" ? " active" : "") + '" data-mtab="extras">Extras</button>' +
+        "</div>" +
+        '<div class="pm-body" id="pm-body"></div>' +
         '<div class="pm-stats">' + stats + "</div>" +
         '<div class="pm-actions">' +
           '<div class="pm-action"><input type="text" id="pm-message" placeholder="Message ' + esc(playerName) + '…"></div>' +
@@ -410,6 +427,12 @@
     byId("modal-backdrop").addEventListener("click", function (event) {
       if (event.target === byId("modal-backdrop")) closeModal();
     });
+    Array.prototype.forEach.call(byId("modal-root").querySelectorAll("[data-mtab]"), function (button) {
+      button.addEventListener("click", function () {
+        showModalTab(button.getAttribute("data-mtab"));
+      });
+    });
+    showModalTab(modalTab);
     byId("pm-send").addEventListener("click", function () {
       var input = byId("pm-message");
       var text = input.value.trim();
@@ -452,6 +475,145 @@
       "<div" + valueClass + ">" + value + "</div>" +
       '<div class="s">' + esc(hint) + "</div></div>";
   }
+  // ---- player modal helpers ------------------------------------------------
+
+  /** Health/hunger/XP bars next to the skin render; fields the agent omitted stay hidden. */
+  function vitalsHtml(detail) {
+    if (!detail) return "";
+    var rows = "";
+    if (detail.health !== null && detail.health !== undefined) rows += vitalBar("Health", detail.health, 20, "");
+    if (detail.food !== null && detail.food !== undefined) rows += vitalBar("Food", detail.food, 20, "");
+    if (detail.level !== null && detail.level !== undefined) {
+      rows += '<div class="vital"><span class="vk">Level</span><span class="vv">' + esc(detail.level) + "</span></div>";
+    }
+    if (detail.xp !== null && detail.xp !== undefined) rows += vitalBar("XP", Math.round(detail.xp * 100), 100, "%");
+    return rows;
+  }
+
+  function vitalBar(label, value, max, unit) {
+    var pct = Math.max(0, Math.min(100, Math.round(value * 100 / (max || 1))));
+    var kind = label === "Health" ? (pct <= 30 ? "bad" : pct <= 60 ? "warn" : "good") :
+               label === "Food" ? (pct <= 30 ? "warn" : "good") : "xp";
+    return '<div class="vital"><span class="vk">' + esc(label) + '</span>' +
+      '<span class="vbar"><span class="fill ' + kind + '" style="width:' + pct + '%"></span></span>' +
+      '<span class="vv">' + esc(String(value) + unit) + "</span></div>";
+  }
+
+  /** Switches the modal's lower half between the inventory grid and the extras list. */
+  function showModalTab(tab) {
+    modalTab = tab;
+    Array.prototype.forEach.call(byId("modal-root").querySelectorAll("[data-mtab]"), function (button) {
+      button.classList.toggle("active", button.getAttribute("data-mtab") === tab);
+    });
+    var body = byId("pm-body");
+    if (!body || !openModalPlayer) return;
+    if (tab === "extras") {
+      body.innerHTML = extrasHtml(detailFind(openModalPlayer.server, openModalPlayer.name));
+    } else {
+      body.innerHTML = '<div class="inv-loading">Waiting for an inventory snapshot from ' + esc(openModalPlayer.server) + "…</div>";
+      requestInventory(openModalPlayer.name, openModalPlayer.server);
+    }
+  }
+
+  /** Asks the backend agent for a snapshot (queued via the cloud) and polls for the result. */
+  function requestInventory(playerName, serviceName) {
+    var attempt = 0;
+    function poll() {
+      if (!openModalPlayer || openModalPlayer.name !== playerName || modalTab !== "inventory") return;
+      api("/bridge/players/inventory?service=" + encodeURIComponent(serviceName) + "&player=" + encodeURIComponent(playerName))
+        .then(function (document) { renderInventory(document); })
+        .catch(function () {
+          attempt++;
+          if (attempt > 8) {
+            var body = byId("pm-body");
+            if (body) body.innerHTML = '<div class="inv-empty">No snapshot arrived — is an agent online on ' + esc(serviceName) + "?</div>";
+            return;
+          }
+          if (attempt === 1) {
+            api("/bridge/players", { method: "POST", body: form({ player: [playerName], action: ["inventory"] }) }).catch(function () {});
+          }
+          setTimeout(poll, 2500);
+        });
+    }
+    poll();
+  }
+
+  /** The inventory sheet: armor column, off-hand, 27 storage slots and the hotbar. */
+  function renderInventory(document) {
+    if (!openModalPlayer || modalTab !== "inventory") return;
+    var body = byId("pm-body");
+    if (!body) return;
+    var bySlot = {};
+    (document.items || []).forEach(function (item) { bySlot[item.slot] = item; });
+    function cell(slot, label) {
+      var item = bySlot[slot];
+      if (!item) return '<div class="inv-cell empty" title="' + esc(label) + '"></div>';
+      var ench = (item.enchantments || []).map(function (e) { return esc(e.type) + " " + e.level; }).join(", ");
+      var tip = esc(item.name || item.material) +
+        (item.count > 1 ? " ×" + item.count : "") +
+        (item.durability !== null && item.durability !== undefined ? " · " + item.durability + "%" : "") +
+        (ench ? "\n" + ench : "");
+      var icon = '<img alt="" loading="lazy" src="https://minecraft-api.vercel.app/images/items/' + encodeURIComponent(item.material) + '.png">' +
+        '<div class="fallback-item">▚</div>';
+      return '<div class="inv-cell" title="' + tip + '">' + icon +
+        (item.count > 1 ? '<span class="inv-count">' + esc(item.count) + "</span>" : "") +
+        (item.durability !== null && item.durability !== undefined && item.durability < 100
+          ? '<span class="inv-dur"><span style="width:' + item.durability + '%"></span></span>' : "") +
+        "</div>";
+    }
+    var storage = "";
+    for (var row = 0; row < 3; row++) {
+      for (var column = 0; column < 9; column++) storage += cell(String(row * 9 + column + 1), "Inventory");
+    }
+    var hotbar = "";
+    for (var slot = 1; slot <= 9; slot++) hotbar += cell(String(slot), "Hotbar");
+    var captured = document["captured-at"] ? new Date(document["captured-at"] * 1000).toLocaleTimeString() : "";
+    body.innerHTML =
+      '<div class="inv-wrap">' +
+        '<div class="inv-side">' +
+          cell("helmet", "Helmet") + cell("chestplate", "Chestplate") +
+          cell("leggings", "Leggings") + cell("boots", "Boots") +
+        "</div>" +
+        '<div class="inv-main">' +
+          '<div class="inv-grid">' + storage + "</div>" +
+          '<div class="inv-grid hotbar">' + hotbar + "</div>" +
+        "</div>" +
+        '<div class="inv-off">' + cell("offhand", "Off-hand") + "</div>" +
+      "</div>" +
+      '<div class="inv-meta">Snapshot captured ' + esc(captured || "just now") + " · hover an item for details</div>";
+    // CSP-safe item-icon fallback: the letter tile shows when the texture CDN is unreachable.
+    Array.prototype.forEach.call(body.querySelectorAll(".inv-cell img"), function (image) {
+      image.addEventListener("error", function () {
+        image.style.display = "none";
+        var fallback = image.nextElementSibling;
+        if (fallback) fallback.style.display = "flex";
+      });
+    });
+  }
+
+  /** Session, client and connection facts for the Extras tab. */
+  function extrasHtml(detail) {
+    if (!detail || detail["client-brand"] === undefined && detail["first-played"] === undefined) {
+      return '<div class="inv-empty">The agent on this server did not report extended metadata yet (older agent version, or the player just joined).</div>';
+    }
+    var rows = "";
+    function row(label, value) {
+      if (value === null || value === undefined || value === "") return;
+      rows += '<div class="extra-row"><span class="ek">' + esc(label) + '</span><span class="ev">' + value + "</span></div>";
+    }
+    row("Client brand", detail["client-brand"] ? esc(detail["client-brand"]) : null);
+    row("Address", detail.address ? "<code>" + esc(detail.address) + "</code>" : null);
+    row("Operator", detail.op === true ? "yes" : detail.op === false ? "no" : null);
+    row("Flying", detail.flying === true ? "yes" : detail.flying === false ? "no" : null);
+    row("First played", detail["first-played"] ? new Date(detail["first-played"]).toLocaleString() : null);
+    row("Ping", detail.ping !== null && detail.ping !== undefined ? esc(fmtPing(detail.ping)) : null);
+    if (detail.x !== null && detail.x !== undefined) {
+      row("Coordinates", Math.round(detail.x) + ", " + Math.round(detail.y) + ", " + Math.round(detail.z));
+    }
+    if (!rows) rows = '<div class="inv-empty">No extended metadata reported yet.</div>';
+    return '<div class="extras">' + rows + "</div>";
+  }
+
   document.addEventListener("keydown", function (event) {
     if (event.key === "Escape" && openModalPlayer) closeModal();
   });

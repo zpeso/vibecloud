@@ -338,6 +338,8 @@ GET /bridge/metrics     → {"history":{"points":[{t,players,running,services,tp
 GET /bridge/host        → host system metrics: {cpu, process-cpu, cores, memory-total-mb, memory-used-mb, swap-total-mb, swap-used-mb, jvm-used-mb, jvm-max-mb, uptime-seconds, load-average, os-name, os-version, os-arch, java-version, version, started-at, processes:{"<service>":cpu}}
 GET /bridge/activity    → {"events":[{t,kind,message},...]} newest first (service lifecycle)
 GET /bridge/console?service=<name> → {"lines":[...]}  (last 200 console lines)
+POST /bridge/players  action=inventory → queue an inventory snapshot request (202 {"queued":true,"request-id":...})
+GET /bridge/players/inventory?service=&player= → last snapshot {service,player,captured-at,items:[{slot,material,count,durability,name,lore[],enchantments[]}]}
 ```
 
 Agent heartbeats additionally carry `tps`, `heap-used-mb`, `heap-max-mb` and `process-cpu`; `GET

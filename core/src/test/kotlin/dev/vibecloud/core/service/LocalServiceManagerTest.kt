@@ -87,6 +87,8 @@ class LocalServiceManagerTest {
             logger = logger,
             lifecycleLock = lifecycleLock,
             onServicesChanged = { backendSyncCount++ },
+            // Do not probe real host ports: fixed test ranges may collide with anything.
+            portInUse = { false },
         )
         managerReference.set(serviceManager)
 
@@ -172,6 +174,7 @@ class LocalServiceManagerTest {
             events = events,
             logger = logger,
             lifecycleLock = lifecycleLock,
+            portInUse = { false },
         )
         managerReference.set(serviceManager)
 

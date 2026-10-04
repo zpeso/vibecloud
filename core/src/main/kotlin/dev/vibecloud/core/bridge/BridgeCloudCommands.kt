@@ -44,7 +44,8 @@ class BridgeCloudCommands(
                 "start" -> startInGroup(args.getOrNull(2))
                 "delete" -> deleteGroup(args.getOrNull(2))
                 "version" -> switchGroupVersion(args.drop(2))
-                else -> listOf(error("Usage: /cloud group <start|delete|version>"))
+                "memory" -> setGroupMemory(args.drop(2))
+                else -> listOf(error("Usage: /cloud group <start|delete|version|memory>"))
             }
             "services" -> services()
             "service", "ser" -> serviceDetail(args.getOrNull(1))
@@ -71,7 +72,7 @@ class BridgeCloudCommands(
             previous.isEmpty() -> SUBCOMMANDS.filter { it.startsWith(current, ignoreCase = true) }
 
             previous.size == 1 && previous[0].equals("group", true) ->
-                listOf("start", "delete", "version").filter { it.startsWith(current, ignoreCase = true) }
+                listOf("start", "delete", "version", "memory").filter { it.startsWith(current, ignoreCase = true) }
 
             previous.size == 2 && previous[0].equals("group", true) && previous[1] in GROUP_NAME_SUBCOMMANDS ->
                 runCatching { groups.all().map { it.name } }.getOrDefault(emptyList())
@@ -295,6 +296,47 @@ class BridgeCloudCommands(
         }
     }
 
+    /**
+     * `/cloud group memory <name> <amount|default>`: per-group heap override, same semantics as
+     * the console command — MiB or G/M suffix, `default` clears back to the global setting.
+     */
+    private fun setGroupMemory(args: List<String>): List<String> {
+        val name = args.getOrNull(0)?.lowercase()
+            ?: return listOf(error("Usage: /cloud group memory <name> <amount|default>"))
+        val raw = args.getOrNull(1)?.trim()?.lowercase()
+            ?: return listOf(error("Usage: /cloud group memory <name> <amount|default>"))
+        val group = runBlocking { groups.all().firstOrNull { it.name == name } }
+            ?: return listOf(error("Group '$name' does not exist"))
+
+        val memoryMb: Int? = when (raw) {
+            "default", "0", "auto" -> null
+            else -> {
+                val number = raw.dropLastWhile(Char::isLetter)
+                val unit = raw.takeLastWhile(Char::isLetter)
+                val value = number.toLongOrNull()
+                    ?: return listOf(error("Invalid memory amount '$raw'. Use e.g. 4096, 4G or 512m."))
+                val megabytes = when (unit) {
+                    "", "m", "mb" -> value
+                    "g", "gb" -> value * 1024
+                    else -> return listOf(error("Unknown memory unit '$unit'. Use M (MiB) or G (GiB)."))
+                }
+                if (megabytes !in 256..1_048_576L) {
+                    return listOf(error("Memory must be between 256M and 1T."))
+                }
+                megabytes.toInt()
+            }
+        }
+        return try {
+            runBlocking { groups.update(group.copy(maxMemoryMb = memoryMb)) }
+            buildList {
+                add(success("Group '${group.name}' memory: " + (memoryMb?.let { "${it / 1024.0} GiB (-Xmx${it}M)" } ?: "global runtime.max-memory-mb")))
+                add(dim("Applies when services restart."))
+            }
+        } catch (failure: IllegalStateException) {
+            listOf(error(failure.message ?: "Group cannot be updated"))
+        }
+    }
+
     private fun players(): List<String> {
         val services = runBlocking { services.all().sortedBy { it.name } }
         var total = 0
@@ -412,6 +454,6 @@ class BridgeCloudCommands(
             "start", "stop", "restart", "delete",
         )
         val LIFECYCLE_SUBCOMMANDS = setOf("start", "stop", "restart", "delete")
-        val GROUP_NAME_SUBCOMMANDS = setOf("start", "delete", "version")
+        val GROUP_NAME_SUBCOMMANDS = setOf("start", "delete", "version", "memory")
     }
 }

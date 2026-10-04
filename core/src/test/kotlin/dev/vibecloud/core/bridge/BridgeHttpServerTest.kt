@@ -129,6 +129,81 @@ class BridgeHttpServerTest {
         }
     }
 
+    private fun post(running: Running, url: String, body: String): HttpResponse<String> =
+        http.send(
+            HttpRequest.newBuilder(URI.create(url))
+                .header("Authorization", "Bearer ${running.tokenStore.obtain()}")
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build(),
+            HttpResponse.BodyHandlers.ofString(),
+        )
+
+    @Test
+    fun `inventory snapshots flow from the heartbeat to the endpoint`() {
+        val running = startServer(listOf(service("lobby-1", ServiceState.RUNNING)))
+        try {
+            val base = "http://127.0.0.1:${running.server.boundPort()}"
+            running.tracker.applyAgentReport("lobby-1", listOf("Steve"))
+
+            // Before any snapshot exists the endpoint reports 404.
+            assertEquals(404, get(running, "$base/bridge/players/inventory?service=lobby-1&player=Steve").statusCode())
+
+            // Queueing an inspect request registers it for the agent response.
+            val queued = post(running, "$base/bridge/players", "player=Steve&action=inventory")
+            assertEquals(202, queued.statusCode())
+            assertTrue("request-id" in queued.body())
+            val requestId = Regex("\"request-id\":\"([^\"]+)\"").find(queued.body())!!.groupValues[1]
+
+            // The agent delivers the snapshot on the next heartbeat — which also drains the
+            // queued inventory command (200 with the command payload). Item fields are
+            // `slot|material|count|durability%|name|lore|enchants` joined by \u0001.
+            val item = "1\u007Cdiamond_sword\u007C1\u007C88\u007CFire sword\u007CSharp sword\u001FSecond line\u007Cminecraft:sharpness:5"
+            val heartbeat = post(
+                running,
+                "$base/bridge/heartbeat",
+                "service-id=id-lobby-1&service-name=lobby-1&players=Steve&max-players=20&agent-version=0.8.0" +
+                    "&inspections=" + java.net.URLEncoder.encode(requestId + "\u0002" + item, Charsets.UTF_8),
+            )
+            assertEquals(200, heartbeat.statusCode())
+            assertTrue(requestId in heartbeat.body(), "heartbeat response must carry the queued inventory command")
+
+            val response = get(running, "$base/bridge/players/inventory?service=lobby-1&player=steve")
+            assertEquals(200, response.statusCode())
+            assertTrue("\"material\":\"diamond_sword\"" in response.body())
+            assertTrue("\"name\":\"Fire sword\"" in response.body())
+            assertTrue("\"type\":\"minecraft:sharpness\"" in response.body())
+            assertTrue("\"player\":\"Steve\"" in response.body())
+        } finally {
+            running.server.stop()
+        }
+    }
+
+    @Test
+    fun `enriched player meta is parsed into the status document`() {
+        val running = startServer(listOf(service("lobby-1", ServiceState.RUNNING)))
+        try {
+            val base = "http://127.0.0.1:${running.server.boundPort()}"
+            val meta = java.net.URLEncoder.encode(
+                "Steve|uuid-1|42|world|SURVIVAL|14.5|18|33|0.5|100|64|-200|vanilla|1600000000000|10.0.0.5|true|false",
+                Charsets.UTF_8,
+            )
+            val heartbeat = post(
+                running,
+                "$base/bridge/heartbeat",
+                "service-id=id-lobby-1&service-name=lobby-1&players=Steve&max-players=20&agent-version=0.8.0&player-meta=$meta",
+            )
+            assertEquals(204, heartbeat.statusCode())
+            val body = get(running, "$base/bridge/status").body()
+            assertTrue("\"health\":14.5" in body, "health must reach the status document: $body")
+            assertTrue("\"level\":33" in body)
+            assertTrue("\"client-brand\":\"vanilla\"" in body)
+            assertTrue("\"op\":true" in body)
+        } finally {
+            running.server.stop()
+        }
+    }
+
     @Test
     fun `heartbeat from a known service is accepted and feeds status`() {
         val running = startServer(listOf(service("lobby-1", ServiceState.RUNNING)))

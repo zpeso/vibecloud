@@ -113,6 +113,7 @@ class CloudConfigRepository(configFile: Path) {
                         maxServices = groupMap.int("max-services", 5),
                         alwaysRunningServices = groupMap.int("always-running-services", 0),
                         static = groupMap.boolean("static", true),
+                        maxMemoryMb = groupMap.intOrNull("max-memory-mb"),
                     )
                 } catch (failure: IllegalArgumentException) {
                     throw ConfigurationException("Invalid group '$name': ${failure.message}", failure)
@@ -194,14 +195,16 @@ class CloudConfigRepository(configFile: Path) {
             @Suppress("UNCHECKED_CAST")
             val groupDocument = document["groups"] as LinkedHashMap<String, Any>
             config.groups.sortedBy { it.name }.forEach { group ->
-                groupDocument[group.name] = linkedMapOf(
+                groupDocument[group.name] = linkedMapOf<String, Any>(
                     "type" to group.type.name,
                     "version" to group.version,
                     "min-services" to group.minServices,
                     "max-services" to group.maxServices,
                     "always-running-services" to group.alwaysRunningServices,
                     "static" to group.static,
-                )
+                ).also { entry ->
+                    group.maxMemoryMb?.let { entry["max-memory-mb"] = it }
+                }
             }
             val temporary = configFile.resolveSibling("${configFile.fileName}.tmp")
             Files.newBufferedWriter(temporary).use { writer -> dumper.dump(document, writer) }
@@ -241,6 +244,10 @@ class CloudConfigRepository(configFile: Path) {
         if (!containsKey(name)) return default
         return this[name] as? String ?: throw ConfigurationException("'$name' must be a string")
     }
+
+    /** Present-but-null YAML values (e.g. `max-memory-mb:` with nothing after it) read as absent. */
+    private fun Map<String, Any?>.intOrNull(name: String): Int? =
+        if (!containsKey(name) || this[name] == null) null else int(name, 0).takeIf { it != 0 }
 
     private fun Map<String, Any?>.int(name: String, default: Int): Int {
         if (!containsKey(name)) return default

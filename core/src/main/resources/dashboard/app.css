@@ -524,3 +524,45 @@ tr.clickable:hover td { background: #121217; }
   .nav-item { width: auto; white-space: nowrap; }
   .nav-item .count { display: none; }
 }
+
+/* ---- player inspector: vitals, tabs, inventory, extras ------------------- */
+.pm-vitals { display: flex; flex-direction: column; gap: 7px; min-width: 210px; }
+.vital { display: grid; grid-template-columns: 64px 1fr 52px; align-items: center; gap: 8px; font-size: 12px; }
+.vital .vk { color: var(--dim, #8b93a7); }
+.vital .vbar { height: 8px; border-radius: 4px; background: rgba(255,255,255,.08); overflow: hidden; display: block; }
+.vital .fill { display: block; height: 100%; border-radius: 4px; }
+.vital .fill.good { background: #34c77b; }
+.vital .fill.warn { background: #e5b83c; }
+.vital .fill.bad { background: #ed3030; }
+.vital .fill.xp { background: #7fdc4e; }
+.vital .vv { text-align: right; color: var(--text, #e6e9f2); font-variant-numeric: tabular-nums; }
+
+.pm-tabs { display: flex; gap: 6px; margin: 14px 0 10px; border-bottom: 1px solid rgba(255,255,255,.08); padding-bottom: 8px; }
+.pm-tabs .tab { background: transparent; border: 1px solid transparent; color: var(--dim, #8b93a7); padding: 5px 14px; border-radius: 6px; cursor: pointer; font-size: 12px; }
+.pm-tabs .tab.active { color: var(--text, #e6e9f2); background: rgba(255,255,255,.07); border-color: rgba(255,255,255,.12); }
+.pm-body { min-height: 120px; }
+
+.inv-loading, .inv-empty { color: var(--dim, #8b93a7); font-size: 13px; padding: 18px 4px; text-align: center; }
+.inv-wrap { display: flex; gap: 14px; align-items: flex-start; }
+.inv-side, .inv-off { display: grid; gap: 6px; }
+.inv-main { flex: 1; display: flex; flex-direction: column; gap: 10px; }
+.inv-grid { display: grid; grid-template-columns: repeat(9, 42px); gap: 6px; }
+.inv-grid.hotbar { border-top: 2px solid rgba(255,255,255,.12); padding-top: 8px; }
+.inv-cell { position: relative; width: 42px; height: 42px; border-radius: 6px; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.09); display: flex; align-items: center; justify-content: center; }
+.inv-cell.empty { cursor: default; }
+.inv-cell img { width: 32px; height: 32px; image-rendering: pixelated; }
+.fallback-item { display: none; width: 32px; height: 32px; align-items: center; justify-content: center; color: var(--dim, #8b93a7); font-size: 15px; }
+.inv-count { position: absolute; right: 3px; bottom: 1px; font-size: 11px; font-weight: 700; color: #fff; text-shadow: 0 1px 2px #000; }
+.inv-dur { position: absolute; left: 4px; right: 4px; bottom: 3px; height: 3px; background: rgba(0,0,0,.55); border-radius: 2px; overflow: hidden; }
+.inv-dur span { display: block; height: 100%; background: #34c77b; }
+.inv-meta { color: var(--dim, #8b93a7); font-size: 11px; margin-top: 10px; }
+
+.extras { display: flex; flex-direction: column; gap: 2px; }
+.extra-row { display: grid; grid-template-columns: 140px 1fr; gap: 10px; padding: 6px 4px; border-bottom: 1px dashed rgba(255,255,255,.06); font-size: 13px; }
+.extra-row .ek { color: var(--dim, #8b93a7); }
+.extra-row .ev { color: var(--text, #e6e9f2); overflow-wrap: anywhere; }
+
+.card-vitals { display: flex; gap: 8px; margin-top: 3px; }
+.card-vital { font-size: 11px; color: var(--dim, #8b93a7); }
+.card-vital.hp { color: #ed3030; }
+.card-vital.food { color: #c98a3d; }

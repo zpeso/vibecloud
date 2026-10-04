@@ -45,6 +45,9 @@ bridge:
 #     min-services: 0
 #     max-services: 5
 #     always-running-services: 0
+#     # Per-group heap ceiling (-Xmx) in MiB; omit to use runtime.max-memory-mb.
+#     # Change at runtime with `group memory <name> <amount|default>` (e.g. 4G, 512m).
+#     max-memory-mb: 4096
 #   proxy:
 #     type: VELOCITY
 #     version: "velocity-4.0.0-6"

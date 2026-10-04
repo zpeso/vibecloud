@@ -35,6 +35,12 @@ class VibeCloudAgentPlugin : JavaPlugin() {
     private var executor: ScheduledExecutorService? = null
     private var heartbeatTask: ScheduledFuture<*>? = null
     private var lastCommandId: Long = 0
+
+    /** Inspect requests waiting for their next main-thread tick (request-id → player name). */
+    private val pendingInspections = java.util.concurrent.ConcurrentLinkedQueue<Pair<String, String>>()
+
+    /** Finished inspect payloads (request-id → encoded snapshot) flushed on the next heartbeat. */
+    private val completedInspections = java.util.concurrent.ConcurrentLinkedQueue<Pair<String, String>>()
     private val http: HttpClient = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(3))
         .build()
@@ -78,6 +84,8 @@ class VibeCloudAgentPlugin : JavaPlugin() {
             interval,
             TimeUnit.SECONDS,
         )
+        // Keep the roster snapshot (vitals for the dashboard) fresh on the main thread.
+        Bukkit.getScheduler().runTaskTimer(this, Runnable(::refreshRosterSnapshot), 40L, 40L)
         getLogger().info(
             "VibeCloud agent enabled for service ${loaded.serviceName} " +
                     "(reporting to ${loaded.cloudUrl} every ${interval}s)",
@@ -121,20 +129,37 @@ class VibeCloudAgentPlugin : JavaPlugin() {
         getLogger().info("Service ${current.serviceName} is now stopped")
     }
 
+    /** Roster meta entries for all players; rebuilt on the main thread every tick or two. */
+    @Volatile
+    private var rosterSnapshot: List<String> = emptyList()
+
+    /** Main-thread task: refreshes [rosterSnapshot] cheaply (vitals only, no inventory). */
+    private fun refreshRosterSnapshot() {
+        rosterSnapshot = runCatching {
+            server.onlinePlayers.map { PlayerInspector.rosterEntry(it) }
+        }.getOrDefault(emptyList())
+    }
+
     private fun sendHeartbeat() {
         val current = this.config ?: return
         try {
             val names = server.onlinePlayers.map { it.name }
-            // Rich per-player metadata (uuid/ping/world/gamemode) for the dashboard's player
-            // view. Each entry is URL-encoded individually so world names containing the
-            // `|`/`,` separators survive the form-encoded round trip.
-            val playerMeta = server.onlinePlayers.joinToString(",") { player ->
-                URLEncoder.encode(
-                    player.name + "|" + player.uniqueId + "|" + player.ping + "|" +
-                            player.world.name + "|" + player.gameMode.name,
-                    StandardCharsets.UTF_8,
-                )
+            // Rich per-player metadata for the dashboard's player view. Entries are built on
+            // this (heartbeat) thread from a main-thread snapshot taken by the scheduled
+            // collector, so game state reads stay off the main thread. Each entry is
+            // URL-encoded individually so names containing the `|`/`,` separators survive.
+            val playerMeta = rosterSnapshot.joinToString(",") { entry ->
+                URLEncoder.encode(entry, StandardCharsets.UTF_8)
             }
+            // Inspect snapshots collected on the main thread since the last beat are flushed
+            // here; the cloud correlates them with the dashboard's inventory request.
+            val inspectionField = buildList {
+                var inspection = completedInspections.poll()
+                while (inspection != null) {
+                    add(inspection.first + "\u0002" + inspection.second)
+                    inspection = completedInspections.poll()
+                }
+            }.joinToString("\u0001")
             val tpsField = runCatching { Bukkit.getTPS()[0] }.getOrNull()
             val memory = Runtime.getRuntime()
             val heapUsedMb = (memory.totalMemory() - memory.freeMemory()) / BYTES_PER_MB
@@ -152,6 +177,7 @@ class VibeCloudAgentPlugin : JavaPlugin() {
                 "service-name" to current.serviceName,
                 "players" to names.joinToString(","),
                 "player-meta" to playerMeta,
+                "inspections" to inspectionField,
                 "max-players" to server.maxPlayers.toString(),
                 "agent-version" to description.version,
                 "tps" to (tpsField?.let { String.format(Locale.US, "%.2f", it) } ?: ""),
@@ -214,6 +240,32 @@ class VibeCloudAgentPlugin : JavaPlugin() {
                     Bukkit.dispatchCommand(Bukkit.getConsoleSender(), line)
                 }
             }
+
+            "inventory" -> {
+                val requestId = command.payload["request-id"].orEmpty()
+                val playerName = command.playerName.orEmpty()
+                if (requestId.isNotEmpty() && playerName.isNotEmpty()) {
+                    pendingInspections.add(requestId to playerName)
+                    Bukkit.getScheduler().runTask(this, Runnable(::drainPendingInspections))
+                }
+            }
+        }
+    }
+
+    /** Main-thread: collects every queued inspect request and stages the encoded snapshots. */
+    private fun drainPendingInspections() {
+        var inspection = pendingInspections.poll()
+        while (inspection != null) {
+            val (requestId, playerName) = inspection
+            val player = findPlayer(playerName)
+            val payload = if (player != null) {
+                runCatching { PlayerInspector.encodeInventory(PlayerInspector.collect(player)) }
+                    .getOrElse { failure -> "error\u0002" + (failure.message ?: failure::class.simpleName ?: "collect failed") }
+            } else {
+                "offline"
+            }
+            completedInspections.add(requestId to payload)
+            inspection = pendingInspections.poll()
         }
     }
 
