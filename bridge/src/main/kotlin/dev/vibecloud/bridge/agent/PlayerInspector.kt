@@ -21,8 +21,15 @@ internal object PlayerInspector {
     /** Separator between fields of one item entry. */
     private const val FIELD = "|"
 
-    /** Separator between item entries inside the inventory field. */
+    /** Separator between item entries inside one inventory payload. */
     internal const val ENTRY = "\u0001"
+
+    /**
+     * Separator between inspection records in the heartbeat's `inspections` field. Distinct from
+     * [ENTRY] so several snapshots delivered in one heartbeat cannot be confused with the items
+     * inside a single snapshot.
+     */
+    internal const val RECORD = "\u001e"
 
     /** Separator between lore lines / enchantment entries. */
     private const val SUB = "\u001f"
@@ -37,7 +44,9 @@ internal object PlayerInspector {
      * The always-on roster meta entry: one URL-encoded string per player. Field order is the
      * wire contract with the cloud's `parsePlayerMeta` — append only, never reorder.
      * 0 name, 1 uuid, 2 ping, 3 world, 4 gamemode, 5 health, 6 food, 7 level, 8 exp,
-     * 9 x, 10 y, 11 z, 12 client-brand, 13 first-played, 14 address, 15 op, 16 flying
+     * 9 x, 10 y, 11 z, 12 client-brand, 13 first-played, 14 address, 15 op, 16 flying,
+     * 17 saturation, 18 allowed-flight, 19 sneaking, 20 sprinting, 21 gliding, 22 sleeping,
+     * 23 in-vehicle
      */
     fun rosterEntry(player: Player): String = listOf(
         player.name,
@@ -57,6 +66,13 @@ internal object PlayerInspector {
         player.address?.address?.hostAddress ?: "",
         player.isOp.toString(),
         player.isFlying.toString(),
+        round(player.saturation.toDouble()),
+        player.allowFlight.toString(),
+        player.isSneaking.toString(),
+        player.isSprinting.toString(),
+        player.isGliding.toString(),
+        player.isSleeping.toString(),
+        player.vehicle?.type?.name ?: "",
     ).joinToString(FIELD)
 
     /** Collects [player]'s vitals and inventory. Must run on the server's main thread. */

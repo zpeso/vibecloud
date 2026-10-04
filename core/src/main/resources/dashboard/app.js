@@ -317,13 +317,13 @@
         if (fallback) fallback.style.display = "flex";
       });
     });
-    // Keep the open modal in sync with fresh data — but never while the operator is typing
-    // or focused inside it, so a background refresh cannot wipe an unsent message.
+    // Keep the open modal's stats fresh without rebuilding it — a full re-render would reset
+    // scroll position, close the inventory poll and re-fetch the rendered view every cycle.
     if (openModalPlayer) {
       var input = byId("pm-message");
       var active = document.activeElement;
       var focused = active && byId("modal-root").contains(active);
-      if ((!input || !input.value) && !focused) openPlayerModal(openModalPlayer.name, openModalPlayer.server);
+      if ((!input || !input.value) && !focused) refreshModalStats();
     }
   }
 
@@ -352,22 +352,133 @@
   // ---- player details modal -------------------------------------------------
   var openModalPlayer = null; // { name, server } while the modal is visible
   var modalTab = "inventory"; // selected tab inside the player modal
+  var invState = null;        // per-open inventory poll/render state
+  var ITEM_API = "https://api.minecraftitems.xyz";
 
   function closeModal() {
     openModalPlayer = null;
+    invState = null;
     byId("modal-root").innerHTML = "";
+    document.body.classList.remove("modal-open");
+    hideItemTip();
   }
 
   function openPlayerModal(playerName, serviceName) {
     openModalPlayer = { name: playerName, server: serviceName };
+    invState = null;
+    document.body.classList.add("modal-open"); // nothing scrolls behind the dialog
     var service = detailOf(serviceName);
     var detail = detailFind(serviceName, playerName);
     var uuid = detail ? detail.uuid : null;
-    var initial = esc(String(playerName).charAt(0).toUpperCase());
     var render = '<img alt="" src="https://mc-heads.net/body/' + encodeURIComponent(uuid || playerName) + '/left">';
 
+    var stats = buildModalStats(service, detail);
+
+    byId("modal-root").innerHTML =
+      '<div class="modal-backdrop" id="modal-backdrop"><div class="player-modal" role="dialog" aria-modal="true" aria-label="Player details">' +
+        '<div class="pm-top"><button class="pm-close" id="pm-close" title="Close (Esc)">✕</button>' +
+          '<div class="pm-hero">' +
+            '<div class="pm-render">' + render + "</div>" +
+            '<div class="pm-id">' +
+              '<div class="pm-name">' + esc(playerName) + "</div>" +
+              '<div class="pm-sub">online on <strong>' + esc(serviceName) + "</strong></div>" +
+              '<div class="pm-uuid"><span class="dim">UUID</span> ' +
+                (uuid ? "<code>" + esc(uuid) + "</code>" : '<span class="dim">not reported</span>') + "</div>" +
+              '<div class="pm-links">' +
+                '<a href="https://namemc.com/profile/' + encodeURIComponent(playerName) + '" target="_blank" rel="noopener noreferrer">NameMC</a>' +
+                '<a href="https://laby.net/@' + encodeURIComponent(playerName) + '" target="_blank" rel="noopener noreferrer">laby.net</a>' +
+              "</div>" +
+            "</div>" +
+            '<div class="pm-vitals">' + vitalsHtml(detail) + "</div>" +
+          "</div>" +
+        "</div>" +
+        // The scroll region owns stats + tabs + tab body; hero and close button stay pinned.
+        '<div class="pm-scroll">' +
+          '<div class="pm-stats">' + stats + "</div>" +
+          '<div class="pm-tabs">' +
+            '<button class="tab' + (modalTab === "inventory" ? " active" : "") + '" data-mtab="inventory">Inventory</button>' +
+            '<button class="tab' + (modalTab === "details" ? " active" : "") + '" data-mtab="details">Details</button>' +
+            '<button class="tab' + (modalTab === "actions" ? " active" : "") + '" data-mtab="actions">Actions</button>' +
+          "</div>" +
+          '<div class="pm-body" id="pm-body"></div>' +
+        "</div>" +
+      "</div></div>";
+
+    bindPlayerModal(playerName, serviceName);
+    showModalTab(modalTab);
+  }
+
+  /** One delegated listener set per open: tabs, actions, transfer select, Enter-to-send. */
+  function bindPlayerModal(playerName, serviceName) {
+    var backdrop = byId("modal-backdrop");
+    backdrop.addEventListener("click", function (event) {
+      if (event.target === backdrop) { closeModal(); return; }
+      var target = event.target.closest ? event.target.closest("[data-mtab],#pm-close,#pm-send,#pm-kick,#pm-copy-coords") : null;
+      if (!target) return;
+      if (target.id === "pm-close") closeModal();
+      else if (target.id === "pm-send") sendPlayerMessage(playerName);
+      else if (target.id === "pm-kick") kickPlayer(playerName, serviceName);
+      else if (target.id === "pm-copy-coords") copyCoords();
+      else if (target.hasAttribute("data-mtab")) showModalTab(target.getAttribute("data-mtab"));
+    });
+    backdrop.addEventListener("change", function (event) {
+      if (event.target.id !== "pm-transfer") return;
+      var select = event.target;
+      var target = select.value;
+      if (!target) return;
+      api("/bridge/players", { method: "POST", body: form({ player: [playerName], action: ["transfer"], target: [target] }) })
+        .then(function () { toast("Sending " + playerName + " to " + target + "…"); })
+        .catch(function (error) { toast("Transfer failed: " + error.message); });
+      select.value = "";
+    });
+    backdrop.addEventListener("keydown", function (event) {
+      if (event.target.id === "pm-message" && event.key === "Enter") sendPlayerMessage(playerName);
+    });
+    // CSP-safe body-render fallback: swap to the letter tile when the CDN image fails.
+    Array.prototype.forEach.call(backdrop.querySelectorAll(".pm-render img"), function (image) {
+      image.addEventListener("error", function () {
+        image.outerHTML = '<div class="fallback-head">' + esc(String(playerName).charAt(0).toUpperCase()) + "</div>";
+      });
+    });
+    var first = byId("pm-close");
+    if (first) first.focus();
+  }
+
+  function sendPlayerMessage(playerName) {
+    var input = byId("pm-message");
+    if (!input) return;
+    var text = input.value.trim();
+    if (!text) return;
+    api("/bridge/players", { method: "POST", body: form({ player: [playerName], action: ["message"], lines: [text] }) })
+      .then(function () { toast("Message sent to " + playerName + "."); input.value = ""; })
+      .catch(function (error) { toast("Message failed: " + error.message); });
+  }
+
+  function kickPlayer(playerName, serviceName) {
+    var reason = window.prompt("Kick " + playerName + " from " + serviceName + " — reason:", "Kicked from the dashboard");
+    if (reason === null) return;
+    api("/bridge/players", { method: "POST", body: form({ player: [playerName], action: ["kick"], reason: [reason || "Kicked from the dashboard"] }) })
+      .then(function () { toast(playerName + " was kicked."); closeModal(); refresh(); })
+      .catch(function (error) { toast("Kick failed: " + error.message); });
+  }
+
+  /** Copies the open player's XYZ to the clipboard (Details tab). */
+  function copyCoords() {
+    if (!openModalPlayer) return;
+    var detail = detailFind(openModalPlayer.server, openModalPlayer.name);
+    if (!detail || detail.x === null || detail.x === undefined) return;
+    var text = Math.round(detail.x) + " " + Math.round(detail.y) + " " + Math.round(detail.z);
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { toast("Copied: " + text); });
+    } else {
+      toast(text); // clipboard unavailable (insecure context) — show the coordinates
+    }
+  }
+
+  /** The stat-tile grid under the hero, shared by the initial render and background refreshes. */
+  function buildModalStats(service, detail) {
     var stats = "";
-    stats += modalStat("Server", esc(serviceName), service ? esc(service.group) + " · " + esc(service.type) : "");
+    stats += modalStat("Server", esc(openModalPlayer.server), service ? esc(service.group) + " · " + esc(service.type) : "");
     stats += modalStat("World", detail && detail.world ? esc(detail.world) : "—", "current world");
     stats += modalStat("Gamemode", detail && detail.gamemode ? esc(detail.gamemode.toLowerCase()) : "—", "player state");
     stats += modalStat("Ping", detail && detail.ping !== null && detail.ping !== undefined
@@ -383,90 +494,15 @@
       stats += modalStat("Server CPU", esc(fmtCpu(service.cpu)), "of the backend JVM", cpuClass(service.cpu));
       stats += modalStat("Port", esc(service.port), service["agent-online"] ? "agent v" + esc(service["agent-version"]) : "no agent reporting");
     }
+    return stats;
+  }
 
-    var transferOptions = services()
-      .filter(function (candidate) { return candidate.state === "RUNNING" && candidate.name !== serviceName; })
-      .map(function (candidate) { return '<option value="' + esc(candidate.name) + '">' + esc(candidate.name) + "</option>"; })
-      .join("");
-
-    byId("modal-root").innerHTML =
-      '<div class="modal-backdrop" id="modal-backdrop"><div class="player-modal" role="dialog" aria-modal="true" aria-label="Player details">' +
-        '<div class="pm-top"><button class="pm-close" id="pm-close" title="Close (Esc)">✕</button>' +
-          '<div class="pm-hero">' +
-            '<div class="pm-render">' + render + "</div>" +
-            '<div class="pm-id">' +
-              '<div class="pm-name">' + esc(playerName) + "</div>" +
-              '<div class="pm-sub">online on <strong>' + esc(serviceName) + "</strong></div>" +
-              '<div class="pm-uuid"><span class="dim">UUID</span> ' +
-                (uuid ? "<code>" + esc(uuid) + "</code>" : '<span class="dim">not reported</span>') + "</div>" +
-              '<div class="pm-links">' +
-                '<a href="https://namemc.com/profile/' + encodeURIComponent(playerName) + '" target="_blank" rel="noopener noreferrer">NameMC</a>' +
-                '<a href="https://plancke.io/hypixel/player/stats/' + encodeURIComponent(playerName) + '" target="_blank" rel="noopener noreferrer">Plancke</a>' +
-                '<a href="https://laby.net/@' + encodeURIComponent(playerName) + '" target="_blank" rel="noopener noreferrer">laby.net</a>' +
-              "</div>" +
-            "</div>" +
-            '<div class="pm-vitals">' + vitalsHtml(detail) + "</div>" +
-          "</div>" +
-        "</div>" +
-        '<div class="pm-tabs">' +
-          '<button class="tab' + (modalTab === "inventory" ? " active" : "") + '" data-mtab="inventory">Inventory</button>' +
-          '<button class="tab' + (modalTab === "extras" ? " active" : "") + '" data-mtab="extras">Extras</button>' +
-        "</div>" +
-        '<div class="pm-body" id="pm-body"></div>' +
-        '<div class="pm-stats">' + stats + "</div>" +
-        '<div class="pm-actions">' +
-          '<div class="pm-action"><input type="text" id="pm-message" placeholder="Message ' + esc(playerName) + '…"></div>' +
-          '<button class="btn small" id="pm-send">Send</button>' +
-          '<div class="pm-action"><select id="pm-transfer"><option value="">Move to…</option>' + transferOptions + "</select></div>" +
-          '<button class="btn small danger" id="pm-kick">Kick</button>' +
-          '<div class="pm-hint">Actions apply live: the message is delivered by the backend agent, transfers run through the proxy console.</div>' +
-        "</div>" +
-      "</div></div>";
-
-    byId("pm-close").addEventListener("click", closeModal);
-    byId("modal-backdrop").addEventListener("click", function (event) {
-      if (event.target === byId("modal-backdrop")) closeModal();
-    });
-    Array.prototype.forEach.call(byId("modal-root").querySelectorAll("[data-mtab]"), function (button) {
-      button.addEventListener("click", function () {
-        showModalTab(button.getAttribute("data-mtab"));
-      });
-    });
-    showModalTab(modalTab);
-    byId("pm-send").addEventListener("click", function () {
-      var input = byId("pm-message");
-      var text = input.value.trim();
-      if (!text) return;
-      api("/bridge/players", { method: "POST", body: form({ player: [playerName], action: ["message"], lines: [text] }) })
-        .then(function () { toast("Message sent to " + playerName + "."); input.value = ""; })
-        .catch(function (error) { toast("Message failed: " + error.message); });
-    });
-    byId("pm-message").addEventListener("keydown", function (event) {
-      if (event.key === "Enter") byId("pm-send").click();
-    });
-    byId("pm-transfer").addEventListener("change", function () {
-      var target = byId("pm-transfer").value;
-      if (!target) return;
-      api("/bridge/players", { method: "POST", body: form({ player: [playerName], action: ["transfer"], target: [target] }) })
-        .then(function () { toast("Sending " + playerName + " to " + target + "…"); })
-        .catch(function (error) { toast("Transfer failed: " + error.message); });
-      byId("pm-transfer").value = "";
-    });
-    byId("pm-kick").addEventListener("click", function () {
-      var reason = window.prompt("Kick " + playerName + " from " + serviceName + " — reason:", "Kicked from the dashboard");
-      if (reason === null) return;
-      api("/bridge/players", { method: "POST", body: form({ player: [playerName], action: ["kick"], reason: [reason || "Kicked from the dashboard"] }) })
-        .then(function () { toast(playerName + " was kicked."); closeModal(); refresh(); })
-        .catch(function (error) { toast("Kick failed: " + error.message); });
-    });
-    // CSP-safe body-render fallback: swap to the letter tile when the CDN image fails.
-    Array.prototype.forEach.call(byId("modal-root").querySelectorAll(".pm-render img"), function (image) {
-      image.addEventListener("error", function () {
-        image.outerHTML = '<div class="fallback-head">' + initial + "</div>";
-      });
-    });
-    var first = byId("pm-close");
-    if (first) first.focus();
+  /** Background refresh: updates only the open modal's stat tiles — scroll position and tabs stay. */
+  function refreshModalStats() {
+    if (!openModalPlayer) return;
+    var grid = byId("modal-root").querySelector(".pm-stats");
+    if (!grid) return;
+    grid.innerHTML = buildModalStats(detailOf(openModalPlayer.server), detailFind(openModalPlayer.server, openModalPlayer.name));
   }
 
   function modalStat(label, value, hint, stateClass) {
@@ -499,16 +535,19 @@
       '<span class="vv">' + esc(String(value) + unit) + "</span></div>";
   }
 
-  /** Switches the modal's lower half between the inventory grid and the extras list. */
+  /** Switches the modal's scrollable body between the three tabs. */
   function showModalTab(tab) {
     modalTab = tab;
+    if (tab !== "inventory") invState = null;
     Array.prototype.forEach.call(byId("modal-root").querySelectorAll("[data-mtab]"), function (button) {
       button.classList.toggle("active", button.getAttribute("data-mtab") === tab);
     });
     var body = byId("pm-body");
     if (!body || !openModalPlayer) return;
-    if (tab === "extras") {
-      body.innerHTML = extrasHtml(detailFind(openModalPlayer.server, openModalPlayer.name));
+    if (tab === "details") {
+      body.innerHTML = detailsHtml(detailFind(openModalPlayer.server, openModalPlayer.name));
+    } else if (tab === "actions") {
+      body.innerHTML = actionsHtml(openModalPlayer.name, openModalPlayer.server);
     } else {
       body.innerHTML = '<div class="inv-loading">Waiting for an inventory snapshot from ' + esc(openModalPlayer.server) + "…</div>";
       requestInventory(openModalPlayer.name, openModalPlayer.server);
@@ -517,16 +556,23 @@
 
   /** Asks the backend agent for a snapshot (queued via the cloud) and polls for the result. */
   function requestInventory(playerName, serviceName) {
+    var token = { cancelled: false };
+    invState = token;
     var attempt = 0;
     function poll() {
-      if (!openModalPlayer || openModalPlayer.name !== playerName || modalTab !== "inventory") return;
+      if (token.cancelled || invState !== token || !openModalPlayer || modalTab !== "inventory") return;
+      if (openModalPlayer.name !== playerName || openModalPlayer.server !== serviceName) return;
       api("/bridge/players/inventory?service=" + encodeURIComponent(serviceName) + "&player=" + encodeURIComponent(playerName))
-        .then(function (document) { renderInventory(document); })
+        .then(function (snapshot) {
+          if (token.cancelled || invState !== token) return;
+          renderInventory(snapshot);
+        })
         .catch(function () {
+          if (token.cancelled || invState !== token) return;
           attempt++;
           if (attempt > 8) {
             var body = byId("pm-body");
-            if (body) body.innerHTML = '<div class="inv-empty">No snapshot arrived — is an agent online on ' + esc(serviceName) + "?</div>";
+            if (body) body.innerHTML = '<div class="inv-empty">No snapshot arrived — is an up-to-date agent online on ' + esc(serviceName) + "?</div>";
             return;
           }
           if (attempt === 1) {
@@ -538,49 +584,61 @@
     poll();
   }
 
-  /** The inventory sheet: armor column, off-hand, 27 storage slots and the hotbar. */
-  function renderInventory(document) {
+  /** True Minecraft-shaped storage: 9 hotbar slots + 27 backpack slots, no double mapping. */
+  function renderInventory(snapshot) {
     if (!openModalPlayer || modalTab !== "inventory") return;
     var body = byId("pm-body");
     if (!body) return;
     var bySlot = {};
-    (document.items || []).forEach(function (item) { bySlot[item.slot] = item; });
+    var itemCount = 0;
+    (snapshot.items || []).forEach(function (item) {
+      if (!bySlot[item.slot]) itemCount++;
+      bySlot[item.slot] = item;
+    });
     function cell(slot, label) {
       var item = bySlot[slot];
       if (!item) return '<div class="inv-cell empty" title="' + esc(label) + '"></div>';
-      var ench = (item.enchantments || []).map(function (e) { return esc(e.type) + " " + e.level; }).join(", ");
-      var tip = esc(item.name || item.material) +
-        (item.count > 1 ? " ×" + item.count : "") +
-        (item.durability !== null && item.durability !== undefined ? " · " + item.durability + "%" : "") +
-        (ench ? "\n" + ench : "");
-      var icon = '<img alt="" loading="lazy" src="https://minecraft-api.vercel.app/images/items/' + encodeURIComponent(item.material) + '.png">' +
+      var dataAttr = encodeURIComponent(JSON.stringify([
+        item.name || materialLabel(item.material), item.material, item.count,
+        item.durability === null || item.durability === undefined ? null : item.durability,
+        item.lore || [], item.enchantments || [],
+      ]));
+      var icon = '<img alt="" loading="lazy" src="' + itemIconUrl(item.material) + '">' +
         '<div class="fallback-item">▚</div>';
-      return '<div class="inv-cell" title="' + tip + '">' + icon +
+      var durBar = "";
+      if (item.durability !== null && item.durability !== undefined && item.durability < 100) {
+        var kind = item.durability <= 20 ? "bad" : item.durability <= 50 ? "warn" : "";
+        durBar = '<span class="inv-dur"><span class="' + kind + '" style="width:' + Math.max(4, item.durability) + '%"></span></span>';
+      }
+      return '<div class="inv-cell filled" data-tip="' + dataAttr + '">' + icon +
         (item.count > 1 ? '<span class="inv-count">' + esc(item.count) + "</span>" : "") +
-        (item.durability !== null && item.durability !== undefined && item.durability < 100
-          ? '<span class="inv-dur"><span style="width:' + item.durability + '%"></span></span>' : "") +
+        durBar +
         "</div>";
     }
     var storage = "";
-    for (var row = 0; row < 3; row++) {
-      for (var column = 0; column < 9; column++) storage += cell(String(row * 9 + column + 1), "Inventory");
-    }
+    for (var slot = 10; slot <= 36; slot++) storage += cell(String(slot), "Inventory");
     var hotbar = "";
-    for (var slot = 1; slot <= 9; slot++) hotbar += cell(String(slot), "Hotbar");
-    var captured = document["captured-at"] ? new Date(document["captured-at"] * 1000).toLocaleTimeString() : "";
+    for (var bar = 1; bar <= 9; bar++) hotbar += cell(String(bar), "Hotbar");
+    var captured = snapshot["captured-at"] ? new Date(snapshot["captured-at"] * 1000).toLocaleTimeString() : "";
+    var anyItems = itemCount > 0;
     body.innerHTML =
       '<div class="inv-wrap">' +
         '<div class="inv-side">' +
+          '<div class="inv-side-label">Armor</div>' +
           cell("helmet", "Helmet") + cell("chestplate", "Chestplate") +
           cell("leggings", "Leggings") + cell("boots", "Boots") +
+          '<div class="inv-side-label" style="margin-top:8px;">Off-hand</div>' +
+          cell("offhand", "Off-hand") +
         "</div>" +
         '<div class="inv-main">' +
+          (anyItems ? "" : '<div class="inv-empty" style="padding:6px 0 10px;">The inventory was empty when the snapshot was captured.</div>') +
           '<div class="inv-grid">' + storage + "</div>" +
           '<div class="inv-grid hotbar">' + hotbar + "</div>" +
         "</div>" +
-        '<div class="inv-off">' + cell("offhand", "Off-hand") + "</div>" +
       "</div>" +
-      '<div class="inv-meta">Snapshot captured ' + esc(captured || "just now") + " · hover an item for details</div>";
+      '<div class="inv-meta">Snapshot captured ' + esc(captured || "just now") + " · hover an item for details</div>" +
+      '<div class="inv-render" id="inv-render"></div>';
+    loadRenderedInventory(snapshot, bySlot);
     // CSP-safe item-icon fallback: the letter tile shows when the texture CDN is unreachable.
     Array.prototype.forEach.call(body.querySelectorAll(".inv-cell img"), function (image) {
       image.addEventListener("error", function () {
@@ -591,32 +649,216 @@
     });
   }
 
-  /** Session, client and connection facts for the Extras tab. */
-  function extrasHtml(detail) {
-    if (!detail || detail["client-brand"] === undefined && detail["first-played"] === undefined) {
-      return '<div class="inv-empty">The agent on this server did not report extended metadata yet (older agent version, or the player just joined).</div>';
+  /** Material id → readable label: netherite_pickaxe → Netherite Pickaxe. */
+  function materialLabel(material) {
+    return String(material || "").split("_").map(function (word) {
+      return word.charAt(0).toUpperCase() + word.slice(1);
+    }).join(" ");
+  }
+
+  /** Item icon from api.minecraftitems.xyz (official-style textures, CSP-allowed). */
+  function itemIconUrl(material) {
+    return ITEM_API + "/api/item/" + encodeURIComponent(String(material || "stone").toLowerCase()) + "/size=3";
+  }
+
+  /** Second look, straight from the same API: a full player-inventory screen with the player's
+   * skin head, armor, storage and hotbar rendered by the API itself. Built from the snapshot
+   * slots; skipped when the browser cannot reach the API (the slot grid above still shows). */
+  function loadRenderedInventory(snapshot, bySlot) {
+    var holder = byId("inv-render");
+    if (!holder) return;
+    var pick = function (slot) {
+      var item = bySlot[slot];
+      return item ? materialForApi(item.material) : undefined;
+    };
+    var inventory = {};
+    var hasInventory = false;
+    for (var slot = 10; slot <= 36; slot++) {
+      var material = pick(String(slot));
+      if (material) { inventory[String(slot - 10)] = material; hasInventory = true; }
     }
-    var rows = "";
-    function row(label, value) {
-      if (value === null || value === undefined || value === "") return;
-      rows += '<div class="extra-row"><span class="ek">' + esc(label) + '</span><span class="ev">' + value + "</span></div>";
+    var hotbar = {};
+    var hasHotbar = false;
+    for (var bar = 1; bar <= 9; bar++) {
+      var hotMaterial = pick(String(bar));
+      if (hotMaterial) { hotbar[String(bar - 1)] = hotMaterial; hasHotbar = true; }
     }
-    row("Client brand", detail["client-brand"] ? esc(detail["client-brand"]) : null);
-    row("Address", detail.address ? "<code>" + esc(detail.address) + "</code>" : null);
-    row("Operator", detail.op === true ? "yes" : detail.op === false ? "no" : null);
-    row("Flying", detail.flying === true ? "yes" : detail.flying === false ? "no" : null);
-    row("First played", detail["first-played"] ? new Date(detail["first-played"]).toLocaleString() : null);
-    row("Ping", detail.ping !== null && detail.ping !== undefined ? esc(fmtPing(detail.ping)) : null);
+    var payload = {
+      playerName: openModalPlayer ? openModalPlayer.name : undefined,
+      helmet: pick("helmet"),
+      chestplate: pick("chestplate"),
+      leggings: pick("leggings"),
+      boots: pick("boots"),
+      offhand: pick("offhand"),
+      inventory: hasInventory ? inventory : undefined,
+      hotbar: hasHotbar ? hotbar : undefined,
+    };
+    if (!hasInventory && !hasHotbar && !payload.helmet && !payload.chestplate &&
+        !payload.leggings && !payload.boots && !payload.offhand) return;
+    fetch(ITEM_API + "/api/gui/player?scale=3", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }).then(function (response) {
+      if (!response.ok) throw new Error("render failed");
+      return response.blob();
+    }).then(function (blob) {
+      if (!byId("inv-render")) return;
+      var image = document.createElement("img");
+      image.alt = "Rendered inventory";
+      image.src = URL.createObjectURL(blob);
+      holder.appendChild(image);
+      var note = document.createElement("div");
+      note.className = "inv-render-note";
+      note.textContent = "Rendered view — the same snapshot as the grid above.";
+      holder.appendChild(note);
+    }).catch(function () {
+      // Grid view above already covers it; the render is a bonus.
+    });
+  }
+
+  /** Strips a namespaced id (minecraft:diamond_sword) down to what the API expects. */
+  function materialForApi(material) {
+    return String(material || "").replace(/^minecraft:/, "").toLowerCase();
+  }
+
+  // ---- floating item tooltip ------------------------------------------------
+  var itemTip = null;
+
+  function hideItemTip() {
+    if (itemTip) { itemTip.style.display = "none"; }
+  }
+
+  /** One document-level tooltip element, fed by data-tip attributes on inventory cells. */
+  function bindItemTip() {
+    itemTip = document.createElement("div");
+    itemTip.className = "item-tip";
+    document.body.appendChild(itemTip);
+    document.addEventListener("mousemove", function (event) {
+      var cell = event.target && event.target.closest ? event.target.closest(".inv-cell.filled[data-tip]") : null;
+      if (!cell || !openModalPlayer) { hideItemTip(); return; }
+      var parsed;
+      try { parsed = JSON.parse(decodeURIComponent(cell.getAttribute("data-tip"))); } catch (error) { return; }
+      var name = parsed[0], material = parsed[1], count = parsed[2], durability = parsed[3], lore = parsed[4], enchants = parsed[5];
+      var html = '<div class="t-name">' + esc(name) + (count > 1 ? " ×" + esc(count) : "") + "</div>" +
+        '<div class="t-sub">' + esc(materialLabel(material)) +
+        (durability !== null && durability !== undefined ? " · " + esc(durability) + "% durability" : "") + "</div>";
+      (enchants || []).forEach(function (enchant) {
+        html += '<div class="t-ench">✦ ' + esc(enchantmentLabel(enchant.type)) + " " + esc(enchant.level) + "</div>";
+      });
+      (lore || []).forEach(function (line) {
+        html += '<div class="t-lore">' + esc(line) + "</div>";
+      });
+      itemTip.innerHTML = html;
+      itemTip.style.display = "block";
+      var x = Math.min(event.clientX + 14, window.innerWidth - itemTip.offsetWidth - 10);
+      var y = Math.min(event.clientY + 16, window.innerHeight - itemTip.offsetHeight - 10);
+      itemTip.style.left = Math.max(6, x) + "px";
+      itemTip.style.top = Math.max(6, y) + "px";
+    });
+  }
+
+  /** minecraft:sharpness → Sharpness for the tooltip line. */
+  function enchantmentLabel(type) {
+    var id = String(type || "").replace(/^minecraft:/, "");
+    return id.split("_").map(function (word) {
+      return word.charAt(0).toUpperCase() + word.slice(1);
+    }).join(" ");
+  }
+
+  /** Deep-dive: connection, client, movement state and links, grouped into cards. */
+  function detailsHtml(detail) {
+    if (!detail) {
+      return '<div class="inv-empty">No live details reported for this player yet.</div>';
+    }
+    var cards = "";
+    function card(title, rows) {
+      if (!rows.length) return;
+      var body = rows.map(function (row) {
+        return '<div class="extra-row"><span class="ek">' + esc(row[0]) + '</span><span class="ev">' + row[1] + "</span></div>";
+      }).join("");
+      cards += '<div class="extra-group"><h3>' + esc(title) + "</h3>" + body + "</div>";
+    }
+    function yesNo(value) {
+      return value === true ? "yes" : value === false ? "no" : null;
+    }
+    var connection = [];
+    if (detail.ping !== null && detail.ping !== undefined) {
+      connection.push(["Ping", '<span class="' + pingClass(detail.ping) + '">' + esc(fmtPing(detail.ping)) + "</span>"]);
+    }
+    if (detail.address) connection.push(["Address", "<code>" + esc(detail.address) + "</code>"]);
+    if (detail["client-brand"]) connection.push(["Client brand", esc(detail["client-brand"])]);
+    card("Connection", connection);
+
+    var state = [];
+    if (detail.gamemode) state.push(["Gamemode", esc(detail.gamemode.toLowerCase())]);
+    var flying = yesNo(detail.flying);
+    if (flying !== null) state.push(["Flying", flying]);
+    var sneaking = yesNo(detail.sneaking);
+    if (sneaking !== null) state.push(["Sneaking", sneaking]);
+    var sprinting = yesNo(detail.sprinting);
+    if (sprinting !== null) state.push(["Sprinting", sprinting]);
+    var gliding = yesNo(detail.gliding);
+    if (gliding !== null) state.push(["Gliding", gliding]);
+    var sleeping = yesNo(detail.sleeping);
+    if (sleeping !== null) state.push(["Sleeping", sleeping]);
+    if (detail["allowed-flight"] !== null && detail["allowed-flight"] !== undefined) {
+      state.push(["Flight allowed", yesNo(detail["allowed-flight"]) || "no"]);
+    }
+    if (detail["in-vehicle"]) state.push(["Riding", esc(String(detail["in-vehicle"]).toLowerCase())]);
+    if (detail.op !== null && detail.op !== undefined) state.push(["Operator", yesNo(detail.op)]);
+    card("State", state);
+
+    var position = [];
     if (detail.x !== null && detail.x !== undefined) {
-      row("Coordinates", Math.round(detail.x) + ", " + Math.round(detail.y) + ", " + Math.round(detail.z));
+      position.push(["World", esc(detail.world || "—")]);
+      position.push(["Coordinates", Math.round(detail.x) + ", " + Math.round(detail.y) + ", " + Math.round(detail.z)]);
+      position.push(["Copy", '<button class="btn small" id="pm-copy-coords">Copy XYZ</button>']);
     }
-    if (!rows) rows = '<div class="inv-empty">No extended metadata reported yet.</div>';
-    return '<div class="extras">' + rows + "</div>";
+    card("Position", position);
+
+    var account = [];
+    if (detail["first-played"]) account.push(["First played", new Date(detail["first-played"]).toLocaleString()]);
+    if (detail.uuid) account.push(["UUID", "<code>" + esc(detail.uuid) + "</code>"]);
+    card("Account", account);
+
+    if (!cards) {
+      return '<div class="inv-empty">The agent on this server did not report extended metadata yet (older agent version).</div>';
+    }
+    return '<div class="extras">' + cards + "</div>" +
+      '<div class="pm-links" style="padding:12px 2px 8px;">' +
+        '<a href="https://namemc.com/profile/' + encodeURIComponent(openModalPlayer.name) + '" target="_blank" rel="noopener noreferrer">NameMC profile</a>' +
+        '<a href="https://laby.net/@' + encodeURIComponent(openModalPlayer.name) + '" target="_blank" rel="noopener noreferrer">laby.net</a>' +
+      "</div>";
+  }
+
+  /** Actions tab: the same live actions the old footer held, with room to explain them. */
+  function actionsHtml(playerName, serviceName) {
+    var transferOptions = services()
+      .filter(function (candidate) { return candidate.state === "RUNNING" && candidate.name !== serviceName; })
+      .map(function (candidate) { return '<option value="' + esc(candidate.name) + '">' + esc(candidate.name) + "</option>"; })
+      .join("");
+    return '<div class="extras">' +
+      '<div class="extra-group"><h3>Message</h3>' +
+        '<div class="pm-action" style="margin-bottom:8px;"><input type="text" id="pm-message" placeholder="Message ' + esc(playerName) + '…" style="flex:1;"></div>' +
+        '<button class="btn small" id="pm-send">Send</button>' +
+        '<div class="inv-render-note">Delivered by the backend agent, in-game and private.</div>' +
+      "</div>" +
+      '<div class="extra-group"><h3>Move</h3>' +
+        '<div class="pm-action"><select id="pm-transfer"><option value="">Move to…</option>' + transferOptions + "</select></div>" +
+        '<div class="inv-render-note">Runs through the proxy console; the player is sent to the chosen backend.</div>' +
+      "</div>" +
+      '<div class="extra-group"><h3>Danger zone</h3>' +
+        '<button class="btn small danger" id="pm-kick">Kick from ' + esc(serviceName) + "</button>" +
+        '<div class="inv-render-note">Disconnects the player with a reason you can edit.</div>' +
+      "</div>" +
+    "</div>";
   }
 
   document.addEventListener("keydown", function (event) {
     if (event.key === "Escape" && openModalPlayer) closeModal();
   });
+  bindItemTip();
 
   // ---- services page ------------------------------------------------------
   function renderServices() {

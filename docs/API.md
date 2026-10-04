@@ -342,6 +342,13 @@ POST /bridge/players  action=inventory → queue an inventory snapshot request (
 GET /bridge/players/inventory?service=&player= → last snapshot {service,player,captured-at,items:[{slot,material,count,durability,name,lore[],enchantments[]}]}
 ```
 
+Player inspection wire notes: `slot` is `helmet`, `chestplate`, `leggings`, `boots`, `offhand` or a
+1–36 storage index (1–9 hotbar, 10–36 main). Inspection records in the heartbeat's `inspections`
+field are `request-id\u0002payload` joined by `\u001e` (agents ≥0.9.0; older agents joined by
+`\u0001`, which limited a snapshot to its first item — the cloud accepts both). The roster's
+`player-meta` field order is append-only; 0.9.0 appended saturation, allowed-flight, sneaking,
+sprinting, gliding, sleeping and in-vehicle after `flying` (index 16).
+
 Agent heartbeats additionally carry `tps`, `heap-used-mb`, `heap-max-mb` and `process-cpu`; `GET
 /bridge/status` includes the same values per service plus `agent-version`, `restarts`, `last-error`
 and `totals.agents-online`.

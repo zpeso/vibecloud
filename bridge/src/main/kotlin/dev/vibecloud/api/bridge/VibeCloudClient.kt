@@ -133,6 +133,15 @@ data class PlayerDetail(
     val address: String? = null,
     val isOp: Boolean? = null,
     val isFlying: Boolean? = null,
+    /** Movement and session state (agent ≥0.9.0; all null on older agents). */
+    val saturation: Double? = null,
+    val allowedFlight: Boolean? = null,
+    val sneaking: Boolean? = null,
+    val sprinting: Boolean? = null,
+    val gliding: Boolean? = null,
+    val sleeping: Boolean? = null,
+    /** Entity type name of the vehicle the player is riding, if any. */
+    val inVehicle: String? = null,
 )
 
 /** Per-group entry of the status document. */
@@ -202,6 +211,13 @@ internal object CloudStatusParser {
                         address = values.string("address"),
                         isOp = values.boolean("op"),
                         isFlying = values.boolean("flying"),
+                        saturation = values.double("saturation"),
+                        allowedFlight = values.boolean("allowed-flight"),
+                        sneaking = values.boolean("sneaking"),
+                        sprinting = values.boolean("sprinting"),
+                        gliding = values.boolean("gliding"),
+                        sleeping = values.boolean("sleeping"),
+                        inVehicle = values.string("in-vehicle"),
                     )
                 },
             )

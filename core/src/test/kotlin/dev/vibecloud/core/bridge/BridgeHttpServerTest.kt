@@ -157,13 +157,29 @@ class BridgeHttpServerTest {
 
             // The agent delivers the snapshot on the next heartbeat — which also drains the
             // queued inventory command (200 with the command payload). Item fields are
-            // `slot|material|count|durability%|name|lore|enchants` joined by \u0001.
-            val item = "1\u007Cdiamond_sword\u007C1\u007C88\u007CFire sword\u007CSharp sword\u001FSecond line\u007Cminecraft:sharpness:5"
+            // `slot|material|count|durability%|name|lore|enchants` joined by \u0001, and
+            // inspection records are joined by \u001e so a multi-item snapshot survives intact.
+            val items = listOf(
+                "1\u007Cdiamond_sword\u007C1\u007C88\u007CFire sword\u007CSharp sword\u001FSecond line\u007Cminecraft:sharpness:5",
+                "2\u007Cgolden_apple\u007C12\u007C\u007C\u007C\u007C",
+                "helmet\u007Cdiamond_helmet\u007C1\u007C\u007C\u007C\u007C",
+            )
+            val secondItems = listOf("5\u007Ccobblestone\u007C64\u007C\u007C\u007C\u007C")
+            running.tracker.applyAgentReport("lobby-1", listOf("Steve", "Alex"))
+            val queuedAlex = post(running, "$base/bridge/players", "player=Alex&action=inventory")
+            assertEquals(202, queuedAlex.statusCode())
+            val requestIdAlex = Regex("\"request-id\":\"([^\"]+)\"").find(queuedAlex.body())!!.groupValues[1]
+
             val heartbeat = post(
                 running,
                 "$base/bridge/heartbeat",
-                "service-id=id-lobby-1&service-name=lobby-1&players=Steve&max-players=20&agent-version=0.8.0" +
-                    "&inspections=" + java.net.URLEncoder.encode(requestId + "\u0002" + item, Charsets.UTF_8),
+                "service-id=id-lobby-1&service-name=lobby-1&players=Steve,Alex&max-players=20&agent-version=0.8.0" +
+                    "&inspections=" + java.net.URLEncoder.encode(
+                        listOf(requestId, requestIdAlex)
+                            .zip(listOf(items.joinToString("\u0001"), secondItems.joinToString("\u0001")))
+                            .joinToString("\u001e") { (id, payload) -> id + "\u0002" + payload },
+                        Charsets.UTF_8,
+                    ),
             )
             assertEquals(200, heartbeat.statusCode())
             assertTrue(requestId in heartbeat.body(), "heartbeat response must carry the queued inventory command")
@@ -171,9 +187,16 @@ class BridgeHttpServerTest {
             val response = get(running, "$base/bridge/players/inventory?service=lobby-1&player=steve")
             assertEquals(200, response.statusCode())
             assertTrue("\"material\":\"diamond_sword\"" in response.body())
+            assertTrue("\"material\":\"golden_apple\"" in response.body(), "all items of a snapshot must survive the heartbeat")
+            assertTrue("\"material\":\"diamond_helmet\"" in response.body())
             assertTrue("\"name\":\"Fire sword\"" in response.body())
             assertTrue("\"type\":\"minecraft:sharpness\"" in response.body())
             assertTrue("\"player\":\"Steve\"" in response.body())
+
+            // The second inspection record must land under its own player.
+            val alex = get(running, "$base/bridge/players/inventory?service=lobby-1&player=alex")
+            assertEquals(200, alex.statusCode())
+            assertTrue("\"material\":\"cobblestone\"" in alex.body())
         } finally {
             running.server.stop()
         }
@@ -185,7 +208,8 @@ class BridgeHttpServerTest {
         try {
             val base = "http://127.0.0.1:${running.server.boundPort()}"
             val meta = java.net.URLEncoder.encode(
-                "Steve|uuid-1|42|world|SURVIVAL|14.5|18|33|0.5|100|64|-200|vanilla|1600000000000|10.0.0.5|true|false",
+                "Steve|uuid-1|42|world|SURVIVAL|14.5|18|33|0.5|100|64|-200|vanilla|1600000000000|10.0.0.5|true|false|" +
+                    "7.2|false|true|false|false|false|PIG",
                 Charsets.UTF_8,
             )
             val heartbeat = post(
@@ -199,6 +223,8 @@ class BridgeHttpServerTest {
             assertTrue("\"level\":33" in body)
             assertTrue("\"client-brand\":\"vanilla\"" in body)
             assertTrue("\"op\":true" in body)
+            assertTrue("\"sneaking\":true" in body)
+            assertTrue("\"in-vehicle\":\"PIG\"" in body)
         } finally {
             running.server.stop()
         }

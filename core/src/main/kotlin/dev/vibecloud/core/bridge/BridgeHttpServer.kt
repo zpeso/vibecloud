@@ -727,7 +727,9 @@ class BridgeHttpServer(
      *
      * Wire contract (agent `PlayerInspector.rosterEntry`), append-only:
      * 0 name, 1 uuid, 2 ping, 3 world, 4 gamemode, 5 health, 6 food, 7 level, 8 exp,
-     * 9 x, 10 y, 11 z, 12 client-brand, 13 first-played, 14 address, 15 op, 16 flying.
+     * 9 x, 10 y, 11 z, 12 client-brand, 13 first-played, 14 address, 15 op, 16 flying,
+     * 17 saturation, 18 allowed-flight, 19 sneaking, 20 sprinting, 21 gliding, 22 sleeping,
+     * 23 in-vehicle.
      * Indices past the sending agent's field count are simply absent — never reorder.
      */
     private fun parsePlayerMeta(raw: String?): List<AgentPlayer> {
@@ -758,6 +760,13 @@ class BridgeHttpServer(
                     address = field(14),
                     isOp = field(15)?.toBooleanStrictOrNull(),
                     isFlying = field(16)?.toBooleanStrictOrNull(),
+                    saturation = field(17)?.toDoubleOrNull(),
+                    allowedFlight = field(18)?.toBooleanStrictOrNull(),
+                    sneaking = field(19)?.toBooleanStrictOrNull(),
+                    sprinting = field(20)?.toBooleanStrictOrNull(),
+                    gliding = field(21)?.toBooleanStrictOrNull(),
+                    sleeping = field(22)?.toBooleanStrictOrNull(),
+                    inVehicle = field(23),
                 )
             }
             .take(MAX_PLAYER_NAMES)
@@ -829,6 +838,13 @@ class BridgeHttpServer(
         "address" to (player.address?.let { JsonWriter.str(it) } ?: "null"),
         "op" to (player.isOp?.let { JsonWriter.bool(it) } ?: "null"),
         "flying" to (player.isFlying?.let { JsonWriter.bool(it) } ?: "null"),
+        "saturation" to (player.saturation?.let { JsonWriter.num(it) } ?: "null"),
+        "allowed-flight" to (player.allowedFlight?.let { JsonWriter.bool(it) } ?: "null"),
+        "sneaking" to (player.sneaking?.let { JsonWriter.bool(it) } ?: "null"),
+        "sprinting" to (player.sprinting?.let { JsonWriter.bool(it) } ?: "null"),
+        "gliding" to (player.gliding?.let { JsonWriter.bool(it) } ?: "null"),
+        "sleeping" to (player.sleeping?.let { JsonWriter.bool(it) } ?: "null"),
+        "in-vehicle" to (player.inVehicle?.takeIf { it.isNotBlank() }?.let { JsonWriter.str(it) } ?: "null"),
     )
 
     /** Accepts the agent's form-encoded heartbeat and, best-effort, a JSON body with the same keys. */
@@ -1075,14 +1091,19 @@ class BridgeHttpServer(
         .filterKeys { it.isNotEmpty() }
 
     /**
-     * Decodes the agent's `inspections` heartbeat field (`request-id\u0002payload` entries joined
-     * by `\u0001`) and stores each finished snapshot under its (service, player) key. The agent
+     * Decodes the agent's `inspections` heartbeat field — `request-id\u0002payload` records joined
+     * by `\u001e` (agents ≥0.9.0) or `\u0001` (older agents whose payload is then limited to its
+     * first item) — and stores each finished snapshot under its (service, player) key. The agent
      * only returns the request id, so the player is resolved from the pending request the
      * dashboard's inspect call queued; payloads are pre-rendered item strings.
      */
     private fun storeInventorySnapshots(serviceName: String, raw: String?) {
         if (raw.isNullOrBlank()) return
-        raw.split('\u0001').forEach { inspection ->
+        // 0x1E (record separator) came in with the multi-item inspection fix; agents older than
+        // that joined records with 0x01 — the same byte used inside a payload — which truncated
+        // every snapshot to its first item. Accept both while upgrades roll out.
+        val records = if ('\u001e' in raw) raw.split('\u001e') else listOf(raw)
+        records.forEach { inspection ->
             val separator = inspection.indexOf('\u0002')
             if (separator <= 0) return@forEach
             val requestId = inspection.substring(0, separator)
@@ -1162,10 +1183,10 @@ class BridgeHttpServer(
          * many inline style attributes dynamically (meter/bar widths); CSS cannot execute script
          * in modern browsers, so this carries no meaningful risk. Everything else stays fully
          * locked down: no frames, no objects, connections restricted to same origin plus the
-         * avatar CDN the players page explicitly loads images from.
+         * avatar and item-texture CDNs the players page explicitly loads images from.
          */
         const val CSP = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
-                "img-src 'self' https://mc-heads.net https://minecraft-api.vercel.app; connect-src 'self'; " +
+                "img-src 'self' https://mc-heads.net https://api.minecraftitems.xyz; connect-src 'self'; " +
                 "frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
 
         private fun String.isLoopbackAddress(): Boolean =

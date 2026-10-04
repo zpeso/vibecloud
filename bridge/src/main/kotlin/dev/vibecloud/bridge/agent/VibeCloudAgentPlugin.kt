@@ -159,7 +159,7 @@ class VibeCloudAgentPlugin : JavaPlugin() {
                     add(inspection.first + "\u0002" + inspection.second)
                     inspection = completedInspections.poll()
                 }
-            }.joinToString("\u0001")
+            }.joinToString(PlayerInspector.RECORD)
             val tpsField = runCatching { Bukkit.getTPS()[0] }.getOrNull()
             val memory = Runtime.getRuntime()
             val heapUsedMb = (memory.totalMemory() - memory.freeMemory()) / BYTES_PER_MB

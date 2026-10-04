@@ -58,7 +58,8 @@ class VibeCloudClientParserTest {
                 "player-details":[{"name":"Steve","uuid":"uuid-1","ping":42,"world":"world","gamemode":"SURVIVAL",
                     "health":14.5,"food":18,"level":33,"exp":0.5,"x":100.5,"y":64,"z":-200.25,
                     "client-brand":"vanilla","first-played":1600000000000,"address":"10.0.0.5",
-                    "op":true,"flying":false}]}]}
+                    "op":true,"flying":false,"saturation":7.2,"allowed-flight":false,"sneaking":true,
+                    "sprinting":false,"gliding":false,"sleeping":false,"in-vehicle":"PIG"}]}]}
         """.trimIndent()
 
         val status = CloudStatusParser.parse(json)
@@ -74,6 +75,13 @@ class VibeCloudClientParserTest {
         assertEquals("10.0.0.5", steve.address)
         assertEquals(true, steve.isOp)
         assertEquals(false, steve.isFlying)
+        assertEquals(7.2, steve.saturation)
+        assertEquals(false, steve.allowedFlight)
+        assertEquals(true, steve.sneaking)
+        assertEquals(false, steve.sprinting)
+        assertEquals(false, steve.gliding)
+        assertEquals(false, steve.sleeping)
+        assertEquals("PIG", steve.inVehicle)
     }
 
     @Test

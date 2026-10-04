@@ -41,15 +41,18 @@ val obfuscateAppJs = tasks.register("obfuscateAppJs") {
         val target = layout.buildDirectory.file("resources/main/dashboard/app.js").get().asFile
         if (!target.isFile) return@doLast
         val npx = if (org.gradle.internal.os.OperatingSystem.current().isWindows) "npx.cmd" else "npx"
+        // Streams stay separate: npx prints notices ("npm notice ...") on stderr, and anything
+        // merged into stdout here would end up inside the shipped app.js.
         val proc = ProcessBuilder(
             listOf(
                 npx, "--yes", "terser@5.37.0", target.absolutePath,
                 "--compress", "--mangle", "--comments", "false", "--format", "ascii_only=true",
             ),
-        ).redirectErrorStream(true).start()
+        ).start()
         val output = proc.inputStream.readBytes().toString(Charsets.UTF_8)
+        val warnings = proc.errorStream.readBytes().toString(Charsets.UTF_8)
         val code = proc.waitFor()
-        check(code == 0) { "terser failed ($code): ${output.take(500)}" }
+        check(code == 0) { "terser failed ($code): ${(warnings + output).take(500)}" }
         check(output.isNotBlank()) { "terser produced empty output" }
 
         // Sanity-check the transformed script with Node before packaging it.

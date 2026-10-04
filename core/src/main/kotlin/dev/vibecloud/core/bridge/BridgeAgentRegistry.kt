@@ -27,6 +27,15 @@ data class AgentPlayer(
     val address: String? = null,
     val isOp: Boolean? = null,
     val isFlying: Boolean? = null,
+    /** Movement and session state (agent ≥0.9.0; all null on older agents). */
+    val saturation: Double? = null,
+    val allowedFlight: Boolean? = null,
+    val sneaking: Boolean? = null,
+    val sprinting: Boolean? = null,
+    val gliding: Boolean? = null,
+    val sleeping: Boolean? = null,
+    /** Entity type name of the vehicle the player is riding, if any. */
+    val inVehicle: String? = null,
 )
 
 /**
