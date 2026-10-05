@@ -184,8 +184,12 @@ class BridgeHttpServerTest {
             assertEquals(200, heartbeat.statusCode())
             assertTrue(requestId in heartbeat.body(), "heartbeat response must carry the queued inventory command")
 
-            val response = get(running, "$base/bridge/players/inventory?service=lobby-1&player=steve")
+            val stale = get(running, "$base/bridge/players/inventory?service=lobby-1&player=steve&request-id=stale-request")
+            assertEquals(404, stale.statusCode(), "a previous snapshot must not satisfy a newer inventory request")
+
+            val response = get(running, "$base/bridge/players/inventory?service=lobby-1&player=steve&request-id=$requestId")
             assertEquals(200, response.statusCode())
+            assertTrue("\"request-id\":\"$requestId\"" in response.body())
             assertTrue("\"material\":\"diamond_sword\"" in response.body())
             assertTrue("\"material\":\"golden_apple\"" in response.body(), "all items of a snapshot must survive the heartbeat")
             assertTrue("\"material\":\"diamond_helmet\"" in response.body())
@@ -197,6 +201,32 @@ class BridgeHttpServerTest {
             val alex = get(running, "$base/bridge/players/inventory?service=lobby-1&player=alex")
             assertEquals(200, alex.statusCode())
             assertTrue("\"material\":\"cobblestone\"" in alex.body())
+        } finally {
+            running.server.stop()
+        }
+    }
+
+    @Test
+    fun `inventory capture failures are returned to the dashboard`() {
+        val running = startServer(listOf(service("lobby-1", ServiceState.RUNNING)))
+        try {
+            val base = "http://127.0.0.1:${running.server.boundPort()}"
+            running.tracker.applyAgentReport("lobby-1", listOf("Steve"))
+            val queued = post(running, "$base/bridge/players", "player=Steve&action=inventory")
+            assertEquals(202, queued.statusCode())
+            val requestId = Regex("\"request-id\":\"([^\"]+)\"").find(queued.body())!!.groupValues[1]
+            val inspections = java.net.URLEncoder.encode(requestId + "\u0002" + "offline", Charsets.UTF_8)
+            val heartbeat = post(
+                running,
+                "$base/bridge/heartbeat",
+                "service-id=id-lobby-1&service-name=lobby-1&players=Steve&max-players=20&inspections=$inspections",
+            )
+            assertEquals(200, heartbeat.statusCode())
+            assertTrue(requestId in heartbeat.body())
+
+            val response = get(running, "$base/bridge/players/inventory?service=lobby-1&player=Steve&request-id=$requestId")
+            assertEquals(422, response.statusCode())
+            assertTrue("player is no longer online" in response.body())
         } finally {
             running.server.stop()
         }

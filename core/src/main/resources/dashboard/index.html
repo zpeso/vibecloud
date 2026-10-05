@@ -80,15 +80,29 @@
       </section>
 
       <!-- ============ PLAYERS ============ -->
-      <section id="page-players" class="page-section hidden" style="display:flex;flex-direction:column;gap:16px;">
-        <div class="stat-grid" id="player-stats"></div>
-        <div class="card">
-          <div class="card-head">
-            <h2>Players online <span id="players-count" class="dim" style="text-transform:none;"></span></h2>
-            <input type="text" id="player-filter" placeholder="Filter by name, server, world or gamemode…" style="width:240px;">
+      <section id="page-players" class="page-section players-page hidden" style="display:flex;flex-direction:column;gap:16px;">
+        <div class="players-intro">
+          <div>
+            <div class="eyebrow">LIVE NETWORK</div>
+            <h1>Players</h1>
+            <p>Browse everyone online across your running backends.</p>
+          </div>
+          <div class="players-live"><span class="live-dot"></span> Live status</div>
+        </div>
+        <div class="stat-grid player-stat-grid" id="player-stats"></div>
+        <section class="card players-board" aria-labelledby="players-heading">
+          <div class="card-head players-board-head">
+            <div>
+              <h2 id="players-heading">Online now <span id="players-count" class="dim" style="text-transform:none;"></span></h2>
+              <p class="dim">Select a player to view their inventory and details.</p>
+            </div>
+            <label class="player-search">
+              <span aria-hidden="true">⌕</span>
+              <input type="text" id="player-filter" placeholder="Search players, servers, worlds…" aria-label="Search online players">
+            </label>
           </div>
           <div class="player-grid" id="player-grid"></div>
-        </div>
+        </section>
       </section>
 
       <!-- ============ SERVICES ============ -->

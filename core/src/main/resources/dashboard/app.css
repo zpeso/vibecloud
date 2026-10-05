@@ -632,3 +632,101 @@ body.modal-open { overflow: hidden; }
 .card-vital { font-size: 11px; color: var(--muted-foreground); }
 .card-vital.hp { color: #ed3030; }
 .card-vital.food { color: #c98a3d; }
+
+/* ---- players dashboard: deliberate responsive page + inspector layout ----- */
+.players-page, .players-page > *, .players-board, .player-grid { min-width: 0; }
+.players-intro { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; padding: 4px 2px 2px; }
+.players-intro .eyebrow { color: var(--accent); font-size: 10px; font-weight: 700; letter-spacing: .14em; }
+.players-intro h1 { margin-top: 3px; font-size: clamp(24px, 3vw, 32px); line-height: 1.15; letter-spacing: -.04em; }
+.players-intro p { color: var(--muted-foreground); margin-top: 6px; font-size: 13px; }
+.players-live { display: inline-flex; align-items: center; gap: 8px; color: var(--muted-foreground); font-size: 12px; white-space: nowrap; }
+.live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 10px rgba(52,211,153,.55); }
+.player-stat-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 185px), 1fr)); gap: 12px; }
+.players-board { padding: clamp(14px, 2vw, 22px); }
+.players-board-head { align-items: flex-end; margin-bottom: 18px; }
+.players-board-head h2 { margin-bottom: 4px; }
+.players-board-head p { font-size: 12px; }
+.player-search { flex: 0 1 320px; min-width: min(100%, 220px); display: flex; align-items: center; gap: 8px; border: 1px solid var(--border); background: #15151a; border-radius: 9px; padding: 0 10px; color: var(--muted-foreground); }
+.player-search input { flex: 1; width: 100% !important; min-width: 0; border: 0; background: transparent; padding: 9px 0; }
+.player-search input:focus { outline: 0; }
+.player-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr)); }
+.player-grid > .empty { grid-column: 1 / -1; }
+
+/* Rebuild the inspector as a bounded flex dialog. Only the active tab body scrolls. */
+.modal-backdrop { padding: clamp(8px, 3vh, 28px) clamp(8px, 3vw, 28px); overflow-y: auto; align-items: center; }
+.player-modal {
+  width: min(920px, 100%); max-width: 100%; max-height: calc(100vh - 32px); max-height: calc(100dvh - 32px);
+  min-width: 0; flex: 0 1 auto; overflow: hidden;
+}
+.pm-top { flex: 0 0 auto; }
+.pm-hero { display: grid; grid-template-columns: 104px minmax(0, 1fr) minmax(210px, .9fr); align-items: center; gap: 16px; padding: 22px 24px 18px; }
+.pm-render { width: 104px; min-width: 0; min-height: 126px; max-height: 150px; padding: 6px 0; }
+.pm-render img { width: 88px; height: 136px; max-height: 136px; object-fit: contain; }
+.pm-id { min-width: 0; overflow: hidden; }
+.pm-name, .pm-sub, .pm-uuid { overflow-wrap: anywhere; }
+.pm-vitals { width: 100%; min-width: 0; }
+.pm-stats { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; padding: 16px 24px; }
+.pm-stat { min-width: 0; overflow: hidden; }
+.pm-stat .v, .pm-stat .s { min-width: 0; }
+.pm-tabs { padding: 0 24px; flex: 0 0 auto; }
+.pm-body { min-width: 0; min-height: 0; flex: 1 1 auto; overflow: auto; overscroll-behavior: contain; padding: 18px 24px 22px; scrollbar-width: thin; scrollbar-color: #2c2c34 transparent; }
+.pm-body::-webkit-scrollbar { width: 8px; }
+.pm-body::-webkit-scrollbar-thumb { background: #2c2c34; border-radius: 4px; }
+.inv-state { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 30px 12px; text-align: center; }
+.inv-state .inv-empty { padding: 0; max-width: 560px; overflow-wrap: anywhere; }
+.inv-wrap { display: grid; grid-template-columns: 44px minmax(0, 1fr); align-items: start; gap: 14px; width: 100%; }
+.inv-side { width: 44px; gap: 5px; }
+.inv-side .inv-cell { width: 40px; }
+.inv-side-label { font-size: 9px; letter-spacing: .03em; }
+.inv-main { min-width: 0; width: 100%; gap: 8px; }
+.inv-grid { width: min(100%, 480px); grid-template-columns: repeat(9, minmax(0, 1fr)); gap: clamp(2px, .7vw, 5px); }
+.inv-cell { min-width: 0; }
+.fallback-item { font-size: clamp(7px, 1.4vw, 10px); font-weight: 700; overflow: hidden; }
+.inv-empty { overflow-wrap: anywhere; }
+.inv-meta { overflow-wrap: anywhere; }
+.extras { grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); }
+.extra-group, .extra-row { min-width: 0; }
+
+@media (max-width: 760px) {
+  main.page { padding: 16px 14px 28px; }
+  .pm-hero { grid-template-columns: 88px minmax(0, 1fr); gap: 12px; padding: 20px 18px 14px; }
+  .pm-render { width: 88px; min-height: 112px; }
+  .pm-render img { width: 76px; height: 116px; }
+  .pm-vitals { grid-column: 1 / -1; }
+  .pm-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 14px 18px; gap: 8px; }
+  .pm-tabs { padding: 0 18px; }
+  .pm-body { padding: 16px 18px 20px; }
+}
+@media (max-width: 520px) {
+  .players-intro { align-items: flex-start; }
+  .players-live { margin-top: 9px; }
+  .players-board-head { align-items: stretch; flex-direction: column; }
+  .player-search { flex: 1 1 auto; min-width: 0; }
+  .modal-backdrop { padding: 6px; align-items: center; }
+  .player-modal { max-height: calc(100vh - 12px); max-height: calc(100dvh - 12px); border-radius: 12px; }
+  .pm-close { top: 8px; right: 8px; z-index: 1; }
+  .pm-hero { grid-template-columns: 68px minmax(0, 1fr); gap: 10px; padding: 16px 14px 12px; }
+  .pm-render { width: 68px; min-height: 96px; max-height: 108px; }
+  .pm-render img { width: 60px; height: 100px; }
+  .pm-render .fallback-head { width: 48px; height: 48px; margin: 24px auto; }
+  .pm-name { font-size: 19px; }
+  .pm-sub { font-size: 12px; padding-right: 16px; }
+  .pm-uuid { font-size: 10px; gap: 4px; }
+  .pm-uuid code { font-size: 9px; overflow-wrap: anywhere; }
+  .pm-links { gap: 10px; font-size: 11px; }
+  .vital { grid-template-columns: 48px minmax(20px, 1fr) 42px; gap: 6px; font-size: 11px; }
+  .pm-stats { padding: 12px 14px; gap: 7px; }
+  .pm-stat { padding: 8px; }
+  .pm-stat .k, .pm-stat .s { font-size: 9px; }
+  .pm-stat .v { font-size: 12px; }
+  .pm-tabs { padding: 0 10px; justify-content: space-around; }
+  .pm-tabs .tab { padding: 9px 11px; }
+  .pm-body { padding: 12px 12px 16px; }
+  .inv-wrap { grid-template-columns: 36px minmax(0, 1fr); gap: 8px; }
+  .inv-side { width: 36px; }
+  .inv-side .inv-cell { width: 34px; }
+  .inv-grid { gap: 2px; }
+  .inv-count { font-size: 9px; }
+  .inv-dur { left: 2px; right: 2px; bottom: 2px; }
+  .inv-side-label { font-size: 8px; }
+}

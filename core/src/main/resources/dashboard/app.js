@@ -37,7 +37,15 @@
     options.credentials = "same-origin";
     return fetch(path, options).then(function (response) {
       if (response.status === 401) { showLogin(); throw new Error("unauthorized"); }
-      if (!response.ok) { return response.text().then(function (body) { throw new Error(body || (response.status + " " + response.statusText)); }); }
+      if (!response.ok) {
+        return response.text().then(function (body) {
+          var message = body;
+          try { message = JSON.parse(body).error || body; } catch (error) {}
+          var failure = new Error(message || (response.status + " " + response.statusText));
+          failure.status = response.status;
+          throw failure;
+        });
+      }
       return response.text().then(function (body) { return body ? JSON.parse(body) : null; });
     });
   }
@@ -357,6 +365,7 @@
 
   function closeModal() {
     openModalPlayer = null;
+    if (invState) invState.cancelled = true;
     invState = null;
     byId("modal-root").innerHTML = "";
     document.body.classList.remove("modal-open");
@@ -365,7 +374,9 @@
 
   function openPlayerModal(playerName, serviceName) {
     openModalPlayer = { name: playerName, server: serviceName };
+    if (invState) invState.cancelled = true;
     invState = null;
+    modalTab = "inventory";
     document.body.classList.add("modal-open"); // nothing scrolls behind the dialog
     var service = detailOf(serviceName);
     var detail = detailFind(serviceName, playerName);
@@ -392,16 +403,13 @@
             '<div class="pm-vitals">' + vitalsHtml(detail) + "</div>" +
           "</div>" +
         "</div>" +
-        // The scroll region owns stats + tabs + tab body; hero and close button stay pinned.
-        '<div class="pm-scroll">' +
-          '<div class="pm-stats">' + stats + "</div>" +
-          '<div class="pm-tabs">' +
-            '<button class="tab' + (modalTab === "inventory" ? " active" : "") + '" data-mtab="inventory">Inventory</button>' +
-            '<button class="tab' + (modalTab === "details" ? " active" : "") + '" data-mtab="details">Details</button>' +
-            '<button class="tab' + (modalTab === "actions" ? " active" : "") + '" data-mtab="actions">Actions</button>' +
-          "</div>" +
-          '<div class="pm-body" id="pm-body"></div>' +
+        '<div class="pm-stats">' + stats + "</div>" +
+        '<div class="pm-tabs" role="tablist" aria-label="Player sections">' +
+          '<button class="tab' + (modalTab === "inventory" ? " active" : "") + '" data-mtab="inventory" role="tab">Inventory</button>' +
+          '<button class="tab' + (modalTab === "details" ? " active" : "") + '" data-mtab="details" role="tab">Details</button>' +
+          '<button class="tab' + (modalTab === "actions" ? " active" : "") + '" data-mtab="actions" role="tab">Actions</button>' +
         "</div>" +
+        '<div class="pm-body" id="pm-body" role="tabpanel"></div>' +
       "</div></div>";
 
     bindPlayerModal(playerName, serviceName);
@@ -413,12 +421,13 @@
     var backdrop = byId("modal-backdrop");
     backdrop.addEventListener("click", function (event) {
       if (event.target === backdrop) { closeModal(); return; }
-      var target = event.target.closest ? event.target.closest("[data-mtab],#pm-close,#pm-send,#pm-kick,#pm-copy-coords") : null;
+      var target = event.target.closest ? event.target.closest("[data-mtab],#pm-close,#pm-send,#pm-kick,#pm-copy-coords,#pm-inv-retry") : null;
       if (!target) return;
       if (target.id === "pm-close") closeModal();
       else if (target.id === "pm-send") sendPlayerMessage(playerName);
       else if (target.id === "pm-kick") kickPlayer(playerName, serviceName);
       else if (target.id === "pm-copy-coords") copyCoords();
+      else if (target.id === "pm-inv-retry") showModalTab("inventory");
       else if (target.hasAttribute("data-mtab")) showModalTab(target.getAttribute("data-mtab"));
     });
     backdrop.addEventListener("change", function (event) {
@@ -475,7 +484,7 @@
     }
   }
 
-  /** The stat-tile grid under the hero, shared by the initial render and background refreshes. */
+  /** Four compact, predictable tiles keep the inventory in view instead of pushing it away. */
   function buildModalStats(service, detail) {
     var stats = "";
     stats += modalStat("Server", esc(openModalPlayer.server), service ? esc(service.group) + " · " + esc(service.type) : "");
@@ -484,16 +493,6 @@
     stats += modalStat("Ping", detail && detail.ping !== null && detail.ping !== undefined
       ? '<span class="' + pingClass(detail.ping) + '">' + esc(fmtPing(detail.ping)) + "</span>"
       : "—", "round-trip to this backend");
-    if (service) {
-      stats += modalStat("TPS", esc(fmtTps(service.tps)), "last 1m · 20 is ideal", tpsClass(service.tps));
-      stats += modalStat("Memory", service.ram_usage === null || service.ram_usage === undefined ? "—" :
-        Math.round(service.ram_usage * 100) + "%",
-        service["heap-used-mb"] !== null && service["heap-used-mb"] !== undefined
-          ? Math.round(service["heap-used-mb"]) + " / " + Math.round(service["heap-max-mb"] || 0) + " MB" : "server heap",
-        ramClass(service.ram_usage));
-      stats += modalStat("Server CPU", esc(fmtCpu(service.cpu)), "of the backend JVM", cpuClass(service.cpu));
-      stats += modalStat("Port", esc(service.port), service["agent-online"] ? "agent v" + esc(service["agent-version"]) : "no agent reporting");
-    }
     return stats;
   }
 
@@ -506,9 +505,9 @@
   }
 
   function modalStat(label, value, hint, stateClass) {
-    var valueClass = stateClass ? ' class="v ' + stateClass + '"' : '"v"';
+    var valueClass = "v" + (stateClass ? " " + stateClass : "");
     return '<div class="pm-stat"><div class="k">' + esc(label) + "</div>" +
-      "<div" + valueClass + ">" + value + "</div>" +
+      '<div class="' + valueClass + '">' + value + "</div>" +
       '<div class="s">' + esc(hint) + "</div></div>";
   }
   // ---- player modal helpers ------------------------------------------------
@@ -535,10 +534,13 @@
       '<span class="vv">' + esc(String(value) + unit) + "</span></div>";
   }
 
-  /** Switches the modal's scrollable body between the three tabs. */
+  /** Switches the modal body between tabs and cancels stale inventory work. */
   function showModalTab(tab) {
     modalTab = tab;
-    if (tab !== "inventory") invState = null;
+    if (tab !== "inventory" && invState) {
+      invState.cancelled = true;
+      invState = null;
+    }
     Array.prototype.forEach.call(byId("modal-root").querySelectorAll("[data-mtab]"), function (button) {
       button.classList.toggle("active", button.getAttribute("data-mtab") === tab);
     });
@@ -549,39 +551,78 @@
     } else if (tab === "actions") {
       body.innerHTML = actionsHtml(openModalPlayer.name, openModalPlayer.server);
     } else {
-      body.innerHTML = '<div class="inv-loading">Waiting for an inventory snapshot from ' + esc(openModalPlayer.server) + "…</div>";
       requestInventory(openModalPlayer.name, openModalPlayer.server);
     }
   }
 
-  /** Asks the backend agent for a snapshot (queued via the cloud) and polls for the result. */
+  function inventoryMessage(message, retry) {
+    var body = byId("pm-body");
+    if (!body) return;
+    body.innerHTML = '<div class="inv-state"><div class="inv-empty">' + esc(message) + "</div>" +
+      (retry ? '<button class="btn small" id="pm-inv-retry">Retry inventory</button>' : "") +
+      "</div>";
+  }
+
+  /** Queue one fresh snapshot and wait for that exact request to return on a heartbeat. */
   function requestInventory(playerName, serviceName) {
-    var token = { cancelled: false };
+    if (invState) invState.cancelled = true;
+    var token = { cancelled: false, requestId: null, attempts: 0 };
     invState = token;
-    var attempt = 0;
-    function poll() {
-      if (token.cancelled || invState !== token || !openModalPlayer || modalTab !== "inventory") return;
-      if (openModalPlayer.name !== playerName || openModalPlayer.server !== serviceName) return;
-      api("/bridge/players/inventory?service=" + encodeURIComponent(serviceName) + "&player=" + encodeURIComponent(playerName))
-        .then(function (snapshot) {
-          if (token.cancelled || invState !== token) return;
-          renderInventory(snapshot);
-        })
-        .catch(function () {
-          if (token.cancelled || invState !== token) return;
-          attempt++;
-          if (attempt > 8) {
-            var body = byId("pm-body");
-            if (body) body.innerHTML = '<div class="inv-empty">No snapshot arrived — is an up-to-date agent online on ' + esc(serviceName) + "?</div>";
-            return;
-          }
-          if (attempt === 1) {
-            api("/bridge/players", { method: "POST", body: form({ player: [playerName], action: ["inventory"] }) }).catch(function () {});
-          }
-          setTimeout(poll, 2500);
-        });
+    inventoryMessage("Requesting a fresh inventory from " + serviceName + "…", false);
+
+    function current() {
+      return !token.cancelled && invState === token && openModalPlayer && modalTab === "inventory" &&
+        openModalPlayer.name === playerName && openModalPlayer.server === serviceName;
     }
-    poll();
+    function poll() {
+      if (!current() || !token.requestId) return;
+      var url = "/bridge/players/inventory?service=" + encodeURIComponent(serviceName) +
+        "&player=" + encodeURIComponent(playerName) + "&request-id=" + encodeURIComponent(token.requestId);
+      api(url).then(function (snapshot) {
+        if (!current()) return;
+        if (snapshot["request-id"] && snapshot["request-id"] !== token.requestId) {
+          token.attempts++;
+          schedulePoll();
+          return;
+        }
+        renderInventory(snapshot);
+      }).catch(function (error) {
+        if (!current()) return;
+        if (error.status === 422) {
+          inventoryMessage("The agent could not read this inventory: " + error.message, true);
+          return;
+        }
+        if (error.status !== 404) {
+          inventoryMessage("Could not load inventory: " + error.message, true);
+          return;
+        }
+        token.attempts++;
+        if (token.attempts >= 35) {
+          inventoryMessage("No snapshot arrived from " + serviceName + ". Confirm its agent is online and up to date, then retry.", true);
+          return;
+        }
+        schedulePoll();
+      });
+    }
+    function schedulePoll() {
+      if (current()) window.setTimeout(poll, 1200);
+    }
+
+    api("/bridge/players", {
+      method: "POST",
+      body: form({ player: [playerName], action: ["inventory"] }),
+    }).then(function (result) {
+      if (!current()) return;
+      token.requestId = result && result["request-id"];
+      if (!token.requestId) {
+        inventoryMessage("The cloud accepted the request without returning an id. Rebuild the cloud and agent, then retry.", true);
+        return;
+      }
+      inventoryMessage("Waiting for " + serviceName + " to capture this inventory…", false);
+      schedulePoll();
+    }).catch(function (error) {
+      if (current()) inventoryMessage("Could not request inventory: " + error.message, true);
+    });
   }
 
   /** True Minecraft-shaped storage: 9 hotbar slots + 27 backpack slots, no double mapping. */
@@ -604,13 +645,14 @@
         item.lore || [], item.enchantments || [],
       ]));
       var icon = '<img alt="" loading="lazy" src="' + itemIconUrl(item.material) + '">' +
-        '<div class="fallback-item">▚</div>';
+        '<div class="fallback-item">' + esc(materialShortLabel(item.material)) + "</div>";
       var durBar = "";
       if (item.durability !== null && item.durability !== undefined && item.durability < 100) {
         var kind = item.durability <= 20 ? "bad" : item.durability <= 50 ? "warn" : "";
         durBar = '<span class="inv-dur"><span class="' + kind + '" style="width:' + Math.max(4, item.durability) + '%"></span></span>';
       }
-      return '<div class="inv-cell filled" data-tip="' + dataAttr + '">' + icon +
+      return '<div class="inv-cell filled" title="' + esc(item.name || materialLabel(item.material)) +
+        ' ×' + esc(item.count) + '" data-tip="' + dataAttr + '">' + icon +
         (item.count > 1 ? '<span class="inv-count">' + esc(item.count) + "</span>" : "") +
         durBar +
         "</div>";
@@ -636,9 +678,7 @@
           '<div class="inv-grid hotbar">' + hotbar + "</div>" +
         "</div>" +
       "</div>" +
-      '<div class="inv-meta">Snapshot captured ' + esc(captured || "just now") + " · hover an item for details</div>" +
-      '<div class="inv-render" id="inv-render"></div>';
-    loadRenderedInventory(snapshot, bySlot);
+      '<div class="inv-meta">Snapshot captured ' + esc(captured || "just now") + " · hover an item for details</div>";
     // CSP-safe item-icon fallback: the letter tile shows when the texture CDN is unreachable.
     Array.prototype.forEach.call(body.querySelectorAll(".inv-cell img"), function (image) {
       image.addEventListener("error", function () {
@@ -647,6 +687,13 @@
         if (fallback) fallback.style.display = "flex";
       });
     });
+  }
+
+  /** Compact texture-free slot label so inventory remains legible if the item CDN is unavailable. */
+  function materialShortLabel(material) {
+    var words = String(material || "item").replace(/^minecraft:/, "").split("_");
+    return words.length > 1 ? words.map(function (word) { return word.charAt(0); }).join("").slice(0, 3).toUpperCase()
+      : words[0].slice(0, 3).toUpperCase();
   }
 
   /** Material id → readable label: netherite_pickaxe → Netherite Pickaxe. */
@@ -659,67 +706,6 @@
   /** Item icon from api.minecraftitems.xyz (official-style textures, CSP-allowed). */
   function itemIconUrl(material) {
     return ITEM_API + "/api/item/" + encodeURIComponent(String(material || "stone").toLowerCase()) + "/size=3";
-  }
-
-  /** Second look, straight from the same API: a full player-inventory screen with the player's
-   * skin head, armor, storage and hotbar rendered by the API itself. Built from the snapshot
-   * slots; skipped when the browser cannot reach the API (the slot grid above still shows). */
-  function loadRenderedInventory(snapshot, bySlot) {
-    var holder = byId("inv-render");
-    if (!holder) return;
-    var pick = function (slot) {
-      var item = bySlot[slot];
-      return item ? materialForApi(item.material) : undefined;
-    };
-    var inventory = {};
-    var hasInventory = false;
-    for (var slot = 10; slot <= 36; slot++) {
-      var material = pick(String(slot));
-      if (material) { inventory[String(slot - 10)] = material; hasInventory = true; }
-    }
-    var hotbar = {};
-    var hasHotbar = false;
-    for (var bar = 1; bar <= 9; bar++) {
-      var hotMaterial = pick(String(bar));
-      if (hotMaterial) { hotbar[String(bar - 1)] = hotMaterial; hasHotbar = true; }
-    }
-    var payload = {
-      playerName: openModalPlayer ? openModalPlayer.name : undefined,
-      helmet: pick("helmet"),
-      chestplate: pick("chestplate"),
-      leggings: pick("leggings"),
-      boots: pick("boots"),
-      offhand: pick("offhand"),
-      inventory: hasInventory ? inventory : undefined,
-      hotbar: hasHotbar ? hotbar : undefined,
-    };
-    if (!hasInventory && !hasHotbar && !payload.helmet && !payload.chestplate &&
-        !payload.leggings && !payload.boots && !payload.offhand) return;
-    fetch(ITEM_API + "/api/gui/player?scale=3", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    }).then(function (response) {
-      if (!response.ok) throw new Error("render failed");
-      return response.blob();
-    }).then(function (blob) {
-      if (!byId("inv-render")) return;
-      var image = document.createElement("img");
-      image.alt = "Rendered inventory";
-      image.src = URL.createObjectURL(blob);
-      holder.appendChild(image);
-      var note = document.createElement("div");
-      note.className = "inv-render-note";
-      note.textContent = "Rendered view — the same snapshot as the grid above.";
-      holder.appendChild(note);
-    }).catch(function () {
-      // Grid view above already covers it; the render is a bonus.
-    });
-  }
-
-  /** Strips a namespaced id (minecraft:diamond_sword) down to what the API expects. */
-  function materialForApi(material) {
-    return String(material || "").replace(/^minecraft:/, "").toLowerCase();
   }
 
   // ---- floating item tooltip ------------------------------------------------

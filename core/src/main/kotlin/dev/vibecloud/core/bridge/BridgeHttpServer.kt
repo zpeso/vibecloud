@@ -1030,12 +1030,17 @@ class BridgeHttpServer(
                 respond(exchange, 400, errorJson("requires 'service' and 'player'"))
                 return
             }
-            val snapshot = inventorySnapshots[serviceName.lowercase() to playerName.lowercase()]
-            if (snapshot == null) {
-                respond(exchange, 404, errorJson("no inventory snapshot yet — request one and retry in a few seconds"))
+            val key = serviceName.lowercase() to playerName.lowercase()
+            val snapshot = inventorySnapshots[key]
+            if (snapshot == null || (query["request-id"]?.trim()?.takeIf { it.isNotEmpty() }?.let { it != snapshot.requestId } == true)) {
+                respond(exchange, 404, errorJson("inventory snapshot is still pending"))
                 return
             }
-            respond(exchange, 200, snapshot)
+            if (snapshot.error != null) {
+                respond(exchange, 422, errorJson(snapshot.error))
+                return
+            }
+            respond(exchange, 200, snapshot.document)
         } catch (failure: IOException) {
             logger.debug("Player inventory request failed: ${failure.message}")
         } finally {
@@ -1043,8 +1048,14 @@ class BridgeHttpServer(
         }
     }
 
-    /** Last inventory snapshot JSON per (service, player), keyed lowercase. */
-    private val inventorySnapshots = java.util.concurrent.ConcurrentHashMap<Pair<String, String>, String>()
+    private data class StoredInventorySnapshot(
+        val requestId: String,
+        val document: String,
+        val error: String?,
+    )
+
+    /** Last inventory snapshot per (service, player), keyed lowercase and correlated by request id. */
+    private val inventorySnapshots = java.util.concurrent.ConcurrentHashMap<Pair<String, String>, StoredInventorySnapshot>()
 
     /**
      * Serializes one decoded item entry (`slot|material|count|durability|name|lore|enchants`)
@@ -1109,17 +1120,27 @@ class BridgeHttpServer(
             val requestId = inspection.substring(0, separator)
             val payload = inspection.substring(separator + 1)
             val pending = pendingInspections.remove(requestId) ?: return@forEach
-            if (payload == "offline" || payload.startsWith("error\u0002")) return@forEach
-            val items = payload.split('\u0001')
-                .filter { it.isNotBlank() }
-                .mapNotNull(::inventoryItemJson)
+            val error = when {
+                payload == "offline" -> "player is no longer online"
+                payload.startsWith("error\u0002") -> payload.substringAfter("error\u0002").ifBlank { "agent failed to capture inventory" }
+                else -> null
+            }
+            val items = if (error == null) {
+                payload.split('\u0001')
+                    .filter { it.isNotBlank() }
+                    .mapNotNull(::inventoryItemJson)
+            } else {
+                emptyList()
+            }
             val document = JsonWriter.obj(
                 "service" to JsonWriter.str(serviceName),
                 "player" to JsonWriter.str(pending),
+                "request-id" to JsonWriter.str(requestId),
                 "captured-at" to JsonWriter.num(Instant.now(clock).epochSecond),
                 "items" to JsonWriter.arr(items),
             )
-            inventorySnapshots[serviceName.lowercase() to pending.lowercase()] = document
+            inventorySnapshots[serviceName.lowercase() to pending.lowercase()] =
+                StoredInventorySnapshot(requestId, document, error)
         }
     }
 
