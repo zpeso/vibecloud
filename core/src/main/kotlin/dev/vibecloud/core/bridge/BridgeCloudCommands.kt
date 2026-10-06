@@ -39,13 +39,15 @@ class BridgeCloudCommands(
         when (args.firstOrNull()?.lowercase()) {
             null, "info" -> info()
             "groups" -> groups()
-            "group" -> when (args.getOrNull(1)?.lowercase()) {
-                null -> groups()
-                "start" -> startInGroup(args.getOrNull(2))
-                "delete" -> deleteGroup(args.getOrNull(2))
-                "version" -> switchGroupVersion(args.drop(2))
-                "memory" -> setGroupMemory(args.drop(2))
-                else -> listOf(error("Usage: /cloud group <start|delete|version|memory>"))
+            "group" -> when {
+                args.getOrNull(2)?.equals("restart", ignoreCase = true) == true -> restartGroup(args.getOrNull(1))
+                args.getOrNull(1)?.equals("restart", ignoreCase = true) == true -> restartGroup(args.getOrNull(2))
+                args.getOrNull(1) == null -> groups()
+                args[1].equals("start", ignoreCase = true) -> startInGroup(args.getOrNull(2))
+                args[1].equals("delete", ignoreCase = true) -> deleteGroup(args.getOrNull(2))
+                args[1].equals("version", ignoreCase = true) -> switchGroupVersion(args.drop(2))
+                args[1].equals("memory", ignoreCase = true) -> setGroupMemory(args.drop(2))
+                else -> listOf(error("Usage: /cloud group <start|delete|version|memory> <name> or /cloud group <name> restart"))
             }
             "services" -> services()
             "service", "ser" -> serviceDetail(args.getOrNull(1))
@@ -72,9 +74,19 @@ class BridgeCloudCommands(
             previous.isEmpty() -> SUBCOMMANDS.filter { it.startsWith(current, ignoreCase = true) }
 
             previous.size == 1 && previous[0].equals("group", true) ->
-                listOf("start", "delete", "version", "memory").filter { it.startsWith(current, ignoreCase = true) }
+                (listOf("start", "delete", "version", "memory") +
+                        runCatching { groups.all().map { it.name } }.getOrDefault(emptyList()))
+                    .filter { it.startsWith(current, ignoreCase = true) }
 
-            previous.size == 2 && previous[0].equals("group", true) && previous[1] in GROUP_NAME_SUBCOMMANDS ->
+            previous.size == 2 && previous[0].equals("group", true) &&
+                    groups.all().any { it.name.equals(previous[1], ignoreCase = true) } ->
+                listOf("restart").filter { it.startsWith(current, ignoreCase = true) }
+
+            previous.size == 1 && previous[0].equals("group", true) &&
+                    groups.all().any { it.name.equals(current, ignoreCase = true) } ->
+                listOf("restart")
+
+            previous.size == 2 && previous[0].equals("group", true) && previous[1].lowercase() in GROUP_NAME_SUBCOMMANDS ->
                 runCatching { groups.all().map { it.name } }.getOrDefault(emptyList())
                     .filter { it.startsWith(current, ignoreCase = true) }
 
@@ -181,6 +193,36 @@ class BridgeCloudCommands(
             listOf(error(failure.message ?: "Service '${known.name}' cannot be $verb right now"))
         } catch (failure: IllegalArgumentException) {
             listOf(error(failure.message ?: "Invalid request"))
+        }
+    }
+
+    /** Restarts every existing service in the selected group, continuing after individual failures. */
+    private fun restartGroup(name: String?): List<String> {
+        if (name == null) return listOf(error("Usage: /cloud group <name> restart"))
+        return runBlocking {
+            val group = groups.get(name.trim().lowercase())
+                ?: return@runBlocking listOf(error("Group '$name' does not exist"))
+            val groupServices = services.all().filter { it.groupName == group.name }.sortedBy { it.name }
+            if (groupServices.isEmpty()) return@runBlocking listOf(dim("Group '${group.name}' has no services to restart."))
+
+            val failed = mutableListOf<Pair<String, String>>()
+            var restarted = 0
+            groupServices.forEach { service ->
+                try {
+                    services.restart(service.name)
+                    restarted++
+                } catch (failure: Exception) {
+                    failed += service.name to (failure.message ?: "Restart failed")
+                }
+            }
+            buildList {
+                if (failed.isEmpty()) {
+                    add(success("Restarted all $restarted service(s) in group '${group.name}'."))
+                } else {
+                    add(error("Restarted $restarted/${groupServices.size} service(s) in group '${group.name}'."))
+                    failed.forEach { (service, reason) -> add(error("  $service: $reason")) }
+                }
+            }
         }
     }
 

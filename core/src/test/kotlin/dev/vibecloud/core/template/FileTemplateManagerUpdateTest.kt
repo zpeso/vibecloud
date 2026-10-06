@@ -10,15 +10,22 @@ import java.nio.file.Files
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class FileTemplateManagerUpdateTest {
-    private fun service(name: String, directory: java.nio.file.Path) = Service(
+    private fun service(
+        name: String,
+        directory: java.nio.file.Path,
+        groupName: String = "lobby",
+        type: ServerType = ServerType.PAPER,
+        version: String = "26.3",
+    ) = Service(
         id = "id-$name",
         name = name,
-        groupName = "lobby",
-        type = ServerType.PAPER,
-        version = "26.3",
+        groupName = groupName,
+        type = type,
+        version = version,
         state = ServiceState.STOPPED,
         port = 25567,
         directory = directory,
@@ -101,6 +108,73 @@ class FileTemplateManagerUpdateTest {
             manager.updateFromTemplate(service)
 
             assertEquals("plugin", Files.readString(serviceDirectory.resolve("plugins/Cool.jar")))
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `deployment scopes target backends and proxies and are merged during template updates`() = runBlocking {
+        val root = Files.createTempDirectory("template-deployment-scope-test")
+        try {
+            val templateRoot = root.resolve("templates")
+            val services = root.resolve("services")
+            val paperTemplate = templateRoot.resolve("paper/26.3")
+            val velocityTemplate = templateRoot.resolve("velocity/4.0")
+            val everyServer = templateRoot.resolve("every_server")
+            val everyProxy = templateRoot.resolve("every_proxy")
+            val groupOverlay = templateRoot.resolve("groups/lobby")
+            Files.createDirectories(paperTemplate)
+            Files.createDirectories(velocityTemplate)
+            Files.createDirectories(everyServer)
+            Files.createDirectories(everyProxy)
+            Files.createDirectories(groupOverlay)
+            Files.writeString(paperTemplate.resolve("server.jar"), "paper jar")
+            Files.writeString(velocityTemplate.resolve("server.jar"), "velocity jar")
+            Files.writeString(
+                velocityTemplate.resolve("velocity.toml"),
+                """config-version = "2.7"
+bind = "0.0.0.0:25565"
+player-info-forwarding-mode = "modern"
+forwarding-secret-file = "forwarding.secret"
+
+[servers]
+
+[forced-hosts]
+""",
+            )
+            Files.writeString(everyServer.resolve("scope.txt"), "backend")
+            Files.writeString(everyServer.resolve("backend-only.txt"), "backend only")
+            Files.writeString(everyProxy.resolve("scope.txt"), "proxy")
+            Files.writeString(everyProxy.resolve("proxy-only.txt"), "proxy only")
+            Files.writeString(groupOverlay.resolve("scope.txt"), "group")
+            val manager = FileTemplateManager(
+                templateRoot = templateRoot,
+                serviceRoot = services,
+                adapters = defaultServerAdapters(),
+                runtime = runtime(),
+            )
+            Files.createDirectories(services)
+            val backendDirectory = services.resolve("lobby-1")
+            val backend = service("lobby-1", backendDirectory)
+
+            manager.provision(backend)
+
+            assertEquals("group", Files.readString(backendDirectory.resolve("scope.txt")))
+            assertEquals("backend only", Files.readString(backendDirectory.resolve("backend-only.txt")))
+            assertFalse(Files.exists(backendDirectory.resolve("proxy-only.txt")))
+            Files.writeString(everyServer.resolve("updated.txt"), "new shared backend file")
+            manager.updateFromTemplate(backend)
+            assertEquals("new shared backend file", Files.readString(backendDirectory.resolve("updated.txt")))
+
+            val proxyDirectory = services.resolve("proxy-1")
+            val proxy = service("proxy-1", proxyDirectory, "proxy", ServerType.VELOCITY, "4.0")
+            manager.provision(proxy)
+
+            assertEquals("proxy", Files.readString(proxyDirectory.resolve("scope.txt")))
+            assertEquals("proxy only", Files.readString(proxyDirectory.resolve("proxy-only.txt")))
+            assertFalse(Files.exists(proxyDirectory.resolve("backend-only.txt")))
+            assertFalse(Files.exists(proxyDirectory.resolve("updated.txt")))
         } finally {
             root.toFile().deleteRecursively()
         }

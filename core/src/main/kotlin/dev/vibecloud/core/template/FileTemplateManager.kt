@@ -236,15 +236,18 @@ connection_throttle: 4000
 
         try {
             copyTemplate(source, service.directory)
-            // Group overlay layer: templates/groups/<group>/ is copied on top of the shared build
-            // template so each group can ship its own plugins and configs while the jar cache and
-            // auto-installed builds stay shared between all groups of the same type + version.
-            // Non-static services are wiped before this runs, so the result is always exactly
-            // build template (base) + group overlay (top) + adapter-managed files — never more.
+            // Deployment layers are applied from broadest to most specific: shared build,
+            // every backend/proxy of the matching type, then the service's group overlay.
+            // Adapter-managed files are applied last and remain cloud-owned.
+            val sharedLayer = sharedDeploymentDirectory(service.type)
+            if (Files.isDirectory(sharedLayer, LinkOption.NOFOLLOW_LINKS)) {
+                copyTemplate(sharedLayer, service.directory, overwrite = true)
+            }
             val overlay = groupOverlayDirectory(service.groupName)
             if (Files.isDirectory(overlay, LinkOption.NOFOLLOW_LINKS)) {
                 copyTemplate(overlay, service.directory, overwrite = true)
             }
+
             adapters.get(service.type).configure(
                 service,
                 service.directory,
@@ -255,6 +258,15 @@ connection_throttle: 4000
             deleteRecursively(service.directory)
             if (failure is TemplateException) throw failure
             throw TemplateException("Could not provision ${service.name} from $source: ${failure.message}", failure)
+        }
+    }
+
+    /** Returns `templates/every_server/` for backends and `templates/every_proxy/` for proxies. */
+    private fun sharedDeploymentDirectory(type: ServerType): Path = templateRoot.resolve(
+        if (type.isProxy) "every_proxy" else "every_server",
+    ).normalize().also { directory ->
+        if (!directory.startsWith(templateRoot)) {
+            throw TemplateException("Shared deployment path escapes configured template root: $directory")
         }
     }
 
@@ -279,7 +291,7 @@ connection_throttle: 4000
         val buildTemplate = templateRoot.resolve(type.templateKey).resolve(version)
         val overlay = groupOverlayDirectory(groupName)
         val digest = MessageDigest.getInstance("SHA-256")
-        listOf(buildTemplate, overlay).forEach { root ->
+        listOf(buildTemplate, sharedDeploymentDirectory(type), overlay).forEach { root ->
             if (!Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS)) return@forEach
             Files.walkFileTree(root, object : SimpleFileVisitor<Path>() {
                 override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
@@ -312,6 +324,10 @@ connection_throttle: 4000
         // template fingerprint is only tracked in memory, so a merge always runs after a restart).
         // A missing file is still re-seeded from the template.
         copyTemplate(source, service.directory, overwrite = true, skipExisting = PROTECTED_SERVICE_FILES)
+        val sharedLayer = sharedDeploymentDirectory(service.type)
+        if (Files.isDirectory(sharedLayer, LinkOption.NOFOLLOW_LINKS)) {
+            copyTemplate(sharedLayer, service.directory, overwrite = true, skipExisting = PROTECTED_SERVICE_FILES)
+        }
         val overlay = groupOverlayDirectory(service.groupName)
         if (Files.isDirectory(overlay, LinkOption.NOFOLLOW_LINKS)) {
             copyTemplate(overlay, service.directory, overwrite = true, skipExisting = PROTECTED_SERVICE_FILES)

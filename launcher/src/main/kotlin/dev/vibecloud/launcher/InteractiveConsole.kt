@@ -111,8 +111,7 @@ class InteractiveConsole(private val cloud: Cloud) : AutoCloseable {
 /** Context-aware completion: commands, subcommands, then live group/service names, then flags. */
 internal class SmartCompleter(private val cloud: Cloud) : Completer {
     override fun complete(reader: LineReader, line: ParsedLine, candidates: MutableList<Candidate>) {
-        val words = line.words().filter { it.isNotBlank() }
-        val soFar = words.dropLast(1)
+        val soFar = line.words().dropLast(1).filter { it.isNotBlank() }
         val current = line.word().orEmpty()
 
         when {
@@ -120,52 +119,77 @@ internal class SmartCompleter(private val cloud: Cloud) : Completer {
                 candidates += Candidate(spec.name, spec.name, null, spec.description, null, null, true)
             }
 
-            soFar[0] == "group" && soFar.size == 1 -> addSubCommands("group", candidates)
-            soFar[0] in listOf("service", "ser") && soFar.size == 1 -> addSubCommands("service", candidates)
-            soFar[0] == "cloud" && soFar.size == 1 -> addSubCommands("cloud", candidates)
-            soFar[0] == "service" && soFar.size == 2 && soFar[1] == "create" ||
-                soFar[0] == "ser" && soFar.size == 2 && soFar[1] == "create" ->
+            soFar[0] == "group" && soFar.size == 1 -> {
+                addSubCommands("group", candidates)
+                cloud.groups.all().forEach { group ->
+                    candidates += Candidate(group.name, group.name, "group", "group", null, null, true)
+                }
+            }
+
+            soFar[0] == "group" && soFar.size == 2 && soFar[1].equals("version", ignoreCase = true) ->
                 cloud.groups.all().forEach { group ->
                     candidates += Candidate(group.name, group.name, "group", "group", null, null, true)
                 }
 
-            soFar[0] in TARGET_COMMANDS && soFar.size == 2 && soFar[1] in TARGET_SUBCOMMANDS ->
+            soFar[0] == "group" && soFar.size == 2 && soFar[1].lowercase() in setOf("info", "delete", "start") ->
+                cloud.groups.all().forEach { group ->
+                    candidates += Candidate(group.name, group.name, "group", "group", null, null, true)
+                }
+
+            soFar[0] == "group" && soFar.size == 2 &&
+                    cloud.groups.all().any { it.name.equals(soFar[1], ignoreCase = true) } ->
+                candidates += Candidate("restart", "restart", null, "Restart all services in this group", null, null, true)
+
+            soFar[0] == "group" && soFar.size == 3 && soFar[1].equals("version", ignoreCase = true) ->
+                groupVersionSuggestions(cloud.groups.all().firstOrNull { it.name.equals(soFar[2], ignoreCase = true) })
+                    .forEach { candidate -> candidates += Candidate(candidate, candidate, "version", null, null, null, true) }
+
+            soFar[0] in listOf("service", "ser") && soFar.size == 1 -> {
+                addServiceCommands(candidates)
                 cloud.services.all().forEach { service ->
-                    candidates += Candidate(
-                        service.name,
-                        service.name,
-                        service.groupName,
-                        service.state.name.lowercase() + " · port " + service.port,
-                        null,
-                        null,
-                        true,
-                    )
+                    candidates += Candidate(service.name, service.name, service.groupName, service.state.name.lowercase(), null, null, true)
                 }
+            }
 
-            soFar[0] == "group" && soFar.size == 2 && soFar[1] in listOf("info", "delete", "start", "version") ->
+            soFar[0] in listOf("service", "ser") && soFar.size == 2 && soFar[1].equals("create", ignoreCase = true) ->
                 cloud.groups.all().forEach { group ->
                     candidates += Candidate(group.name, group.name, "group", "group", null, null, true)
                 }
 
-            soFar[0] == "group" && soFar[1] == "version" && soFar.size == 3 ->
-                groupVersionSuggestions(cloud.groups.all().firstOrNull { it.name == soFar[2] }).forEach { candidate ->
-                    candidates += Candidate(candidate, candidate, "version", null, null, null, true)
-                }
+            soFar[0] in listOf("service", "ser") && soFar.size == 2 &&
+                    cloud.services.all().any { it.name.equals(soFar[1], ignoreCase = true) } ->
+                addServiceActions(candidates)
 
-            soFar[0] == "group" && soFar[1] == "create" && current.startsWith("-") ->
+            soFar[0] == "cloud" && soFar.size == 1 -> addSubCommands("cloud", candidates)
+
+            soFar[0] == "group" && soFar.getOrNull(1)?.equals("create", ignoreCase = true) == true && current.startsWith("-") ->
                 CommandCatalog.flags.forEach { (flag, description) ->
                     candidates += Candidate(flag, flag, "flag", description, null, null, true)
                 }
 
-            soFar.contains("--type") && soFar[0] == "group" && soFar[1] == "create" ->
+            soFar.contains("--type") && soFar[0] == "group" && soFar.getOrNull(1)?.equals("create", ignoreCase = true) == true ->
                 ServerType.entries.forEach { type ->
                     candidates += Candidate(type.name, type.name, "server-type", null, null, null, true)
                 }
         }
     }
 
+    private fun addServiceActions(candidates: MutableList<Candidate>) {
+        listOf("info", "start", "stop", "restart", "screen", "delete").forEach { sub ->
+            candidates += Candidate(sub, sub, null, "Service $sub", null, null, true)
+        }
+    }
+
+    private fun addServiceCommands(candidates: MutableList<Candidate>) {
+        CommandCatalog.find("service")?.subcommands
+            ?.filter { it.name in setOf("list", "create") }
+            ?.forEach { sub ->
+                candidates += Candidate(sub.name, sub.name, null, sub.description, null, null, true)
+            }
+    }
+
     private fun addSubCommands(commandName: String, candidates: MutableList<Candidate>) {
-        CommandCatalog.find(commandName)?.subcommands?.forEach { sub ->
+        CommandCatalog.find(commandName)?.subcommands?.filterNot { it.name.startsWith("<") }?.forEach { sub ->
             candidates += Candidate(sub.name, sub.name, null, sub.description, null, null, true)
         }
     }
@@ -174,11 +198,6 @@ internal class SmartCompleter(private val cloud: Cloud) : Completer {
     private fun groupVersionSuggestions(group: dev.vibecloud.api.group.Group?): List<String> {
         val type = group?.type ?: return emptyList()
         return runCatching { cloud.templates.availableVersions(type) }.getOrDefault(emptyList())
-    }
-
-    private companion object {
-        val TARGET_SUBCOMMANDS = setOf("screen", "start", "stop", "restart", "info", "delete")
-        val TARGET_COMMANDS = listOf("service", "ser")
     }
 }
 

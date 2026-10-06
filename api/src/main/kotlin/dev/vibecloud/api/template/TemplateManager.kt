@@ -15,13 +15,14 @@ interface TemplateManager {
     suspend fun provision(service: Service)
 
     /**
-     * A cheap fingerprint of a group's template sources (build template + group overlay). Equal
-     * fingerprints mean the template content is unchanged, so services need no refresh.
+     * A cheap fingerprint of a group's template sources (build template + applicable every_server
+     * or every_proxy layer + group overlay). Equal fingerprints mean the template content is
+     * unchanged, so services need no refresh.
      */
     fun templateFingerprint(type: ServerType, version: String, groupName: String): String
 
     /**
-     * Copies the current template (build template + group overlay) **over** an existing service
+     * Copies the current template (build template + applicable shared deployment layer + group overlay) **over** an existing service
      * directory without deleting unknown files. Used to propagate template updates to static
      * services on start: modified/added files are replaced, worlds and plugin data survive.
      * Falls back to [provision] when the service directory does not exist yet.

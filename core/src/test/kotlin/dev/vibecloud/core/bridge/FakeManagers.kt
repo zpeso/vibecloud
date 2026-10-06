@@ -10,7 +10,7 @@ import java.nio.file.Path
 import java.time.Instant
 
 /** In-memory [ServiceManager] recording lifecycle calls for assertions. */
-internal class FakeServiceManager(vararg initial: Service) : ServiceManager {
+internal open class FakeServiceManager(vararg initial: Service) : ServiceManager {
     private val services = LinkedHashMap<String, Service>()
 
     init {
@@ -46,7 +46,7 @@ internal class FakeServiceManager(vararg initial: Service) : ServiceManager {
         setState(name, ServiceState.STOPPED)
     }
 
-    override suspend fun restart(name: String) {
+    open override suspend fun restart(name: String) {
         requireKnown(name)
         restartedNames += name
         setState(name, ServiceState.STARTING)

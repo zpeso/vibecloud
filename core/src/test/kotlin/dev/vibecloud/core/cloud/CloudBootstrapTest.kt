@@ -57,6 +57,8 @@ class CloudBootstrapTest {
 
         try {
             val templates = root.resolve("templates")
+            assertTrue(templates.resolve("every_server").exists(), "every_server folder should exist after bootstrap")
+            assertTrue(templates.resolve("every_proxy").exists(), "every_proxy folder should exist after bootstrap")
             assertTrue(templates.resolve("groups/lobby").exists(), "lobby overlay folder should exist after bootstrap")
             assertTrue(templates.resolve("groups/proxy").exists(), "proxy overlay folder should exist after bootstrap")
         } finally {

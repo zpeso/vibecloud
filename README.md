@@ -25,7 +25,7 @@ built-in web dashboard, a live HTTP bridge, and a plugin API. One zip, one confi
 
 1. **Download** the latest `vibecloud-<version>.zip` from the [releases page](https://github.com/zpeso/vibecloud/releases) and extract it anywhere.
 2. **Run it** — `bin/vibecloud` (Linux) or `bin\vibecloud.bat` (Windows). Java 25 on `PATH` is the only requirement. The cloud creates `config.yml`, tokens, and directories on first start.
-3. **Create a network** — `group create lobby` walks you through type → version → build → counts (`exit` cancels at any prompt). Then `service create lobby` and `service start lobby-1`. Repeat with a `VELOCITY` group for your proxy; wiring is automatic.
+3. **Create a network** — `group create lobby` walks you through type → version → build → counts (`exit` cancels at any prompt). Then `service create lobby` and `service lobby-1 start`. Repeat with a `VELOCITY` group for your proxy; wiring is automatic.
 4. **Open the dashboard** — `http://127.0.0.1:25580/` and sign in with the contents of `bridge.token`.
 
 ## Supported software & versions

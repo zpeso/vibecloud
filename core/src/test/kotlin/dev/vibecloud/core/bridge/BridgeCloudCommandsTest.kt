@@ -184,6 +184,13 @@ class BridgeCloudCommandsTest {
     }
 
     @Test
+    fun `group restart completion suggests existing groups`() {
+        val f = fixture(running("lobby-1", "lobby"))
+        assertEquals(listOf("lobby"), f.commands.complete(listOf("group", "l")))
+        assertEquals(listOf("restart"), f.commands.complete(listOf("group", "lobby", "")))
+    }
+
+    @Test
     fun `group start reuses an existing stopped service of the group`() {
         val f = fixture(
             service("lobby-1", "lobby", ServerType.PAPER, ServiceState.STOPPED, 25566),
@@ -224,11 +231,62 @@ class BridgeCloudCommandsTest {
     }
 
     @Test
-    fun `completion suggests group subcommands and arguments`() {
+    fun `completion suggests group subcommands names and group restart`() {
         val f = fixture(running("lobby-1", "lobby"))
-        assertEquals(listOf("start", "delete", "version", "memory"), f.commands.complete(listOf("group", "")))
+        assertTrue(f.commands.complete(listOf("group", "")).containsAll(listOf("start", "delete", "version", "memory", "lobby")))
         assertEquals(listOf("lobby"), f.commands.complete(listOf("group", "start", "l")))
         assertEquals(listOf("lobby"), f.commands.complete(listOf("group", "delete", "l")))
+        assertEquals(listOf("restart"), f.commands.complete(listOf("group", "lobby", "")))
+    }
+
+    @Test
+    fun `group restart restarts every service in the named group only`() {
+        val f = fixture(
+            running("lobby-1", "lobby"),
+            service("lobby-2", "lobby", ServerType.PAPER, ServiceState.STOPPED, 25567),
+            running("citybuild-1", "citybuild", port = 25568),
+        )
+
+        val lines = f.commands.execute(listOf("group", "lobby", "restart"))
+
+        assertEquals(listOf("lobby-1", "lobby-2"), f.services.restartedNames)
+        assertTrue(lines.single().contains("Restarted all 2 service(s)"), lines.joinToString())
+    }
+
+    @Test
+    fun `group restart supports subcommand-first form and reports unknown groups`() {
+        val f = fixture(running("lobby-1", "lobby"))
+
+        val lines = f.commands.execute(listOf("group", "restart", "lobby"))
+        assertEquals(listOf("lobby-1"), f.services.restartedNames)
+        assertTrue(lines.single().contains("Restarted all 1 service(s)"), lines.joinToString())
+
+        assertTrue(f.commands.execute(listOf("group", "missing", "restart")).single().contains("does not exist"))
+    }
+
+    @Test
+    fun `group restart continues after a service restart fails`() {
+        val first = running("lobby-1", "lobby")
+        val second = running("lobby-2", "lobby", port = 25567)
+        val services = object : FakeServiceManager(first, second) {
+            override suspend fun restart(name: String) {
+                if (name == "lobby-1") error("startup failed")
+                super.restart(name)
+            }
+        }
+        val commands = BridgeCloudCommands(
+            services = services,
+            groups = FakeGroupManager(group("lobby")),
+            tracker = ServicePlayerTracker(),
+            commandQueue = BridgeCommandQueue(),
+            sendConsoleCommand = { _, _ -> true },
+        )
+
+        val lines = commands.execute(listOf("group", "lobby", "restart"))
+
+        assertEquals(listOf("lobby-2"), services.restartedNames)
+        assertTrue(lines.first().contains("1/2"), lines.joinToString())
+        assertTrue(lines.any { it.contains("lobby-1") && it.contains("startup failed") })
     }
 
     @Test

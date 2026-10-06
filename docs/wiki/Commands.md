@@ -32,6 +32,7 @@ input line, **Ctrl+L** clears the screen. The prompt is `◆ vibecloud ❯`.
 | `group info <name>` | Details for one group incl. its instances and states |
 | `group create [name]` | Guided wizard (see below) |
 | `group start <name>` | Start another service of the group — reuses stopped/crashed records first |
+| `group <name> restart` | Restart every provisioned service in the group |
 | `group version <name> <version>` | Switch the group's version within its own system (paper → paper) |
 | `group delete <name>` | Stop + delete **every service of the group**, then delete the group |
 
@@ -58,15 +59,15 @@ done, so you can keep typing.
 | Command | Description |
 |---|---|
 | `service list` (alias `ser list`) | Table of all services (group, state, type, version, port) |
-| `service info <name>` | Details incl. directory, exit code, last error, next auto-retry |
-| `service create <group>` | Provision a new service from the group's pinned build + overlay |
-| `service start <name>` | Launch it (static services get template updates merged in automatically) |
-| `service stop <name>` | Graceful stop |
-| `service restart <name>` | Stop, then start |
-| `service screen <name>` | Attach to the live server console; type `exit` to detach |
-| `service delete <name>` | Stop, then permanently delete the record + directory, free the port |
+| `service <name> info` | Details incl. directory, exit code, last error, next auto-retry |
+| `service create <group>` | Provision a new service from the group's pinned build + overlays |
+| `service <name> start` | Launch it (static services get template updates merged in automatically) |
+| `service <name> stop` | Graceful stop |
+| `service <name> restart` | Stop, then start |
+| `service <name> screen` | Attach to the live server console; type `exit` to detach |
+| `service <name> delete` | Stop, then permanently delete the record + directory, free the port |
 
-`ser` is a full alias: `ser list`, `ser screen lobby-1`, and Tab completion all work.
+`ser` is an alias: `ser list`, `ser lobby-1 screen`, and Tab completion all work. Group restarts run in the background and report per-service failures without aborting the rest of the group.
 
 Service names use the lowest free suffix: `lobby-1`, `lobby-2`, … A name is not reused while its record or directory
 still exists.
@@ -80,6 +81,7 @@ cloud's, relayed verbatim — so lifecycle actions work from anywhere in the net
 /cloud info                      Overview: running/starting/crashed, players online
 /cloud groups                    Group table
 /cloud group start <name>        Start another service of a group
+/cloud group <name> restart      Restart every provisioned service in a group
 /cloud group version <n> <v>     Switch the group's version (same system only)
 /cloud group delete <name>       Delete a group with all of its services
 /cloud services                  Service table

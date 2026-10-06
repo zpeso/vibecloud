@@ -58,9 +58,11 @@ class CloudBootstrap(
         val repository = CloudConfigRepository(configFile)
         val config = repository.loadOrCreate()
         Files.createDirectories(config.directories.templates)
+        Files.createDirectories(config.directories.templates.resolve("every_server"))
+        Files.createDirectories(config.directories.templates.resolve("every_proxy"))
         Files.createDirectories(config.directories.services)
         // Keep per-group overlay folders visible out of the box: templates/groups/<group>/ is
-        // layered on top of the shared build template during provisioning. Folders are cheap;
+        // layered on top of the shared deployment scope during provisioning. Folders are cheap;
         // an overlay only takes effect when the matching group actually exists.
         config.groups.forEach { group ->
             Files.createDirectories(config.directories.templates.resolve("groups").resolve(group.name))

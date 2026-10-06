@@ -39,7 +39,7 @@ On first start the cloud creates everything it needs next to `config.yml`:
 
 - `bridge.token` — the shared access token for the dashboard and API (**treat it like a password**)
 - `forwarding.secret` — the shared proxy forwarding secret for your network
-- `templates/` and `services/` directories, plus per-group overlay folders
+- `templates/` and `services/` directories, plus `templates/every_server/`, `templates/every_proxy/`, and per-group overlay folders
 - An **empty** `config.yml` — a fresh install starts with zero groups and zero services
 
 You are now looking at the interactive CLI. Type `help` to see everything.
@@ -49,10 +49,10 @@ You are now looking at the interactive CLI. Type `help` to see everything.
 ```text
 group create lobby                # wizard: type → version → build → service counts
 service create lobby              # provisions lobby-1 from the pinned build
-service start lobby-1             # launches it (first start downloads + verifies the jar)
+service lobby-1 start             # launches it (first start downloads + verifies the jar)
 
 group create proxy                # same wizard, choose VELOCITY
-service create proxy && service start proxy-1
+service create proxy && service proxy-1 start
 ```
 
 - The wizard shows live catalog versions/builds with metadata (channel, date, size, SHA-256, Java requirement).
@@ -125,7 +125,9 @@ pinned build. Never delete `bridge.token` while services run — agents re-read 
 | Path | Contents |
 |---|---|
 | `templates/<type>/<build-key>/` | Cached, checksum-verified server jars (shared between groups) |
-| `templates/groups/<group>/` | Per-group overlay copied on top of the template at provisioning |
+| `templates/every_server/` | Shared files copied to all backend servers, not proxies |
+| `templates/every_proxy/` | Shared files copied to all proxies, not backend servers |
+| `templates/groups/<group>/` | Per-group overlay copied last, on top of the shared scope |
 | `services/<name>/` | One provisioned service (worlds, plugins, configs live here) |
 | `bridge.token` | Dashboard/API access token |
 | `forwarding.secret` | Network-wide Velocity forwarding secret |

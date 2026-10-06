@@ -27,6 +27,18 @@ For Velocity, the downloader creates a basic `velocity.toml` if the artifact has
 creates a starter `config.yml`. Review proxy forwarding, backend addresses, authentication, secrets, and firewall rules
 before public use. The defaults are examples, not a secure production network configuration.
 
-The cloud copies a template into each service directory. It assigns a unique listen port in Paper/Spigot
-`server.properties`, Velocity `bind`, and the first Bungee-compatible `host` listener. Paper/Spigot templates may omit
-`server.properties`; one is created. Existing worlds and service files stay with the service, not the shared template.
+The cloud copies a template into each service directory. Shared deployment folders are applied after the build template
+and before the per-group overlay, so more-specific content overrides the shared layers:
+
+```text
+templates/
+├── every_server/       # copied to every backend server (Paper/Spigot), never to proxies
+├── every_proxy/        # copied to every proxy (Velocity/BungeeCord), never to backend servers
+└── groups/<group>/     # copied only to services in that group; highest template-layer priority
+```
+
+These shared folders are merged during provisioning and when a static service refreshes from its template. Non-static
+services are re-provisioned from all applicable layers on each start. The cloud assigns a unique listen port in
+Paper/Spigot `server.properties`, Velocity `bind`, and the first Bungee-compatible `host` listener. Paper/Spigot
+templates may omit `server.properties`; one is created. Existing worlds and service files stay with the service, not
+the shared template.

@@ -29,8 +29,8 @@ cloud.start()   // repairs configs, syncs the proxy, starts desired-state reconc
 cloud.shutdown() // stops all services, drains events, releases the coroutine scope
 ```
 
-- `create()` is blocking and loads/creates `config.yml`, `templates/`, `services/`, and per-group overlay folders
-  (`templates/groups/<group>/`).
+- `create()` is blocking and loads/creates `config.yml`, `templates/`, `services/`, shared deployment folders
+  (`templates/every_server/`, `templates/every_proxy/`), and per-group overlay folders (`templates/groups/<group>/`).
 - `start()`, `reload()`, and `shutdown()` are `suspend` functions; call them from a coroutine or wrap them in
   `runBlocking { ... }` for simple embedding.
 - A stopped cloud cannot be restarted — create a new `Cloud` instance instead.
@@ -275,12 +275,12 @@ interactive console. Output is branded with the cloud prefix (`ᴄʟᴏᴜᴅ »
 /cloud info                      Cloud overview: running/starting/crashed counts, players online
 /cloud groups                    Group table (type, version, desired/max/provisioned)
 /cloud group start <name>        Start another service of a group (reuses stopped records first)
+/cloud group <name> restart      Restart every provisioned service in a group
 /cloud group delete <name>       Delete a group together with all of its services
 /cloud group version <n> <v>     Switch the group's version (same system only): downloads the build,
                                  re-pins every service record, and resyncs the proxy forwarding mode
 /cloud service <name>            Details for one service ('ser' is a shortcut)
 /cloud services                  Service table (group, state, type, port)
-/cloud service <name>            Details for one service ('ser' is a shortcut)
 /cloud players                   Rosters per service
 /cloud send <player> <target>    Transfer a player (service or group#) via the proxy console
 /cloud msg <player> <text>       Send a chat message to a player
@@ -321,7 +321,7 @@ inside the controller (served from the core jar as classpath resources).
   Console (per-service output with auto-refresh and command input), **Host & Health** (host CPU
   load chart, system memory chart, uptime, JVM heap, OS/Java details, per-process CPU), and
   **Activity** (recent service lifecycle events, newest first).
-- **Actions**: start/stop/restart per service, `group start <name>`, player transfers and kicks,
+- **Actions**: start/stop/restart per service, `group start <name>`, `group <name> restart`, player transfers and kicks,
   and the full cloud command surface (with Tab completion) in the top command bar — the same
   authority as the interactive console.
 - **Security hardening**: the shell, stylesheet and script are separate same-origin assets, so the

@@ -21,7 +21,7 @@ class ConsoleCommandHandler(
     private val cloud: Cloud,
     private val logger: Logger,
     private val terminal: InteractiveConsole,
-    /** Runs long commands (group delete, version switches) off the prompt thread. */
+    /** Runs long group operations off the prompt thread. */
     private val commandScope: kotlinx.coroutines.CoroutineScope,
 ) {
     private suspend fun readInput(): String? = withContext(Dispatchers.IO) {
@@ -33,13 +33,16 @@ class ConsoleCommandHandler(
 
     /** Whether [line] dispatches long-running work that should not block the prompt. */
     private fun isAsync(command: String, args: List<String>): Boolean =
-        command == "group" && args.firstOrNull()?.lowercase() in setOf("delete", "version")
+        command == "group" && (
+            args.firstOrNull()?.lowercase() in setOf("delete", "version") ||
+                    args.getOrNull(1)?.equals("restart", ignoreCase = true) == true
+            )
 
     /**
      * Executes a console line. Returns false when the CLI should exit.
      *
-     * Long commands (group delete/version) run in [commandScope] so the prompt stays usable:
-     * deleting a group stops and deletes every service first, which can take many seconds, and
+     * Long commands (group delete/restart, version switches) run in [commandScope] so the prompt stays usable;
+     * operating on every service in a group can take many seconds, and
      * waiting for the summary before the next prompt was bad UX. Output is tagged with the
      * command tag so results stay attributable when interleaved with later commands.
      */
@@ -75,17 +78,19 @@ class ConsoleCommandHandler(
     private fun wantsExit(input: String): Boolean =
         input.trim().lowercase(Locale.ROOT) in setOf("exit", "quit", "cancel", "abort")
 
-    /** Routes group subcommands; delete/version run asynchronously with a [commandTag]. */
+    /** Routes group operations that may take a while off the prompt thread. */
     private suspend fun dispatchGroup(args: List<String>) {
         val sub = args.firstOrNull()?.lowercase()
+        val restartGroup = args.getOrNull(1)?.equals("restart", ignoreCase = true) == true
         if (isAsync("group", args)) {
             val tag = nextTag()
-            val name = args.getOrNull(1) ?: ""
+            val name = if (restartGroup) args.firstOrNull().orEmpty() else args.getOrNull(1).orEmpty()
             commandScope.launch {
                 try {
-                    when (sub) {
-                        "delete" -> deleteGroupCascade(name)
-                        "version" -> switchGroupVersion(args.drop(1))
+                    when {
+                        restartGroup -> restartGroupServices(name, tag)
+                        sub == "delete" -> deleteGroupCascade(name)
+                        sub == "version" -> switchGroupVersion(args.drop(1))
                     }
                 } catch (failure: CancellationException) {
                     throw failure
@@ -96,15 +101,49 @@ class ConsoleCommandHandler(
             }
             println(
                 commandTag(tag) + Cli.dim(
-                    when (sub) {
-                        "delete" -> "Deleting group '${args.getOrNull(1)}' (stops and deletes its services first)..."
-                        else -> "Switching version of '${args.getOrNull(1)}'..."
+                    when {
+                        restartGroup -> "Restarting all services in group '$name'..."
+                        sub == "delete" -> "Deleting group '$name' (stops and deletes its services first)..."
+                        else -> "Switching version of '$name'..."
                     },
                 ),
             )
             return
         }
         handleGroup(args)
+    }
+
+    /** Restarts every provisioned service record in a group, continuing if an individual restart fails. */
+    private suspend fun restartGroupServices(name: String, tag: Int) {
+        val group = cloud.groups.get(name.trim().lowercase(Locale.ROOT))
+            ?: throw NoSuchElementException("Group '$name' does not exist")
+        val services = cloud.services.all().filter { it.groupName == group.name }.sortedBy { it.name }
+        if (services.isEmpty()) {
+            println(commandTag(tag) + Cli.dim("Group '${group.name}' has no services to restart."))
+            return
+        }
+
+        val restarted = mutableListOf<String>()
+        val failed = mutableListOf<Pair<String, String>>()
+        for (service in services) {
+            try {
+                cloud.services.restart(service.name)
+                restarted += service.name
+            } catch (failure: CancellationException) {
+                throw failure
+            } catch (failure: Exception) {
+                failed += service.name to (failure.message ?: failure::class.simpleName.orEmpty())
+            }
+        }
+
+        if (failed.isEmpty()) {
+            println(commandTag(tag) + Cli.success("Restarted all ${restarted.size} service(s) in group '${group.name}'."))
+        } else {
+            println(commandTag(tag) + Cli.warn("Restarted ${restarted.size}/${services.size} service(s) in group '${group.name}'."))
+            failed.forEach { (service, reason) ->
+                println(commandTag(tag) + Cli.error("  $service: $reason"))
+            }
+        }
     }
 
     private var tagCounter = 0
@@ -186,9 +225,9 @@ class ConsoleCommandHandler(
                         ),
                     )
                 }
-                println(Cli.dim("Watch its console with ") + Cli.command("service screen ${service.name}"))
+                println(Cli.dim("Watch its console with ") + Cli.command("service ${service.name} screen"))
             }
-            else -> throw IllegalArgumentException("Usage: group <list|info|create|start|memory|version|delete> [name]")
+            else -> throw IllegalArgumentException("Usage: group <list|info|create|start|memory|version|delete> [name], or group <name> restart")
         }
     }
 
@@ -290,49 +329,57 @@ class ConsoleCommandHandler(
                 }
             }
 
-            "info" -> {
-                val service = serviceArg(args)
-                printServiceInfo(service)
-            }
-
             "create" -> {
                 val group = args.getOrNull(1) ?: throw IllegalArgumentException("Usage: service create <group>")
                 val service = cloud.services.create(group)
                 println(Cli.success("Created ${service.name}") + Cli.dim(" on port ") + Cli.highlight(service.port.toString()))
-                println(Cli.dim("Watch its console with ") + Cli.command("service screen ${service.name}"))
+                println(Cli.dim("Watch its console with ") + Cli.command("service ${service.name} screen"))
+            }
+
+            else -> handleTargetService(args)
+        }
+    }
+
+    /** Service-specific operations use `service <name> <subcommand>`. */
+    private suspend fun handleTargetService(args: List<String>) {
+        val name = args.firstOrNull() ?: throw IllegalArgumentException(
+            "Usage: service <list|create <group>|<name> <info|start|stop|restart|screen|delete>>",
+        )
+        when (args.getOrNull(1)?.lowercase()) {
+            "info" -> {
+                val service = cloud.services.get(name) ?: throw NoSuchElementException("Service '$name' does not exist")
+                printServiceInfo(service)
             }
 
             "start" -> {
-                val name = args.getOrNull(1) ?: throw IllegalArgumentException("Usage: service start <name>")
                 cloud.services.start(name)
                 println(Cli.success("Started service '$name'."))
             }
 
             "stop" -> {
-                val name = args.getOrNull(1) ?: throw IllegalArgumentException("Usage: service stop <name>")
                 cloud.services.stop(name)
                 println(Cli.warn("Stopped service '$name'."))
             }
 
             "restart" -> {
-                val name = args.getOrNull(1) ?: throw IllegalArgumentException("Usage: service restart <name>")
                 cloud.services.restart(name)
                 println(Cli.success("Restarted service '$name'."))
             }
 
             "delete" -> {
-                val name = args.getOrNull(1) ?: throw IllegalArgumentException("Usage: service delete <name>")
                 cloud.services.delete(name)
                 println(Cli.warn("Deleted service '$name'."))
             }
 
-            "screen" -> attachScreen(args)
-            else -> throw IllegalArgumentException("Usage: service <list|info|create|start|stop|restart|delete|screen> [name]")
+            "screen" -> attachScreen(listOf("screen", name))
+            else -> throw IllegalArgumentException(
+                "Usage: service <list|create <group>|<name> <info|start|stop|restart|screen|delete>>",
+            )
         }
     }
 
     private suspend fun attachScreen(args: List<String>) {
-        val name = args.getOrNull(1) ?: throw IllegalArgumentException("Usage: service screen <name>")
+        val name = args.getOrNull(1) ?: throw IllegalArgumentException("Usage: service <name> screen")
         val manager = cloud.services as? dev.vibecloud.core.service.LocalServiceManager
             ?: throw IllegalStateException("Console access is not available for this cloud implementation")
         println(Cli.dim("-- entering " + Cli.info(name) + " console · type ") + Cli.highlight("exit") + Cli.dim(" to detach --"))
@@ -714,11 +761,6 @@ class ConsoleCommandHandler(
         return result
     }
 
-    private fun serviceArg(args: List<String>): Service {
-        val name = args.getOrNull(1) ?: throw IllegalArgumentException("Usage: service info <name>")
-        return cloud.services.get(name) ?: throw NoSuchElementException("Service '$name' does not exist")
-    }
-
     private fun printServiceInfo(service: Service) {
         println(Cli.highlight("Service: ") + Cli.accent(service.name) + Cli.dim(" (${service.id})"))
         println("  Group: ${Cli.info(service.groupName)}")
@@ -789,7 +831,7 @@ class ConsoleCommandHandler(
                     Cli.highlight("Ctrl+L") + Cli.dim(" clears the screen")
         )
         println(
-            Cli.dim("Inside ") + Cli.command("service screen") + Cli.dim(": type ") +
+            Cli.dim("Inside ") + Cli.command("service <name> screen") + Cli.dim(": type ") +
                     Cli.highlight("exit") + Cli.dim(" to detach back to the cloud prompt.")
         )
     }

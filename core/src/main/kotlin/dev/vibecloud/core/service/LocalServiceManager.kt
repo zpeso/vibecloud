@@ -327,7 +327,7 @@ class LocalServiceManager(
                     workingDirectory = starting.directory,
                     isReadyLine = adapter::isReadyLine,
                     onOutput = { output ->
-                        // Full console output is available via 'service screen <name>'; the cloud
+                        // Full console output is available via 'service <name> screen'; the cloud
                         // log stays clean with state transitions only.
                         console.record(starting.name, output.line)
                         bridgeTracker?.onConsoleLine(starting.name, output.line)
@@ -745,7 +745,7 @@ class LocalServiceManager(
         }
         crashedEvent?.let {
             publish(it)
-            logger.error("${it.service.name} crashed: ${it.reason} (exit=${it.exitCode ?: "unknown"}); retry after ${it.service.restartAt} — use 'service screen ${it.service.name}' after start for details")
+            logger.error("${it.service.name} crashed: ${it.reason} (exit=${it.exitCode ?: "unknown"}); retry after ${it.service.restartAt} — use 'service ${it.service.name} screen' after start for details")
         }
         if (stoppedEvent != null || crashedEvent != null) notifyServicesChanged()
     }

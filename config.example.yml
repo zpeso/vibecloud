@@ -1,6 +1,7 @@
 # Group settings are reconciled continuously. Build keys pin exact upstream artifacts.
-# Per-group content lives in optional overlay folders: templates/groups/<group>/ is copied on
-# top of the shared build template at provisioning (e.g. templates/groups/lobby/, templates/groups/proxy/).
+# Shared content: templates/every_server/ reaches every backend (Paper/Spigot), while
+# templates/every_proxy/ reaches every proxy (Velocity/BungeeCord). They are layered over the
+# build template; templates/groups/<group>/ is the final, group-specific overlay.
 directories:
   templates: templates
   services: services
