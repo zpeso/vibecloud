@@ -1,9 +1,12 @@
 package dev.vibecloud.servermobs
 
+import com.github.retrooper.packetevents.protocol.player.TextureProperty
+import com.github.retrooper.packetevents.protocol.player.User
 import org.bukkit.Location
 import org.bukkit.World
 import org.bukkit.command.CommandSender
 import org.bukkit.plugin.Plugin
+import java.util.UUID
 
 /** A single spawned hologram line; removing it despawns the underlying entity. */
 fun interface Hologram {
@@ -29,6 +32,28 @@ interface ServerMobsPlatform {
 
     /** Spawns one hologram line at [location] and returns a handle to remove it. */
     fun spawnHologram(world: World, location: Location, line: String): Hologram
+
+    /**
+     * Sends [user] the packets that make a fake player entity appear at (x,y,z). Modern servers
+     * use `PlayerInfoUpdate` + `SpawnEntity`, while 1.8 needs the legacy `PlayerInfo` +
+     * `SpawnPlayer` packets; both hide the NPC from the tab list when [hideFromTablist].
+     */
+    fun sendNpcSpawn(
+        user: User,
+        entityId: Int,
+        uuid: UUID,
+        name: String,
+        textures: List<TextureProperty>,
+        x: Double,
+        y: Double,
+        z: Double,
+        yaw: Float,
+        pitch: Float,
+        hideFromTablist: Boolean,
+    )
+
+    /** Removes the fake player entity plus its player-info entry from [user]. */
+    fun sendNpcDespawn(user: User, entityId: Int, uuid: UUID, name: String)
 
     companion object {
         const val PREFIX = "<#ed3030>ServerMobs <dark_gray>» <gray>"

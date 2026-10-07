@@ -1,16 +1,7 @@
 package dev.vibecloud.servermobs
 
 import com.github.retrooper.packetevents.PacketEvents
-import com.github.retrooper.packetevents.protocol.entity.type.EntityTypes
 import com.github.retrooper.packetevents.protocol.player.TextureProperty
-import com.github.retrooper.packetevents.protocol.player.UserProfile
-import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerDestroyEntities
-import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityHeadLook
-import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfoRemove
-import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfoUpdate
-import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfoUpdate.Action
-import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfoUpdate.PlayerInfo
-import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSpawnEntity
 import dev.vibecloud.servermobs.model.NpcAction
 import dev.vibecloud.servermobs.model.NpcActionType
 import dev.vibecloud.servermobs.model.NpcData
@@ -24,7 +15,6 @@ import org.bukkit.scheduler.BukkitTask
 import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
 import java.nio.charset.Charset
-import java.util.EnumSet
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -213,37 +203,24 @@ class NpcManager(
 
         fun spawnFor(player: Player) {
             val user = PacketEvents.getAPI().playerManager.getUser(player) ?: return
-            val profile = UserProfile(uuid, data.name, textureProperties())
-            user.sendPacket(
-                WrapperPlayServerPlayerInfoUpdate(
-                    EnumSet.of(Action.ADD_PLAYER),
-                    listOf(PlayerInfo(profile)),
-                ),
+            platform.sendNpcSpawn(
+                user,
+                entityId,
+                uuid,
+                data.name,
+                textureProperties(),
+                data.x,
+                data.y,
+                data.z,
+                data.yaw,
+                data.pitch,
+                config.removeFromTablist,
             )
-            user.sendPacket(
-                WrapperPlayServerSpawnEntity(
-                    entityId,
-                    uuid,
-                    EntityTypes.PLAYER,
-                    packetLocation(),
-                    data.yaw,
-                    0,
-                    null,
-                ),
-            )
-            user.sendPacket(WrapperPlayServerEntityHeadLook(entityId, data.yaw))
-            if (config.removeFromTablist) {
-                val hidden = PlayerInfo(profile).apply { isListed = false }
-                user.sendPacket(
-                    WrapperPlayServerPlayerInfoUpdate(EnumSet.of(Action.UPDATE_LISTED), listOf(hidden)),
-                )
-            }
         }
 
         fun despawnFor(player: Player) {
             val user = PacketEvents.getAPI().playerManager.getUser(player) ?: return
-            user.sendPacket(WrapperPlayServerDestroyEntities(entityId))
-            user.sendPacket(WrapperPlayServerPlayerInfoRemove(uuid))
+            platform.sendNpcDespawn(user, entityId, uuid, data.name)
         }
 
         fun despawnAll() {
@@ -266,15 +243,6 @@ class NpcManager(
         }
 
         fun bukkitLocation(world: World): Location = Location(world, data.x, data.y, data.z)
-
-        private fun packetLocation(): com.github.retrooper.packetevents.protocol.world.Location =
-            com.github.retrooper.packetevents.protocol.world.Location(
-                data.x,
-                data.y,
-                data.z,
-                data.yaw,
-                data.pitch,
-            )
 
         private fun textureProperties(): List<TextureProperty> {
             val skin = data.skin ?: return emptyList()
