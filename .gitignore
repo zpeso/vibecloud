@@ -10,6 +10,8 @@ templates/*/*
 
 # Secrets and runtime state — never commit these.
 config.yml
+# ...but the ServerMobs plugin's default config IS a source resource.
+!servermobs/src/main/resources/config.yml
 bridge.token
 forwarding.secret
 .update-download/

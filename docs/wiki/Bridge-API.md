@@ -1,4 +1,4 @@
-[🏠 Home](Home.md) · [🚀 Installation](Installation.md) · [⌨️ Commands](Commands.md) · [🖥️ Dashboard](Dashboard.md) · **🧩 Bridge API** · [📦 Versions](Versions.md)
+[🏠 Home](Home.md) · [🚀 Installation](Installation.md) · [⌨️ Commands](Commands.md) · [🖥️ Dashboard](Dashboard.md) · **🧩 Bridge API** · [📦 Versions](Versions.md) · [🧑 ServerMobs](ServerMobs.md)
 
 # 🧩 Bridge API (Development)
 

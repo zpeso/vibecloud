@@ -7,10 +7,12 @@ pluginManagement {
 
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-    repositories {
-        mavenCentral()
-        maven("https://repo.papermc.io/repository/maven-public/")
-    }
+repositories {
+    mavenCentral()
+    maven("https://repo.papermc.io/repository/maven-public/")
+    // PacketEvents (shaded into the ServerMobs plugin) is published here, not on Maven Central.
+    maven("https://repo.codemc.io/repository/maven-releases/")
+}
 }
 
 plugins {
@@ -23,4 +25,4 @@ plugins {
 }
 
 rootProject.name = "vibecloud"
-include("api", "common", "core", "bridge", "launcher")
+include("api", "common", "core", "bridge", "servermobs", "launcher")

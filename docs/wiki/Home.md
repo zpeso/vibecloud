@@ -23,6 +23,7 @@ bridge, and a plugin API for your own Minecraft plugins.
 | [🖥️ Dashboard](Dashboard.md) | All dashboard pages, actions, and login/security model |
 | [🧩 Bridge API](Bridge-API.md) | For developers: use the cloud from your plugin or app |
 | [📦 Versions](Versions.md) | Supported server software, Java matrix, version switching |
+| [🧑 ServerMobs](ServerMobs.md) | Bundled NPC plugin: fake players with skins, holograms and click actions |
 
 ## How it fits together
 
@@ -51,6 +52,7 @@ bridge, and a plugin API for your own Minecraft plugins.
 | `common` | Safe YAML configuration, structured logging |
 | `core` | Local implementation: groups, services, templates, catalogs, ports, reconciler, bridge |
 | `bridge` | Paper agent plugin + the `VibeCloud`/`VibeCloudClient` SDK for plugins |
+| `servermobs` | Bundled NPC plugin for backend servers (PacketEvents-based fake players) |
 | `launcher` | Composition root and the interactive CLI |
 
 ## Links

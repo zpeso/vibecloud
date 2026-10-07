@@ -103,7 +103,7 @@ tasks.register("release") {
     group = "distribution"
     description = "Tests, zip, version bump, commit, tag vX.Y.Z, push. Usage: ./gradlew release -Prelease=X.Y.Z"
     dependsOn(
-        ":api:test", ":common:test", ":core:test", ":bridge:test", ":launcher:test",
+        ":api:test", ":common:test", ":core:test", ":bridge:test", ":servermobs:test", ":launcher:test",
         ":launcher:releaseZip",
     )
     doLast {

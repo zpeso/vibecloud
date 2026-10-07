@@ -39,6 +39,18 @@ val syncAgentJar = tasks.register<Copy>("syncAgentJar") {
 }
 tasks.named("installDist") { finalizedBy(syncAgentJar) }
 
+// The ServerMobs plugin is installed by hand on backend servers, so it ships as a ready-to-copy
+// jar in a top-level plugins/ folder of the release (not injected like the agent).
+val serverMobsJarFile = layout.projectDirectory.file("../servermobs/build/libs/ServerMobs.jar")
+val syncServerMobsJar = tasks.register<Copy>("syncServerMobsJar") {
+    group = "distribution"
+    description = "Copies the ServerMobs NPC plugin jar into the release (plugins/)."
+    dependsOn(":servermobs:shadowJar")
+    from(serverMobsJarFile)
+    into(File(installRoot, "plugins"))
+}
+tasks.named("installDist") { finalizedBy(syncServerMobsJar) }
+
 // Linux-friendly alias: the Gradle unix start script is generated without an extension, which is
 // easy to miss next to vibecloud.bat. Ship the identical script as vibecloud.sh too.
 val addLinuxScript = tasks.register<Copy>("addLinuxScript") {
@@ -101,6 +113,7 @@ tasks.register<Zip>("releaseZip") {
     dependsOn(tasks.named("installDist"))
     dependsOn(runtimeConfig)
     dependsOn(syncAgentJar)
+    dependsOn(syncServerMobsJar)
     dependsOn(addLinuxScript)
     from(rootProject.file("README.md"))
     from(rootProject.file("LICENSE"))

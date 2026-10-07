@@ -1,4 +1,4 @@
-[🏠 Home](Home.md) · **🚀 Installation** · [⌨️ Commands](Commands.md) · [🖥️ Dashboard](Dashboard.md) · [🧩 Bridge API](Bridge-API.md) · [📦 Versions](Versions.md)
+[🏠 Home](Home.md) · **🚀 Installation** · [⌨️ Commands](Commands.md) · [🖥️ Dashboard](Dashboard.md) · [🧩 Bridge API](Bridge-API.md) · [📦 Versions](Versions.md) · [🧑 ServerMobs](ServerMobs.md)
 
 # 🚀 Installation
 
@@ -20,7 +20,8 @@ the folder is self-contained and can be moved or copied between machines:
 ```text
 vibecloud/
 ├── bin/vibecloud(.sh/.bat)   start scripts
-├── lib/                      runtime jars
+├── lib/                      runtime jars (incl. the auto-injected agent)
+├── plugins/ServerMobs.jar    bundled NPC plugin (install by hand — see ServerMobs tab)
 ├── config.yml                initial configuration (created on first run)
 ├── README.md
 └── LICENSE
@@ -130,6 +131,7 @@ pinned build. Never delete `bridge.token` while services run — agents re-read 
 | `templates/groups/<group>/` | Per-group overlay copied last, on top of the shared scope |
 | `services/<name>/` | One provisioned service (worlds, plugins, configs live here) |
 | `bridge.token` | Dashboard/API access token |
+| `servermobs/` | NPC definitions, written by the bundled ServerMobs plugin (see [ServerMobs](ServerMobs.md)) |
 | `forwarding.secret` | Network-wide Velocity forwarding secret |
 
 ---

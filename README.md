@@ -20,6 +20,7 @@ built-in web dashboard, a live HTTP bridge, and a plugin API. One zip, one confi
 - **Automatic proxy wiring** — shared forwarding secret, backend tables, `online-mode`, and the correct Velocity forwarding mode (modern/legacy) recomputed on every version switch.
 - **Version switching** — `group version lobby 26.2` downloads, verifies, re-pins every service record, and resyncs the proxy. Same system only (paper → paper), legacy Java handled automatically for old builds.
 - **Plugin API** — the `VibeCloud` facade gives your Minecraft plugins network-wide players, services, groups, and the full `/cloud` command surface in a few lines. Or embed the entire controller in your own app.
+- **ServerMobs** — a bundled NPC plugin: fake players with real skins, holograms, and click actions (e.g. send a player to another backend). Definitions persist in the cloud home, so non-static services respawn their NPCs on start.
 
 ## Quick start
 
@@ -48,6 +49,7 @@ built-in web dashboard, a live HTTP bridge, and a plugin API. One zip, one confi
 | [⌨️ Commands](docs/wiki/Commands.md) | Every console and in-game command |
 | [🖥️ Dashboard](docs/wiki/Dashboard.md) | All pages, actions, and the security model |
 | [🧩 Bridge API](docs/wiki/Bridge-API.md) | For developers: facade, embedding, events, HTTP |
+| [🧑 ServerMobs](docs/wiki/ServerMobs.md) | Bundled NPC plugin: fake players, skins, holograms, actions |
 | [📦 Versions](docs/wiki/Versions.md) | Supported software, Java matrix, forwarding, switching |
 | [🔒 Security](docs/SECURITY.md) | Hardening guide, reverse-proxy setup, threat model |
 | [📡 API reference](docs/API.md) | Exhaustive endpoint and embedding reference |
@@ -65,6 +67,7 @@ api/       Public immutable models, manager interfaces, lifecycle events
 common/    Safe YAML configuration, structured logging
 core/      Groups, services, templates, catalogs, ports, reconciler, bridge
 bridge/    Paper agent plugin + the VibeCloud SDK for plugins
+servermobs/ Bundled NPC plugin for backend servers (fake players, skins, holograms)
 launcher/  Composition root and the interactive CLI
 ```
 
