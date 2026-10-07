@@ -78,6 +78,18 @@ val lines = cloud.executeCloudCommand(listOf("services"))
 val suggestions = cloud.completeCloudCommand(listOf("group", ""))
 ```
 
+### Scoreboards and other frequent readers
+
+`cloud.players().playerCount()` is the one call that never performs an HTTP request on the calling thread: it
+reads an in-memory cache that a background task refreshes at most every 5 seconds (the `playerCountRefreshInterval`
+builder option). Calling it every tick or every second is cheap and main-thread-safe — HTTP traffic stays at about
+one request per refresh interval. It returns 0 until the first fetch completes and keeps the last known count while
+the cloud is unreachable:
+
+```kotlin
+val online = cloud.players().playerCount()   // cached network player count, never blocks
+```
+
 ### API reference
 
 | Call | Purpose |
@@ -86,6 +98,7 @@ val suggestions = cloud.completeCloudCommand(listOf("group", ""))
 | `VibeCloud.connect { … }` | Connect with explicit base URL/token; stores the singleton |
 | `VibeCloud.instance()` / `instanceOrNull()` | Access the singleton afterwards |
 | `cloud.players().all() / findByName(name) / refresh(player)` | Rosters and lookups |
+| `cloud.players().playerCount()` | Cached network player count (background refresh, default 5s; never blocks) |
 | `cloud.players().sendMessage(player, lines)` | Chat message (legacy `§` codes supported) |
 | `cloud.players().kick(player, reason)` | Kick with reason |
 | `cloud.players().connect(player, targetService)` | Transfer via the proxy (`send`); needs a running proxy |

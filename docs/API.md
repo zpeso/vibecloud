@@ -181,6 +181,9 @@ Notes:
 
 - Call the client from an async thread (`Bukkit.getScheduler().runTaskTimerAsynchronously(...)`); every call is a
   blocking HTTP request with a 2-3 second timeout.
+- For scoreboards prefer the facade instead: `VibeCloud.forService()` + `cloud.players().playerCount()` keeps the
+  network player count cached and refreshes it in the background every `playerCountRefreshInterval` (builder
+  option, default 5s). The call itself never blocks, so it is safe on the main thread even when polled every tick.
 - The agent reports every 5 seconds by default (`bridge.heartbeat-interval-seconds`), so counts are near-real-time.
 - `agentOnline` tells you whether the report comes from the authoritative agent or the console-line fallback.
 - The status JSON also carries `totals.online`, per-service `state`/`port`/`players`, and the group definitions.

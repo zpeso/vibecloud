@@ -25,17 +25,20 @@ import java.time.Duration
  * Provider collections are snapshots of the cloud state (players join/leave, services
  * start/stop); each provider also exposes direct lookups such as
  * [CloudPlayerProvider.findByName] or [CloudServiceProvider.findByGroup] for a fresh read.
+ * The exception is [CloudPlayerProvider.playerCount], which serves a background-refreshed
+ * cache and is safe to call on the server's main thread (e.g. for scoreboard updates).
  */
 class VibeCloud private constructor(
     private val baseUrl: String,
     private val token: String,
     private val timeout: Duration,
+    private val playerCountRefreshInterval: Duration,
 ) {
     private val http: HttpClient = HttpClient.newBuilder()
         .connectTimeout(timeout)
         .build()
 
-    private val players = CloudPlayerProvider(this)
+    private val players = CloudPlayerProvider(this, playerCountRefreshInterval)
     private val services = CloudServiceProvider(this)
     private val groups = CloudGroupProvider(this)
 
@@ -149,13 +152,20 @@ class VibeCloud private constructor(
         var token: String = ""
         var timeout: Duration = Duration.ofSeconds(3)
 
+        /**
+         * How often the cached network player count (`players().playerCount()`) refreshes in
+         * the background. Default 5 seconds, matching the agent heartbeat cadence.
+         */
+        var playerCountRefreshInterval: Duration = Duration.ofSeconds(5)
+
         fun baseUrl(baseUrl: String) = apply { this.baseUrl = baseUrl }
         fun token(token: String) = apply { this.token = token }
         fun timeout(timeout: Duration) = apply { this.timeout = timeout }
+        fun playerCountRefreshInterval(interval: Duration) = apply { this.playerCountRefreshInterval = interval }
 
         fun build(): VibeCloud {
             require(token.isNotBlank()) { "bridge token is required" }
-            return VibeCloud(baseUrl.removeSuffix("/"), token, timeout)
+            return VibeCloud(baseUrl.removeSuffix("/"), token, timeout, playerCountRefreshInterval)
         }
     }
 
