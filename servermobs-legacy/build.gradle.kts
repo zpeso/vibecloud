@@ -60,6 +60,9 @@ tasks.shadowJar {
     relocate("com.github.retrooper", "dev.vibecloud.servermobs.libs.packetevents")
     relocate("io.github.retrooper", "dev.vibecloud.servermobs.libs.packetevents")
     relocate("net.kyori", "dev.vibecloud.servermobs.libs.kyori")
+    // 1.8 servers ship an ancient snakeyaml on the classpath that would otherwise be picked up
+    // (parent-first) instead of our bundled one. Relocate so we always use our own.
+    relocate("org.yaml.snakeyaml", "dev.vibecloud.servermobs.libs.snakeyaml")
 }
 
 tasks.processResources {

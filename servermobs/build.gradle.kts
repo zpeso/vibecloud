@@ -65,6 +65,8 @@ tasks.shadowJar {
     exclude("net/kyori/**")
     relocate("com.github.retrooper", "dev.vibecloud.servermobs.libs.packetevents")
     relocate("io.github.retrooper", "dev.vibecloud.servermobs.libs.packetevents")
+    // Paper also provides snakeyaml; relocate ours so a server-side version can never be used.
+    relocate("org.yaml.snakeyaml", "dev.vibecloud.servermobs.libs.snakeyaml")
 }
 
 // Stamp the project version into plugin.yml so the plugin reports its real version.
