@@ -1,0 +1,31 @@
+# ServerMobs (1.8 build) - fake-player NPCs for Minecraft 1.8 backend servers.
+#
+# NPC definitions are persisted OUTSIDE the server directory so they survive the
+# restarts/re-provisioning of non-static services. Point `data-directory` at the
+# VibeCloud home directory (the folder that contains bridge.token); NPCs are then
+# written to <data-directory>/servermobs/<npc>.yml.
+#
+# A cloud-managed service runs with services/<name>/ as its working directory, so
+# the default "../../" resolves to the VibeCloud home. Adjust if you run this
+# server from a different layout.
+data-directory: "../../"
+
+# The group this server belongs to. NPCs are tagged with the group they were
+# created in and are only (re)spawned on services of that group. Leave empty to
+# read it from plugins/VibeCloud/agent.properties (written by the cloud agent).
+group: ""
+
+# Hide the NPC from the player list (tab) after it has spawned. Recommended.
+remove-from-tablist: true
+
+# Range (in blocks) at which an NPC is sent to a player.
+view-distance: 48
+
+# Layout of the hologram lines above the NPC.
+hologram:
+  offset: 2.2
+  line-spacing: 0.3
+
+# Proxy plugin-message channel used by the "transfer" action.
+# Velocity: "bungeecord:main". BungeeCord/Waterfall: "BungeeCord".
+transfer-channel: "bungeecord:main"

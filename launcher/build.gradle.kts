@@ -39,17 +39,17 @@ val syncAgentJar = tasks.register<Copy>("syncAgentJar") {
 }
 tasks.named("installDist") { finalizedBy(syncAgentJar) }
 
-// The ServerMobs plugin is installed by hand on backend servers, so it ships as a ready-to-copy
-// jar in a top-level plugins/ folder of the release (not injected like the agent).
-val serverMobsJarFile = layout.projectDirectory.file("../servermobs/build/libs/ServerMobs.jar")
-val syncServerMobsJar = tasks.register<Copy>("syncServerMobsJar") {
+// ServerMobs ships as standalone release ASSETS (next to the zip), never inside it: a modern
+// Paper build and a legacy 1.8 build. An admin installs the matching jar by hand onto the right
+// servers (or into templates/every_server/plugins/).
+val releaseServerMobsJars = tasks.register<Copy>("releaseServerMobsJars") {
     group = "distribution"
-    description = "Copies the ServerMobs NPC plugin jar into the release (plugins/)."
-    dependsOn(":servermobs:shadowJar")
-    from(serverMobsJarFile)
-    into(File(installRoot, "plugins"))
+    description = "Places the standalone ServerMobs plugin jars next to the release zip."
+    dependsOn(":servermobs:shadowJar", ":servermobs-legacy:shadowJar")
+    from(layout.projectDirectory.file("../servermobs/build/libs/ServerMobs.jar"))
+    from(layout.projectDirectory.file("../servermobs-legacy/build/libs/ServerMobs-1.8.jar"))
+    into(distDir)
 }
-tasks.named("installDist") { finalizedBy(syncServerMobsJar) }
 
 // Linux-friendly alias: the Gradle unix start script is generated without an extension, which is
 // easy to miss next to vibecloud.bat. Ship the identical script as vibecloud.sh too.
@@ -113,14 +113,17 @@ tasks.register<Zip>("releaseZip") {
     dependsOn(tasks.named("installDist"))
     dependsOn(runtimeConfig)
     dependsOn(syncAgentJar)
-    dependsOn(syncServerMobsJar)
     dependsOn(addLinuxScript)
+    // The plugin jars are placed beside the zip as standalone assets, after it is written.
+    finalizedBy(releaseServerMobsJars)
     from(rootProject.file("README.md"))
     from(rootProject.file("LICENSE"))
     from(rootProject.file("docs/API.md")) { into("docs") }
     from(runtimeConfigDir)
     from(installRoot) {
         exclude("**/simple-cloud*", "**/config.yml", "bin/**")
+        // Never package plugins/ (it must not contain the ServerMobs jars).
+        exclude("plugins/**")
     }
     // Start scripts must keep their executable bit: unzip on Linux restores the Unix mode
     // stored in the zip, so store bin/ as 0755 (Windows filesystems lose it otherwise).

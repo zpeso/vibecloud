@@ -1,0 +1,28 @@
+name: ServerMobs
+version: '${version}'
+main: dev.vibecloud.servermobs.ServerMobsPlugin
+api-version: '1.8'
+description: Fake-player NPCs with skins, holograms and click actions for Minecraft 1.8 backend servers.
+authors: [VibeCloud]
+website: https://github.com/zpeso/vibecloud
+load: POSTWORLD
+# Load after protocol/version plugins so the bundled PacketEvents injector starts last.
+softdepend:
+  - ProtocolLib
+  - ProtocolSupport
+  - ViaVersion
+  - ViaBackwards
+  - ViaRewind
+  - Geyser-Spigot
+
+commands:
+  npc:
+    description: Create and manage ServerMobs NPCs.
+    usage: /npc <create|edit|remove|list|info|tp|reload>
+    aliases: [servernpc]
+    permission: servermobs.admin
+
+permissions:
+  servermobs.admin:
+    description: Full access to ServerMobs NPC management.
+    default: op

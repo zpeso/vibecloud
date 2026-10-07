@@ -5,7 +5,7 @@ enum class NpcActionType(val id: String) {
     /** Sends the player to another backend server through the proxy. */
     TRANSFER("transfer"),
 
-    /** Shows a MiniMessage-formatted chat message to the player. */
+    /** Shows a formatted chat message to the player. */
     MESSAGE("message"),
 
     /** Runs a command as the console. */

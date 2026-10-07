@@ -2,27 +2,32 @@
 
 # 🧑 ServerMobs
 
-**ServerMobs** is the bundled NPC plugin for VibeCloud backend servers. It spawns fake-player NPCs with real
-skins and holograms, and runs configurable actions when a player clicks one — most commonly sending them to another
-backend server.
+**ServerMobs** is the NPC plugin shipped with VibeCloud. It spawns fake-player NPCs with real skins and holograms,
+and runs configurable actions when a player clicks one — most commonly sending them to another backend server.
 
-It ships in every VibeCloud release as `plugins/ServerMobs.jar`. Unlike the agent, it is **not** injected
-automatically: copy it into the servers you want it on.
+Unlike the agent, it is **not** injected automatically. ServerMobs ships as **standalone release assets** (next to
+`vibecloud-<version>.zip`, not inside it), in two builds:
+
+| Asset | For | Requires |
+|---|---|---|
+| `ServerMobs.jar` | Paper **1.21+** | Java 21 |
+| `ServerMobs-1.8.jar` | Minecraft **1.8** (Spigot/Paper) | Java 8+ |
+
+Both jars are self-contained: PacketEvents is shaded in, and the 1.8 build additionally bundles adventure, since a
+1.8 server ships no Kyori. No other plugin is required.
 
 ## Install
 
-1. Extracted from the release zip, copy `plugins/ServerMobs.jar` into a backend server's `plugins/` folder:
+1. Download the build matching your server from the release's **Assets**.
+2. Copy it into a backend server's `plugins/` folder (rename it to `ServerMobs.jar` if you prefer):
    ```text
    services/lobby-1/plugins/ServerMobs.jar
    ```
-2. Restart that service. On first start it writes `plugins/ServerMobs/config.yml`.
-3. Point `data-directory` at the cloud home (see below), then create NPCs in-game with `/npc`.
+3. Restart that service. On first start it writes `plugins/ServerMobs/config.yml`.
+4. Point `data-directory` at the cloud home (see below), then create NPCs in-game with `/npc`.
 
 **Every backend at once:** drop the jar into `templates/every_server/plugins/` instead. Every backend service
 receives it on its next start (including re-provisioned non-static services).
-
-Requirements: **Paper 1.21+**, **Java 21**. The jar is self-contained (PacketEvents is shaded in); no other plugin is
-required.
 
 ## Persistence — why the cloud home
 
@@ -125,6 +130,12 @@ Example — a "shop" NPC that teleports players to the citybuild server:
 | Path | Contents |
 |---|---|
 | `<data-directory>/servermobs/<npc>.yml` | One NPC definition (name, group, location, skin, holograms, actions) |
+
+## 1.8 vs modern
+
+The modern build uses the server's adventure API (Paper provides it) and `TextDisplay` holograms. The 1.8 build
+bundles its own adventure and falls back to invisible `ArmorStand` holograms, because 1.8 has neither. Behaviour,
+commands, persistence and the MiniMessage formatting are identical; only the shading and the hologram entity differ.
 
 The files are plain YAML and safe to edit or copy between machines; run `/npc reload` afterwards.
 

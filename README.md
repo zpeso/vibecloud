@@ -20,7 +20,7 @@ built-in web dashboard, a live HTTP bridge, and a plugin API. One zip, one confi
 - **Automatic proxy wiring** — shared forwarding secret, backend tables, `online-mode`, and the correct Velocity forwarding mode (modern/legacy) recomputed on every version switch.
 - **Version switching** — `group version lobby 26.2` downloads, verifies, re-pins every service record, and resyncs the proxy. Same system only (paper → paper), legacy Java handled automatically for old builds.
 - **Plugin API** — the `VibeCloud` facade gives your Minecraft plugins network-wide players, services, groups, and the full `/cloud` command surface in a few lines. Or embed the entire controller in your own app.
-- **ServerMobs** — a bundled NPC plugin: fake players with real skins, holograms, and click actions (e.g. send a player to another backend). Definitions persist in the cloud home, so non-static services respawn their NPCs on start.
+- **ServerMobs** — an NPC plugin shipped as release assets for both **Paper 1.21+** and **Minecraft 1.8**: fake players with real skins, holograms, and click actions (e.g. send a player to another backend). Definitions persist in the cloud home, so non-static services respawn their NPCs on start.
 
 ## Quick start
 
@@ -67,8 +67,9 @@ api/       Public immutable models, manager interfaces, lifecycle events
 common/    Safe YAML configuration, structured logging
 core/      Groups, services, templates, catalogs, ports, reconciler, bridge
 bridge/    Paper agent plugin + the VibeCloud SDK for plugins
-servermobs/ Bundled NPC plugin for backend servers (fake players, skins, holograms)
-launcher/  Composition root and the interactive CLI
+servermobs/        NPC plugin for Paper 1.21+ (fake players, skins, holograms)
+servermobs-legacy/ NPC plugin for Minecraft 1.8 (bundles adventure; no server Kyori needed)
+launcher/          Composition root and the interactive CLI
 ```
 
 `TemplateManager`, `ServerCatalog`, `ProcessManager`, and `PortAllocator` are interfaces — distribution metadata,

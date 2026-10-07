@@ -28,13 +28,16 @@ jobs:
       - name: Test
         run: bash gradlew test
 
-      - name: Build release zip
+      # Also builds the standalone ServerMobs plugin jars (modern + legacy) into build/dist/.
+      - name: Build release artifacts
         run: bash gradlew :launcher:releaseZip
 
-      - name: Attach zip to GitHub Release
+      - name: Attach zip and plugin jars to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: build/dist/vibecloud-*.zip
+          files: |
+            build/dist/vibecloud-*.zip
+            build/dist/ServerMobs*.jar
           generate_release_notes: true
           fail_on_unmatched_files: true
 

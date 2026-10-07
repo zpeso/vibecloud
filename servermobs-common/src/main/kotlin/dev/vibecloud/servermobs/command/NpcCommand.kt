@@ -1,11 +1,11 @@
 package dev.vibecloud.servermobs.command
 
 import dev.vibecloud.servermobs.NpcManager
-import dev.vibecloud.servermobs.ServerMobsPlugin
-import dev.vibecloud.servermobs.Text
+import dev.vibecloud.servermobs.ServerMobsRuntime
 import dev.vibecloud.servermobs.model.NpcAction
 import dev.vibecloud.servermobs.model.NpcActionType
 import dev.vibecloud.servermobs.model.NpcData
+import org.bukkit.Location
 import org.bukkit.command.Command
 import org.bukkit.command.CommandExecutor
 import org.bukkit.command.CommandSender
@@ -27,8 +27,8 @@ import org.bukkit.entity.Player
  * /npc list | info <name> | tp <name> | reload
  * ```
  */
-class NpcCommand(private val plugin: ServerMobsPlugin) : CommandExecutor, TabCompleter {
-    private val manager: NpcManager get() = plugin.npcManager
+class NpcCommand(private val runtime: ServerMobsRuntime) : CommandExecutor, TabCompleter {
+    private val manager: NpcManager get() = runtime.npcManager
 
     override fun onCommand(sender: CommandSender, command: Command, label: String, args: Array<out String>): Boolean {
         if (!sender.hasPermission(PERMISSION)) {
@@ -57,7 +57,7 @@ class NpcCommand(private val plugin: ServerMobsPlugin) : CommandExecutor, TabCom
             reply(sender, "<red>Usage: /npc create <name>")
             return
         }
-        if (!plugin.npcStore.isValidName(name)) {
+        if (!runtime.npcStore.isValidName(name)) {
             reply(sender, "<red>Invalid name '$name' (letters, digits, '_' and '-'; up to 32 characters).")
             return
         }
@@ -65,7 +65,7 @@ class NpcCommand(private val plugin: ServerMobsPlugin) : CommandExecutor, TabCom
             reply(sender, "<red>An NPC named '<white>$name</white>' already exists.")
             return
         }
-        val group = plugin.serverMobsConfig.group
+        val group = runtime.serverMobsConfig.group
         if (group.isBlank()) {
             reply(sender, "<red>No group configured. Set 'group' in config.yml (or run this through a cloud agent).")
             return
@@ -140,16 +140,16 @@ class NpcCommand(private val plugin: ServerMobsPlugin) : CommandExecutor, TabCom
             reply(sender, "<red>Usage: /npc edit <name> skin <player|url|value[;signature]>")
             return
         }
-        val local = plugin.skinResolver.resolveLocal(spec)
+        val local = runtime.skinResolver.resolveLocal(spec)
         if (local != null) {
             manager.update(data.copy(skin = local))
             reply(sender, "<green>Skin updated for '<white>${data.name}</white>'.")
             return
         }
         reply(sender, "<gray>Looking up the skin of '<white>$spec</white>'...")
-        plugin.skinResolver.lookupPlayerAsync(spec) { resolved ->
-            plugin.server.scheduler.runTask(
-                plugin,
+        runtime.skinResolver.lookupPlayerAsync(spec) { resolved ->
+            runtime.bukkitPlugin.server.scheduler.runTask(
+                runtime.bukkitPlugin,
                 Runnable {
                     if (resolved == null) {
                         reply(sender, "<red>Could not resolve a skin for '$spec'. " +
@@ -245,7 +245,7 @@ class NpcCommand(private val plugin: ServerMobsPlugin) : CommandExecutor, TabCom
             reply(sender, "<red>Usage: /npc edit <name> group <group>")
             return
         }
-        plugin.npcStore.save(data.copy(group = newGroup))
+        runtime.npcStore.save(data.copy(group = newGroup))
         manager.reload()
         reply(
             sender,
@@ -257,16 +257,15 @@ class NpcCommand(private val plugin: ServerMobsPlugin) : CommandExecutor, TabCom
     private fun list(sender: CommandSender) {
         val npcs = manager.all()
         if (npcs.isEmpty()) {
-            reply(sender, "<gray>No NPCs loaded for group '<white>${plugin.serverMobsConfig.group}</white>'.")
+            reply(sender, "<gray>No NPCs loaded for group '<white>${runtime.serverMobsConfig.group}</white>'.")
             return
         }
-        reply(sender, "<gray>NPCs in group '<white>${plugin.serverMobsConfig.group}</white>' (${npcs.size}):")
+        reply(sender, "<gray>NPCs in group '<white>${runtime.serverMobsConfig.group}</white>' (${npcs.size}):")
         npcs.forEach { npc ->
-            sender.sendMessage(
-                Text.component(
-                    " <dark_gray>• <white>${npc.name} <gray>${npc.world} ${npc.x.toInt()},${npc.y.toInt()},${npc.z.toInt()} " +
-                            "<dark_gray>(${npc.actions.size} action(s), ${npc.hologram.size} holo line(s))",
-                ),
+            line(
+                sender,
+                " <dark_gray>• <white>${npc.name} <gray>${npc.world} ${npc.x.toInt()},${npc.y.toInt()},${npc.z.toInt()} " +
+                        "<dark_gray>(${npc.actions.size} action(s), ${npc.hologram.size} holo line(s))",
             )
         }
     }
@@ -281,14 +280,14 @@ class NpcCommand(private val plugin: ServerMobsPlugin) : CommandExecutor, TabCom
             return
         }
         reply(sender, "<gray>NPC '<white>${data.name}</white>':")
-        sender.sendMessage(Text.component(" <dark_gray>group: <white>${data.group}"))
-        sender.sendMessage(Text.component(" <dark_gray>location: <white>${data.world} ${data.x},${data.y},${data.z}"))
-        sender.sendMessage(Text.component(" <dark_gray>skin: <white>${data.skin?.source?.ifBlank { "value" } ?: "none"}"))
-        data.hologram.forEachIndexed { index, line ->
-            sender.sendMessage(Text.component(" <dark_gray>holo[$index]: <white>$line"))
+        line(sender, " <dark_gray>group: <white>${data.group}")
+        line(sender, " <dark_gray>location: <white>${data.world} ${data.x},${data.y},${data.z}")
+        line(sender, " <dark_gray>skin: <white>${data.skin?.source?.ifBlank { "value" } ?: "none"}")
+        data.hologram.forEachIndexed { index, holo ->
+            line(sender, " <dark_gray>holo[$index]: <white>$holo")
         }
         data.actions.forEachIndexed { index, action ->
-            sender.sendMessage(Text.component(" <dark_gray>action[$index]: <white>${action.type.id} <gray>${action.value}"))
+            line(sender, " <dark_gray>action[$index]: <white>${action.type.id} <gray>${action.value}")
         }
     }
 
@@ -302,18 +301,18 @@ class NpcCommand(private val plugin: ServerMobsPlugin) : CommandExecutor, TabCom
             reply(sender, "<red>No NPC named '<white>$name</white>' exists.")
             return
         }
-        val world = plugin.server.getWorld(data.world)
+        val world = runtime.bukkitPlugin.server.getWorld(data.world)
         if (world == null) {
             reply(sender, "<red>World '${data.world}' is not loaded on this server.")
             return
         }
-        player.teleport(org.bukkit.Location(world, data.x, data.y, data.z, data.yaw, data.pitch))
+        player.teleport(Location(world, data.x, data.y, data.z, data.yaw, data.pitch))
         reply(sender, "<green>Teleported to '<white>${data.name}</white>'.")
     }
 
     private fun reload(sender: CommandSender) {
         manager.reload()
-        reply(sender, "<green>Reloaded ${manager.count()} NPC(s) for group '<white>${plugin.serverMobsConfig.group}</white>'.")
+        reply(sender, "<green>Reloaded ${manager.count()} NPC(s) for group '<white>${runtime.serverMobsConfig.group}</white>'.")
     }
 
     private fun help(sender: CommandSender, label: String) {
@@ -327,7 +326,7 @@ class NpcCommand(private val plugin: ServerMobsPlugin) : CommandExecutor, TabCom
             "$label edit <name> move",
             "$label edit <name> group <group>",
             "$label remove <name> | list | info <name> | tp <name> | reload",
-        ).forEach { sender.sendMessage(Text.component(" <dark_gray>• <white>/$it")) }
+        ).forEach { line(sender, " <dark_gray>• <white>/$it") }
     }
 
     // -- helpers -------------------------------------------------------------
@@ -338,9 +337,9 @@ class NpcCommand(private val plugin: ServerMobsPlugin) : CommandExecutor, TabCom
         return null
     }
 
-    private fun reply(sender: CommandSender, mini: String) {
-        sender.sendMessage(Text.prefixed(mini))
-    }
+    private fun reply(sender: CommandSender, mini: String) = runtime.platform.message(sender, mini)
+
+    private fun line(sender: CommandSender, mini: String) = runtime.platform.line(sender, mini)
 
     override fun onTabComplete(
         sender: CommandSender,

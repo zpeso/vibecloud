@@ -2,11 +2,10 @@ package dev.vibecloud.servermobs
 
 import dev.vibecloud.servermobs.model.NpcSkin
 import org.yaml.snakeyaml.Yaml
+import java.io.InputStream
+import java.net.HttpURLConnection
 import java.net.URI
-import java.net.http.HttpClient
-import java.net.http.HttpRequest
-import java.net.http.HttpResponse
-import java.time.Duration
+import java.net.URLEncoder
 import java.util.Base64
 import java.util.concurrent.CompletableFuture
 import java.util.logging.Logger
@@ -19,11 +18,10 @@ import java.util.logging.Logger
  *  - `<value>;<signature>` a raw Mojang texture value + signature,
  *  - `<value>`           a raw base64 texture value,
  *  - `SomePlayerName`    looked up from the Mojang API (blocking; call [lookupPlayer] off-thread).
+ *
+ * Uses `HttpURLConnection` (not `java.net.http`) so the same code compiles for the Java 8 build.
  */
 class SkinResolver(private val logger: Logger) {
-    private val http: HttpClient = HttpClient.newBuilder()
-        .connectTimeout(Duration.ofSeconds(5))
-        .build()
     private val yaml = Yaml()
 
     /**
@@ -80,38 +78,37 @@ class SkinResolver(private val logger: Logger) {
     }
 
     private fun mojangProfileId(name: String): String? {
-        val encoded = java.net.URLEncoder.encode(name, Charsets.UTF_8)
+        val encoded = URLEncoder.encode(name, "UTF-8")
         val body = get("https://api.mojang.com/users/profiles/minecraft/$encoded") ?: return null
         val id = (parse(body)["id"] as? String)?.trim().orEmpty()
         if (id.isEmpty()) return null
         return if (id.length == 32) {
-            buildString {
-                append(id, 0, 8).append('-').append(id, 8, 12).append('-')
-                append(id, 12, 16).append('-').append(id, 16, 20).append('-').append(id, 20, 32)
-            }
+            id.substring(0, 8) + "-" + id.substring(8, 12) + "-" + id.substring(12, 16) + "-" +
+                    id.substring(16, 20) + "-" + id.substring(20, 32)
         } else {
             id
         }
     }
 
     private fun get(url: String): String? {
+        var connection: HttpURLConnection? = null
         return try {
-            val request = HttpRequest.newBuilder()
-                .uri(URI.create(url))
-                .timeout(Duration.ofSeconds(8))
-                .header("Accept", "application/json")
-                .GET()
-                .build()
-            val response = http.send(request, HttpResponse.BodyHandlers.ofString())
-            if (response.statusCode() != 200) {
-                logger.fine("Mojang request $url returned HTTP ${response.statusCode()}")
+            connection = URI(url).toURL().openConnection() as HttpURLConnection
+            connection.connectTimeout = 8000
+            connection.readTimeout = 8000
+            connection.setRequestProperty("Accept", "application/json")
+            connection.setRequestProperty("User-Agent", "VibeCloud-ServerMobs")
+            if (connection.responseCode != 200) {
+                logger.fine("Mojang request $url returned HTTP ${connection.responseCode}")
                 null
             } else {
-                response.body()
+                connection.inputStream.use { stream: InputStream -> stream.bufferedReader().readText() }
             }
         } catch (failure: Exception) {
             logger.fine("Mojang request $url failed: ${failure.message}")
             null
+        } finally {
+            runCatching { connection?.disconnect() }
         }
     }
 
@@ -121,8 +118,8 @@ class SkinResolver(private val logger: Logger) {
 
     /** Wraps a texture URL into the base64 JSON texture property the client expects. */
     private fun valueForUrl(url: String): String {
-        val json = """{"textures":{"SKIN":{"url":${quote(url)}}}}"""
-        return Base64.getEncoder().encodeToString(json.toByteArray(Charsets.UTF_8))
+        val json = "{\"textures\":{\"SKIN\":{\"url\":" + quote(url) + "}}}"
+        return Base64.getEncoder().encodeToString(json.toByteArray(charset("UTF-8")))
     }
 
     private fun quote(value: String): String =
@@ -131,7 +128,7 @@ class SkinResolver(private val logger: Logger) {
     private fun looksLikeBase64Json(value: String): Boolean {
         if (!value.matches(Regex("[A-Za-z0-9+/=]+"))) return false
         return runCatching {
-            String(Base64.getDecoder().decode(value), Charsets.UTF_8).trimStart().startsWith("{")
+            String(Base64.getDecoder().decode(value), charset("UTF-8")).trimStart().startsWith("{")
         }.getOrDefault(false)
     }
 }

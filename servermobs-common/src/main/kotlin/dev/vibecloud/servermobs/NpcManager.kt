@@ -17,27 +17,28 @@ import dev.vibecloud.servermobs.model.NpcData
 import io.github.retrooper.packetevents.util.SpigotReflectionUtil
 import org.bukkit.Bukkit
 import org.bukkit.Location
-import org.bukkit.entity.Display
+import org.bukkit.World
 import org.bukkit.entity.Player
-import org.bukkit.entity.TextDisplay
 import org.bukkit.plugin.Plugin
 import org.bukkit.scheduler.BukkitTask
 import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
-import java.nio.charset.StandardCharsets
+import java.nio.charset.Charset
 import java.util.EnumSet
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Owns every loaded NPC: persists definitions through [NpcStore], streams the fake-player entities
- * to nearby players with PacketEvents, keeps their holograms in sync, and runs click actions.
+ * to nearby players with PacketEvents, keeps their holograms in sync (through the platform), and
+ * runs click actions.
  *
  * NPCs are per-group: [reload] loads only the definitions tagged with this server's group, so a
  * service of that group respawns them on every start.
  */
 class NpcManager(
     private val plugin: Plugin,
+    private val platform: ServerMobsPlatform,
     private val store: NpcStore,
     private val config: ServerMobsConfig,
 ) {
@@ -123,7 +124,7 @@ class NpcManager(
     /** Debounces the duplicate interact packets a single right-click produces. */
     fun acceptInteraction(playerId: UUID?, npcName: String): Boolean {
         if (playerId == null) return false
-        val key = "$playerId:${npcName.lowercase()}"
+        val key = playerId.toString() + ":" + npcName.lowercase()
         val now = System.currentTimeMillis()
         val last = interactionCooldowns[key] ?: 0L
         if (now - last < INTERACTION_COOLDOWN_MS) return false
@@ -145,7 +146,7 @@ class NpcManager(
         try {
             when (action.type) {
                 NpcActionType.TRANSFER -> transfer(player, action.value)
-                NpcActionType.MESSAGE -> player.sendMessage(Text.component(action.value))
+                NpcActionType.MESSAGE -> platform.line(player, action.value)
                 NpcActionType.CONSOLE -> Bukkit.dispatchCommand(
                     Bukkit.getConsoleSender(),
                     action.value.removePrefix("/"),
@@ -199,16 +200,16 @@ class NpcManager(
     }
 
     /**
-     * A loaded NPC: a client-side player entity (PacketEvents) plus its real hologram entities.
-     * The entity id is allocated once and reused for every viewer; the UUID is derived from the
-     * name so the skin/tab entry is stable across restarts.
+     * A loaded NPC: a client-side player entity (PacketEvents) plus its hologram entities. The
+     * entity id is allocated once and reused for every viewer; the UUID is derived from the name so
+     * the skin/tab entry is stable across restarts.
      */
     inner class SpawnedNpc(
         @Volatile var data: NpcData,
     ) {
         val entityId: Int = SpigotReflectionUtil.generateEntityId()
-        val uuid: UUID = UUID.nameUUIDFromBytes("ServerMobs:${data.name}".toByteArray(StandardCharsets.UTF_8))
-        private val holograms = ArrayList<TextDisplay>()
+        val uuid: UUID = UUID.nameUUIDFromBytes(("ServerMobs:" + data.name).toByteArray(Charset.forName("UTF-8")))
+        private val holograms = ArrayList<Hologram>()
 
         fun spawnFor(player: Player) {
             val user = PacketEvents.getAPI().playerManager.getUser(player) ?: return
@@ -255,25 +256,16 @@ class NpcManager(
             data.hologram.forEachIndexed { index, line ->
                 val y = data.y + config.hologramOffset +
                         (data.hologram.size - 1 - index) * config.hologramLineSpacing
-                val display = world.spawn(Location(world, data.x, y, data.z), TextDisplay::class.java) { entity ->
-                    entity.text(Text.component(line))
-                    entity.setBillboard(Display.Billboard.CENTER)
-                    entity.setSeeThrough(false)
-                    entity.setShadowed(true)
-                    entity.setDefaultBackground(false)
-                    entity.isPersistent = false
-                    entity.isInvulnerable = true
-                }
-                holograms.add(display)
+                holograms.add(platform.spawnHologram(world, Location(world, data.x, y, data.z), line))
             }
         }
 
         fun removeHolograms() {
-            holograms.forEach { display -> runCatching { display.remove() } }
+            holograms.forEach { hologram -> runCatching { hologram.remove() } }
             holograms.clear()
         }
 
-        fun bukkitLocation(world: org.bukkit.World): Location = Location(world, data.x, data.y, data.z)
+        fun bukkitLocation(world: World): Location = Location(world, data.x, data.y, data.z)
 
         private fun packetLocation(): com.github.retrooper.packetevents.protocol.world.Location =
             com.github.retrooper.packetevents.protocol.world.Location(

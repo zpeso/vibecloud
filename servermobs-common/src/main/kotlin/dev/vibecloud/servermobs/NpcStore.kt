@@ -12,12 +12,15 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.util.logging.Logger
+import java.util.stream.Collectors
 
 /**
  * Persists NPC definitions as one YAML file per NPC (`<name>.yml`) inside [directory] — normally
  * `servermobs/` under the VibeCloud home directory so definitions survive non-static service
  * restarts. Reads are defensive: a corrupt or partially written file is logged and skipped rather
  * than failing a service start.
+ *
+ * Kept Java 8 compatible so the same code compiles into both the modern and the 1.8 build.
  */
 class NpcStore(
     private val directory: Path,
@@ -47,7 +50,7 @@ class NpcStore(
 
     fun isValidName(name: String): Boolean = NAME_PATTERN.matches(name)
 
-    private fun file(name: String): Path = directory.resolve("${name.lowercase()}.yml")
+    private fun file(name: String): Path = directory.resolve(name.lowercase() + YAML_SUFFIX)
 
     @Synchronized
     fun exists(name: String): Boolean = Files.isRegularFile(file(name))
@@ -69,8 +72,8 @@ class NpcStore(
         val names = Files.list(directory).use { stream ->
             stream.map { it.fileName.toString() }
                 .filter { it.endsWith(YAML_SUFFIX) }
-                .map { it.removeSuffix(YAML_SUFFIX) }
-                .toList()
+                .map { it.substring(0, it.length - YAML_SUFFIX.length) }
+                .collect(Collectors.toList())
         }
         return names.mapNotNull { find(it) }
     }
@@ -104,7 +107,7 @@ class NpcStore(
             linkedMapOf<String, Any>("type" to action.type.id, "value" to action.value)
         }
         val target = file(data.name)
-        val temporary = target.resolveSibling("${target.fileName}.tmp")
+        val temporary = target.resolveSibling(target.fileName.toString() + ".tmp")
         Files.newBufferedWriter(temporary).use { writer -> dumper.dump(document, writer) }
         Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING)
     }

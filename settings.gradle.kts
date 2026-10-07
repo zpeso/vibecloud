@@ -7,12 +7,14 @@ pluginManagement {
 
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-repositories {
-    mavenCentral()
-    maven("https://repo.papermc.io/repository/maven-public/")
-    // PacketEvents (shaded into the ServerMobs plugin) is published here, not on Maven Central.
-    maven("https://repo.codemc.io/repository/maven-releases/")
-}
+    repositories {
+        mavenCentral()
+        maven("https://repo.papermc.io/repository/maven-public/")
+        // PacketEvents (shaded into the ServerMobs plugins) is published here, not on Maven Central.
+        maven("https://repo.codemc.io/repository/maven-releases/")
+        // Spigot API snapshots (used by the legacy ServerMobs build for the 1.8 API).
+        maven("https://hub.spigotmc.org/nexus/content/repositories/snapshots/")
+    }
 }
 
 plugins {
@@ -25,4 +27,4 @@ plugins {
 }
 
 rootProject.name = "vibecloud"
-include("api", "common", "core", "bridge", "servermobs", "launcher")
+include("api", "common", "core", "bridge", "servermobs", "servermobs-legacy", "launcher")

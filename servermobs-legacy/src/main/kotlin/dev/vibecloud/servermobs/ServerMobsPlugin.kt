@@ -7,9 +7,9 @@ import org.bukkit.plugin.Plugin
 import org.bukkit.plugin.java.JavaPlugin
 
 /**
- * ServerMobs (modern build): fake-player NPCs (with skins and holograms) for Paper 1.21+ backend
- * servers. The shared implementation lives in the `servermobs-common` sources; this class wires the
- * Paper-specific platform (`TextDisplay` holograms, server-provided adventure).
+ * ServerMobs (legacy build): the same fake-player NPCs built for **Minecraft 1.8** servers, which
+ * ship no adventure/Kyori API. The shared implementation lives in the `servermobs-common` sources;
+ * this class wires the legacy platform (bundled adventure, legacy `§` text, `ArmorStand` holograms).
  *
  * NPC definitions live under `<data-directory>/servermobs/` — normally the VibeCloud home
  * directory, so they survive restarts of non-static services.
@@ -33,7 +33,7 @@ class ServerMobsPlugin : JavaPlugin(), ServerMobsRuntime {
 
     override fun onEnable() {
         saveDefaultConfig()
-        platform = PaperPlatform()
+        platform = SpigotLegacyPlatform()
         serverMobsConfig = ServerMobsConfig.load(config, dataFolder, logger)
         npcStore = NpcStore(serverMobsConfig.npcDirectory, logger)
         npcStore.ensureDirectory()
@@ -54,7 +54,7 @@ class ServerMobsPlugin : JavaPlugin(), ServerMobsRuntime {
 
         registerTransferChannel()
         logger.info(
-            "ServerMobs enabled (group='${serverMobsConfig.group}', " +
+            "ServerMobs (1.8) enabled (group='${serverMobsConfig.group}', " +
                     "npcs=${npcManager.count()}, data=${serverMobsConfig.npcDirectory})",
         )
     }
@@ -62,7 +62,7 @@ class ServerMobsPlugin : JavaPlugin(), ServerMobsRuntime {
     override fun onDisable() {
         if (::npcManager.isInitialized) npcManager.disable()
         runCatching { PacketEvents.getAPI().terminate() }
-        logger.info("ServerMobs disabled")
+        logger.info("ServerMobs (1.8) disabled")
     }
 
     private fun registerTransferChannel() {

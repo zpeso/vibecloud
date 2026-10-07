@@ -21,7 +21,6 @@ the folder is self-contained and can be moved or copied between machines:
 vibecloud/
 ├── bin/vibecloud(.sh/.bat)   start scripts
 ├── lib/                      runtime jars (incl. the auto-injected agent)
-├── plugins/ServerMobs.jar    bundled NPC plugin (install by hand — see ServerMobs tab)
 ├── config.yml                initial configuration (created on first run)
 ├── README.md
 └── LICENSE
@@ -131,8 +130,11 @@ pinned build. Never delete `bridge.token` while services run — agents re-read 
 | `templates/groups/<group>/` | Per-group overlay copied last, on top of the shared scope |
 | `services/<name>/` | One provisioned service (worlds, plugins, configs live here) |
 | `bridge.token` | Dashboard/API access token |
-| `servermobs/` | NPC definitions, written by the bundled ServerMobs plugin (see [ServerMobs](ServerMobs.md)) |
 | `forwarding.secret` | Network-wide Velocity forwarding secret |
+| `servermobs/` | NPC definitions, written by the ServerMobs plugin (see [ServerMobs](ServerMobs.md)) |
+
+The **ServerMobs** plugin is downloaded separately from the release's assets (`ServerMobs.jar` for Paper 1.21+,
+`ServerMobs-1.8.jar` for Minecraft 1.8) and installed by hand — see the [ServerMobs](ServerMobs.md) tab.
 
 ---
 

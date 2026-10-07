@@ -20,6 +20,17 @@ tasks.withType<JavaCompile>().configureEach {
     options.release = 21
 }
 
+// Compile the platform-independent implementation (commands, packet NPCs, persistence, config,
+// skin resolution) that is shared with the legacy 1.8 build.
+sourceSets {
+    main {
+        kotlin.srcDir("../servermobs-common/src/main/kotlin")
+    }
+    test {
+        kotlin.srcDir("../servermobs-common/src/test/kotlin")
+    }
+}
+
 dependencies {
     // Minecraft server API and its bundled libraries (adventure, gson) are provided by the
     // running server, never shipped inside the plugin jar.

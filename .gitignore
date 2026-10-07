@@ -8,10 +8,9 @@ templates/*/*
 .DS_Store
 .kotlin/
 
-# Secrets and runtime state — never commit these.
-config.yml
-# ...but the ServerMobs plugin's default config IS a source resource.
-!servermobs/src/main/resources/config.yml
+# Secrets and runtime state — never commit these. (Only the controller's own config.yml at the
+# repo root; plugin source configs such as servermobs*/src/main/resources/config.yml must stay.)
+/config.yml
 bridge.token
 forwarding.secret
 .update-download/
