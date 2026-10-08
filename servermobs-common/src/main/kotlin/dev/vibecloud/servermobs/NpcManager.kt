@@ -195,8 +195,9 @@ class NpcManager(
     }
 
     /**
-     * Points every `turn_to_player` NPC's head at the players who can see it. Runs more often than
-     * [tick] so the look tracks smoothly; cheap — only the small head-look packet is sent.
+     * Turns every `turn_to_player` NPC's body and head towards the players who can see it. Runs
+     * more often than [tick] so the look tracks smoothly; cheap — only the small look packets are
+     * sent.
      */
     private fun updateLooks() {
         val tracked = npcs.values.filter { it.data.turnToPlayer }
@@ -208,7 +209,8 @@ class NpcManager(
             for (npc in tracked) {
                 if (!names.contains(npc.data.name.lowercase())) continue
                 if (npc.data.world != player.world.name) continue
-                platform.sendHeadLook(user, npc.entityId, npc.lookYaw(player))
+                val (yaw, pitch) = npc.lookAngles(player)
+                platform.sendLook(user, npc.entityId, yaw, pitch)
             }
         }
     }
@@ -223,6 +225,9 @@ class NpcManager(
     ) {
         val entityId: Int = SpigotReflectionUtil.generateEntityId()
         val uuid: UUID = UUID.nameUUIDFromBytes(("ServerMobs:" + data.name).toByteArray(Charset.forName("UTF-8")))
+
+        /** One scoreboard team per NPC (1.8 team names are capped at 16 chars). */
+        val nametagTeam: String = "smh" + entityId
         private val holograms = ArrayList<Hologram>()
 
         fun spawnFor(player: Player) {
@@ -239,8 +244,9 @@ class NpcManager(
                 data.yaw,
                 data.pitch,
                 config.removeFromTablist,
-                data.showNametag,
             )
+            // Hide the floating name via a scoreboard team (works on 1.8 and modern alike).
+            if (!data.showNametag) platform.hideNametag(user, nametagTeam, data.name)
         }
 
         fun despawnFor(player: Player) {
@@ -269,14 +275,17 @@ class NpcManager(
 
         fun bukkitLocation(world: World): Location = Location(world, data.x, data.y, data.z)
 
-        /** The yaw that makes this NPC face [player], or its stored yaw when they overlap. */
-        fun lookYaw(player: Player): Float {
-            val world = Bukkit.getWorld(data.world) ?: return data.yaw
-            val from = Location(world, data.x, data.y, data.z)
-            val direction = player.location.toVector().subtract(from.toVector())
-            if (direction.lengthSquared() == 0.0) return data.yaw
+        /**
+         * The (yaw, pitch) that makes this NPC look at [player]'s eyes from its own eye height, or
+         * its stored angles when the two overlap.
+         */
+        fun lookAngles(player: Player): Pair<Float, Float> {
+            val world = Bukkit.getWorld(data.world) ?: return data.yaw to data.pitch
+            val from = Location(world, data.x, data.y + NPC_EYE_HEIGHT, data.z)
+            val direction = player.eyeLocation.toVector().subtract(from.toVector())
+            if (direction.lengthSquared() == 0.0) return data.yaw to data.pitch
             from.setDirection(direction)
-            return from.yaw
+            return from.yaw to from.pitch
         }
 
         private fun textureProperties(): List<TextureProperty> {
@@ -296,5 +305,6 @@ class NpcManager(
         const val LOOK_PERIOD_TICKS = 2L
         const val INTERACTION_COOLDOWN_MS = 250L
         const val CLEANUP_THRESHOLD = 2048
+        const val NPC_EYE_HEIGHT = 1.62
     }
 }

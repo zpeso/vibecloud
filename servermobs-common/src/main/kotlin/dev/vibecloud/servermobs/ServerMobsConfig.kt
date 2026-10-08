@@ -23,6 +23,8 @@ data class ServerMobsConfig(
     val hologramOffset: Double,
     val hologramLineSpacing: Double,
     val transferChannel: String,
+    val signSkins: Boolean,
+    val mineSkinApi: String,
 ) {
     companion object {
         fun load(config: FileConfiguration, dataFolder: File, logger: java.util.logging.Logger): ServerMobsConfig {
@@ -40,12 +42,18 @@ data class ServerMobsConfig(
                 removeFromTablist = config.getBoolean("remove-from-tablist", true),
                 showNametag = config.getBoolean("show-nametag", true),
                 viewDistance = config.getDouble("view-distance", 48.0).coerceAtLeast(0.0),
-                hologramOffset = config.getDouble("hologram.offset", 2.2),
+                hologramOffset = config.getDouble("hologram.offset", 2.0),
                 hologramLineSpacing = config.getDouble("hologram.line-spacing", 0.3),
                 transferChannel = config.getString("transfer-channel", DEFAULT_TRANSFER_CHANNEL)
                     ?.trim()
                     ?.takeIf { it.isNotEmpty() }
                     ?: DEFAULT_TRANSFER_CHANNEL,
+                signSkins = config.getBoolean("sign-skins", true),
+                mineSkinApi = config.getString("mineskin-api", SkinResolver.DEFAULT_MINESKIN_API)
+                    ?.trim()
+                    ?.trimEnd('/')
+                    ?.takeIf { it.isNotEmpty() }
+                    ?: SkinResolver.DEFAULT_MINESKIN_API,
             )
         }
 

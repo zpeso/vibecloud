@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test
 import java.util.Base64
 import java.util.logging.Logger
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -27,11 +28,26 @@ class SkinResolverTest {
     }
 
     @Test
-    fun `wraps a texture url into a base64 texture value`() {
-        val skin = resolver.resolveLocal("https://example.com/skin.png")!!
+    fun `does not resolve urls locally because they need signing`() {
+        assertNull(resolver.resolveLocal("https://example.com/skin.png"))
+        assertNull(resolver.resolveLocal("http://example.com/skin.png"))
+    }
+
+    @Test
+    fun `falls back to an unsigned texture value when signing is disabled`() {
+        val unsigned = SkinResolver(Logger.getLogger("servermobs-test"), signSkins = false)
+        val skin = unsigned.resolveUrl("https://textures.minecraft.net/texture/abc")
         assertNull(skin.signature)
         val decoded = String(Base64.getDecoder().decode(skin.value))
-        assertTrue(decoded.contains("https://example.com/skin.png"))
+        assertTrue(decoded.contains("https://textures.minecraft.net/texture/abc"))
+    }
+
+    @Test
+    fun `detects urls`() {
+        assertTrue(resolver.isUrl("https://example.com/skin.png"))
+        assertTrue(resolver.isUrl("HTTP://example.com/skin.png"))
+        assertFalse(resolver.isUrl("Notch"))
+        assertFalse(resolver.isUrl("dmFsdWU=;c2ln"))
     }
 
     @Test

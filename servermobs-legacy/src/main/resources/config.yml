@@ -28,9 +28,16 @@ show-nametag: true
 view-distance: 48
 
 # Layout of the hologram lines above the NPC.
+# `offset` is the height of the top line above the NPC's feet — 2.0 is about where the
+# NPC's nametag sits (the plugin compensates for the armour stand's own name height).
 hologram:
-  offset: 2.2
+  offset: 2.0
   line-spacing: 0.3
+
+# Sign URL skins through MineSkin so the 1.8 client accepts them (it rejects unsigned textures).
+# Without this a URL is used unsigned and shows as the default Steve/Alex skin.
+sign-skins: true
+mineskin-api: "https://api.mineskin.org"
 
 # Proxy plugin-message channel used by the "transfer" action.
 # 1.8 channel names cannot contain a colon, so the legacy server uses "BungeeCord" (which a

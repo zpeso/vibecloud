@@ -37,7 +37,7 @@ class ServerMobsPlugin : JavaPlugin(), ServerMobsRuntime {
         serverMobsConfig = ServerMobsConfig.load(config, dataFolder, logger)
         npcStore = NpcStore(serverMobsConfig.npcDirectory, logger)
         npcStore.ensureDirectory()
-        skinResolver = SkinResolver(logger)
+        skinResolver = SkinResolver(logger, serverMobsConfig.signSkins, serverMobsConfig.mineSkinApi)
 
         PacketEvents.getAPI().init()
 

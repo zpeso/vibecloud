@@ -24,7 +24,7 @@ enum class NpcActionType(val id: String) {
                     "connect", "send", "server", "goto" -> TRANSFER
                     "msg", "chat", "say" -> MESSAGE
                     "cmd", "command", "console-command" -> CONSOLE
-                    "player-command", "as-player", "perform" -> PLAYER
+                    "player-command", "playercommand", "player_cmd", "pcmd", "as-player", "asplayer", "perform", "runas" -> PLAYER
                     else -> null
                 }
         }

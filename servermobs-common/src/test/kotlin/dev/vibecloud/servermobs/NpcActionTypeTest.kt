@@ -22,6 +22,9 @@ class NpcActionTypeTest {
         assertEquals(NpcActionType.MESSAGE, NpcActionType.parse("msg"))
         assertEquals(NpcActionType.CONSOLE, NpcActionType.parse("cmd"))
         assertEquals(NpcActionType.PLAYER, NpcActionType.parse("as-player"))
+        assertEquals(NpcActionType.PLAYER, NpcActionType.parse("player-command"))
+        assertEquals(NpcActionType.PLAYER, NpcActionType.parse("playercommand"))
+        assertEquals(NpcActionType.PLAYER, NpcActionType.parse("pcmd"))
     }
 
     @Test

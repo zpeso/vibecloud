@@ -11,7 +11,6 @@ import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEn
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfo
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfo.PlayerData
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSpawnPlayer
-import net.kyori.adventure.text.Component
 import net.kyori.adventure.text.minimessage.MiniMessage
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer
 import org.bukkit.Location
@@ -60,7 +59,10 @@ class SpigotLegacyPlatform : ServerMobsPlatform {
     }
 
     override fun spawnHologram(world: World, location: Location, line: String): Hologram {
-        val stand = world.spawn(location, ArmorStand::class.java)
+        // A small 1.8 ArmorStand draws its custom name ~1.45 blocks above its own position, so the
+        // stand is spawned lower to land the text at [location] — the height the caller asked for
+        // (by default where the NPC's own nametag would sit).
+        val stand = world.spawn(location.clone().subtract(0.0, ARMORSTAND_LABEL_OFFSET, 0.0), ArmorStand::class.java)
         stand.customName = render(line)
         stand.isCustomNameVisible = true
         stand.setGravity(false)
@@ -82,18 +84,14 @@ class SpigotLegacyPlatform : ServerMobsPlatform {
         yaw: Float,
         pitch: Float,
         hideFromTablist: Boolean,
-        showNametag: Boolean,
     ) {
         val profile = UserProfile(uuid, name, textures)
         // ADD_PLAYER registers the profile — including its texture property — which is what tells
-        // the 1.8 client which skin to download for this UUID. The display name doubles as the
-        // floating name above the head: null falls back to the profile name, an empty component
-        // hides it.
-        val displayName: Component? = if (showNametag) null else Component.empty()
+        // the 1.8 client which skin to download for this UUID.
         user.sendPacket(
             WrapperPlayServerPlayerInfo(
                 WrapperPlayServerPlayerInfo.Action.ADD_PLAYER,
-                PlayerData(displayName, profile, GameMode.SURVIVAL, 0),
+                PlayerData(null, profile, GameMode.SURVIVAL, 0),
             ),
         )
         user.sendPacket(
@@ -108,11 +106,7 @@ class SpigotLegacyPlatform : ServerMobsPlatform {
         // NOTE: 1.8 has no "listed" flag. The only way to drop the profile from the tab list is
         // REMOVE_PLAYER, but that also deletes the entry the client resolves the skin from — the
         // NPC then falls back to the default skin. Keeping the skin matters more, so on 1.8 the
-        // NPC stays in the tab list; hide the head nametag instead (`showNametag`).
-    }
-
-    override fun sendHeadLook(user: User, entityId: Int, yaw: Float) {
-        user.sendPacket(WrapperPlayServerEntityHeadLook(entityId, yaw))
+        // NPC stays in the tab list; the head nametag is still hidden with a scoreboard team.
     }
 
     override fun sendNpcDespawn(user: User, entityId: Int, uuid: UUID, name: String) {
@@ -125,4 +119,9 @@ class SpigotLegacyPlatform : ServerMobsPlatform {
             WrapperPlayServerPlayerInfo.Action.REMOVE_PLAYER,
             PlayerData(null, UserProfile(uuid, name), null, 0),
         )
+
+    private companion object {
+        /** How far above a small 1.8 ArmorStand its custom name is drawn. */
+        const val ARMORSTAND_LABEL_OFFSET = 1.5
+    }
 }

@@ -26,9 +26,16 @@ show-nametag: true
 view-distance: 48
 
 # Layout of the hologram lines above the NPC.
+# `offset` is the height of the top line above the NPC's feet — 2.0 is about where the
+# NPC's own nametag would sit. Lower it if the hologram floats too high.
 hologram:
-  offset: 2.2
+  offset: 2.0
   line-spacing: 0.3
+
+# Sign URL skins through MineSkin so every client (1.8 and 1.20.2+) accepts them. Without this
+# a URL is used unsigned, which some clients render as the default Steve/Alex skin.
+sign-skins: true
+mineskin-api: "https://api.mineskin.org"
 
 # Proxy plugin-message channel used by the "transfer" action.
 # Velocity: "bungeecord:main". BungeeCord/Waterfall: "BungeeCord".

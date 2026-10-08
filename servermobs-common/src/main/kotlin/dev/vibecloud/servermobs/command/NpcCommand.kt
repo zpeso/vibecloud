@@ -192,14 +192,16 @@ class NpcCommand(private val runtime: ServerMobsRuntime) : CommandExecutor, TabC
             reply(sender, "<green>Skin updated for '<white>${data.name}</white>'.")
             return
         }
-        reply(sender, "<gray>Looking up the skin of '<white>$spec</white>'...")
-        runtime.skinResolver.lookupPlayerAsync(spec) { resolved ->
+        // A URL is signed through MineSkin and a name is looked up at Mojang; both need the network.
+        val what = if (runtime.skinResolver.isUrl(spec)) "skin image" else "skin of '$spec'"
+        reply(sender, "<gray>Resolving the <white>$what<gray>, this can take a moment...")
+        runtime.skinResolver.resolveAsync(spec) { resolved ->
             runtime.bukkitPlugin.server.scheduler.runTask(
                 runtime.bukkitPlugin,
                 Runnable {
                     if (resolved == null) {
                         reply(sender, "<red>Could not resolve a skin for '$spec'. " +
-                                "Only premium (Mojang) accounts can be looked up by name.")
+                                "Names must be premium (Mojang) accounts; URLs must be direct images.")
                     } else {
                         manager.get(data.name)?.let { manager.update(it.copy(skin = resolved)) }
                         reply(sender, "<green>Skin updated for '<white>${data.name}</white>'.")
@@ -370,6 +372,7 @@ class NpcCommand(private val runtime: ServerMobsRuntime) : CommandExecutor, TabC
             "$label edit <name> skin <player|url|value>",
             "$label edit <name> hologram <add|set|remove|clear> ...",
             "$label edit <name> action add <transfer|message|console|player> <value>",
+            "    <gray>player = run the command as the clicking player</gray>",
             "$label edit <name> action <remove <index>|clear>",
             "$label edit <name> nametag <true|false>",
             "$label edit <name> turn_to_player <true|false>",

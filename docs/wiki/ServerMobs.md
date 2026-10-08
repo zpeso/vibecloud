@@ -56,8 +56,12 @@ show-nametag: true              # default for new NPCs: show the floating name a
 view-distance: 48               # range (blocks) at which an NPC is sent to a player
 
 hologram:
-  offset: 2.2                   # height of the top hologram line above the NPC's feet
+  offset: 2.0                   # height of the top hologram line above the NPC's feet (~nametag height)
   line-spacing: 0.3             # vertical gap between hologram lines
+
+# Sign URL skins through MineSkin so every client (1.8 and 1.20.2+) accepts them.
+sign-skins: true
+mineskin-api: "https://api.mineskin.org"
 
 # The 1.8 build defaults to "BungeeCord" (1.8 channel names cannot contain a colon);
 # the modern build defaults to "bungeecord:main". Override to match your proxy.
@@ -82,7 +86,7 @@ Permission: `servermobs.admin` (default: op). NPC names allow letters, digits, `
 | `/npc edit <name> action remove <index>` | Removes one action |
 | `/npc edit <name> action clear` | Removes all actions |
 | `/npc edit <name> nametag <true\|false>` | Shows/hides the floating name above the NPC (omit the value to toggle) |
-| `/npc edit <name> turn_to_player <true\|false>` | Makes the NPC's head follow nearby players (omit to toggle) |
+| `/npc edit <name> turn_to_player <true\|false>` | Turns the NPC's whole body and head towards nearby players (omit to toggle) |
 | `/npc edit <name> move` | Moves the NPC to your position |
 | `/npc edit <name> group <group>` | Reassigns the NPC to another group |
 | `/npc remove <name>` | Deletes the NPC and its definition |
@@ -102,11 +106,14 @@ Tab completion covers subcommands, NPC names, settings and action types.
 /npc edit shopkeeper skin <base64value>             # raw texture value (unsigned)
 ```
 
-`skins` is accepted as an alias of `skin`. A URL is wrapped into an unsigned texture value, which renders on
-1.8 through 1.20.1; on 1.20.2+ some clients only accept a **signed** texture, so for those use the
-`<value>;<signature>` form (e.g. from Mineskin). A name lookup returns Mojang's signed value+signature.
+`skins` is accepted as an alias of `skin`. A URL is a direct image link; because Minecraft clients require a
+**signed** texture (1.8 rejects unsigned ones and shows the default skin), the URL is sent to
+[MineSkin](https://mineskin.org) to be signed, then cached in the NPC's file. Disable this with
+`sign-skins: false`, or point `mineskin-api` at your own instance. A player-name lookup returns Mojang's
+already-signed value+signature.
 
-Name lookups run asynchronously and need outbound HTTPS to `api.mojang.com` / `sessionserver.mojang.com`.
+URL signing and name lookups run asynchronously and need outbound HTTPS (`api.mineskin.org` for URLs,
+`api.mojang.com` / `sessionserver.mojang.com` for names).
 
 ## Actions
 
@@ -119,7 +126,7 @@ Classic `&` codes are also accepted and converted, so `&4Red`, `&l&cBold` and `&
 | `transfer` | `send`, `connect` | server name (e.g. `citybuild-1`) | Sends the player to that backend through the proxy |
 | `message` | `msg`, `say` | MiniMessage text | Sends the player a chat message |
 | `console` | `cmd`, `command` | command (no leading `/`) | Runs the command as the console |
-| `player` | `as-player`, `perform` | command (no leading `/`) | Runs the command as the clicking player |
+| `player` | `player-command`, `as-player`, `runas` | command (no leading `/`) | Runs the command **as the clicking player** (their permissions, they run it) |
 
 Example — a "shop" NPC that teleports players to the citybuild server:
 
@@ -148,10 +155,11 @@ The modern build uses the server's adventure API (Paper provides it) and `TextDi
 bundles its own adventure and falls back to invisible `ArmorStand` holograms, because 1.8 has neither. Behaviour,
 commands, persistence and the MiniMessage formatting are identical; only the shading and the hologram entity differ.
 
-**Tab list on 1.8:** the NPC's skin is resolved from the player-info entry the client receives, so on 1.8 the NPC
-always stays in the player list — removing that entry (the only way to leave the tab list there) would also drop the
-skin. Use holograms and `/npc edit <name> nametag false` for the display instead. The modern build hides it from the
-tab list without affecting the skin.
+**Skin, nametag and tab list:** the head nametag is hidden with a scoreboard team whose name-tag visibility is
+`NEVER`, so `/npc edit <name> nametag false` works on both builds. The modern build removes the NPC from the tab
+list with the `listed` flag. On **1.8** there is no such flag: the only way to leave the tab list is to drop the
+player-info entry, and that is also where the client reads the skin from — so on 1.8 the NPC stays in the tab list
+while it has a skin (drop the skin if you prefer an empty tab list). Use holograms plus `nametag false` instead.
 
 The files are plain YAML and safe to edit or copy between machines; run `/npc reload` afterwards.
 

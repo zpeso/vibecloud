@@ -37,7 +37,7 @@ class ServerMobsPlugin : JavaPlugin(), ServerMobsRuntime {
         serverMobsConfig = ServerMobsConfig.load(config, dataFolder, logger)
         npcStore = NpcStore(serverMobsConfig.npcDirectory, logger)
         npcStore.ensureDirectory()
-        skinResolver = SkinResolver(logger)
+        skinResolver = SkinResolver(logger, serverMobsConfig.signSkins, serverMobsConfig.mineSkinApi)
 
         PacketEvents.getAPI().init()
 
@@ -53,6 +53,13 @@ class ServerMobsPlugin : JavaPlugin(), ServerMobsRuntime {
         }
 
         registerTransferChannel()
+        if (serverMobsConfig.removeFromTablist) {
+            logger.warning(
+                "'remove-from-tablist' is ignored on 1.8: dropping the player-info entry (the only " +
+                        "way to leave the tab list there) also removes the NPC's skin. Hide the " +
+                        "nametag with '/npc edit <name> nametag false' instead.",
+            )
+        }
         logger.info(
             "ServerMobs (1.8) enabled (group='${serverMobsConfig.group}', " +
                     "npcs=${npcManager.count()}, data=${serverMobsConfig.npcDirectory})",

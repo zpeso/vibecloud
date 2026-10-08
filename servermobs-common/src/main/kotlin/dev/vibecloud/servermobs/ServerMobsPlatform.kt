@@ -2,6 +2,11 @@ package dev.vibecloud.servermobs
 
 import com.github.retrooper.packetevents.protocol.player.TextureProperty
 import com.github.retrooper.packetevents.protocol.player.User
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityHeadLook
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityRotation
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerTeams
+import net.kyori.adventure.text.Component
+import net.kyori.adventure.text.format.NamedTextColor
 import org.bukkit.Location
 import org.bukkit.World
 import org.bukkit.command.CommandSender
@@ -132,11 +137,38 @@ interface ServerMobsPlatform {
         yaw: Float,
         pitch: Float,
         hideFromTablist: Boolean,
-        showNametag: Boolean,
     )
 
-    /** Rotates the NPC's head to [yaw] for [user] (used by `turn_to_player`). */
-    fun sendHeadLook(user: User, entityId: Int, yaw: Float)
+    /**
+     * Turns the NPC's whole body **and** head towards [yaw]/[pitch] for [user]. Sending only the
+     * head-look packet (as this used to do) left the body facing its spawn direction, which looked
+     * like the NPC was turning its neck instead of its body.
+     */
+    fun sendLook(user: User, entityId: Int, yaw: Float, pitch: Float) {
+        user.sendPacket(WrapperPlayServerEntityRotation(entityId, yaw, pitch, true))
+        user.sendPacket(WrapperPlayServerEntityHeadLook(entityId, yaw))
+    }
+
+    /**
+     * Hides [entry]'s floating name by putting it in a scoreboard team whose name-tag visibility is
+     * `NEVER`. This works on every version (added in 1.8) and — unlike blanking the player-info
+     * display name — is reliably honoured by the 1.8 client, which renders the name from the
+     * profile rather than the tab-list display name.
+     */
+    fun hideNametag(user: User, teamName: String, entry: String) {
+        val info = WrapperPlayServerTeams.ScoreBoardTeamInfo(
+            Component.empty(),
+            Component.empty(),
+            Component.empty(),
+            WrapperPlayServerTeams.NameTagVisibility.NEVER,
+            WrapperPlayServerTeams.CollisionRule.ALWAYS,
+            NamedTextColor.WHITE,
+            WrapperPlayServerTeams.OptionData.NONE,
+        )
+        user.sendPacket(
+            WrapperPlayServerTeams(teamName, WrapperPlayServerTeams.TeamMode.CREATE, info, entry),
+        )
+    }
 
     /** Removes the fake player entity plus its player-info entry from [user]. */
     fun sendNpcDespawn(user: User, entityId: Int, uuid: UUID, name: String)
