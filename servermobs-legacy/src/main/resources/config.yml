@@ -16,7 +16,13 @@ data-directory: "../../"
 group: ""
 
 # Hide the NPC from the player list (tab) after it has spawned. Recommended.
+# NOTE (1.8): this is ignored on legacy servers, because removing the player-info entry is the
+# only way to leave the tab list AND it also removes the entry the client reads the skin from.
 remove-from-tablist: true
+
+# Default for newly created NPCs: show the floating name above their head. Toggle per NPC
+# with `/npc edit <name> nametag <true|false>`. Hide it when you place a hologram instead.
+show-nametag: true
 
 # Range (in blocks) at which an NPC is sent to a player.
 view-distance: 48
@@ -27,5 +33,6 @@ hologram:
   line-spacing: 0.3
 
 # Proxy plugin-message channel used by the "transfer" action.
-# Velocity: "bungeecord:main". BungeeCord/Waterfall: "BungeeCord".
-transfer-channel: "bungeecord:main"
+# 1.8 channel names cannot contain a colon, so the legacy server uses "BungeeCord" (which a
+# Velocity proxy also listens on). A "bungeecord:main" value is remapped to "BungeeCord".
+transfer-channel: "BungeeCord"

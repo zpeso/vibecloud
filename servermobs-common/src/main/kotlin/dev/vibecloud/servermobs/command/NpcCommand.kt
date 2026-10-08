@@ -21,6 +21,8 @@ import org.bukkit.entity.Player
  * /npc edit <name> hologram <add <text>|set <index> <text>|remove <index>|clear>
  * /npc edit <name> action add <transfer|message|console|player> <value>
  * /npc edit <name> action <remove <index>|clear>
+ * /npc edit <name> nametag <true|false>
+ * /npc edit <name> turn_to_player <true|false>
  * /npc edit <name> move
  * /npc edit <name> group <group>
  * /npc remove <name>
@@ -80,6 +82,7 @@ class NpcCommand(private val runtime: ServerMobsRuntime) : CommandExecutor, TabC
             z = location.z,
             yaw = location.yaw,
             pitch = location.pitch,
+            showNametag = runtime.serverMobsConfig.showNametag,
         )
         manager.create(data)
         reply(sender, "<green>Created NPC '<white>$name</white>' in group '<white>$group</white>'.")
@@ -111,7 +114,7 @@ class NpcCommand(private val runtime: ServerMobsRuntime) : CommandExecutor, TabC
         }
         val rest = args.drop(3)
         when (args.getOrNull(2)?.lowercase()) {
-            "skin" -> editSkin(sender, data, rest)
+            "skin", "skins", "set-skin", "setskin" -> editSkin(sender, data, rest)
             "hologram", "holo" -> editHologram(sender, data, rest)
             "action" -> editAction(sender, data, rest)
             "move", "position", "pos" -> {
@@ -130,8 +133,51 @@ class NpcCommand(private val runtime: ServerMobsRuntime) : CommandExecutor, TabC
             }
 
             "group" -> editGroup(sender, data, rest.getOrNull(0))
-            else -> reply(sender, "<red>Usage: /npc edit <name> <skin|hologram|action|move|group> ...")
+            "nametag", "name-tag", "nt" -> editNametag(sender, data, rest.getOrNull(0))
+            "turn_to_player", "turn-to-player", "turntoplayer", "look", "turn" ->
+                editTurnToPlayer(sender, data, rest.getOrNull(0))
+
+            else -> reply(
+                sender,
+                "<red>Usage: /npc edit <name> <skin|hologram|action|move|group|nametag|turn_to_player> ...",
+            )
         }
+    }
+
+    /** `/npc edit <name> nametag [true|false]` — hides/shows the floating name; no arg toggles. */
+    private fun editNametag(sender: CommandSender, data: NpcData, raw: String?) {
+        val value = if (raw == null) !data.showNametag else parseBoolean(raw)
+        if (value == null) {
+            reply(sender, "<red>Usage: /npc edit <name> nametag <true|false>")
+            return
+        }
+        manager.update(data.copy(showNametag = value))
+        reply(
+            sender,
+            if (value) {
+                "<green>Nametag shown for '<white>${data.name}</white>'."
+            } else {
+                "<green>Nametag hidden for '<white>${data.name}</white>'."
+            },
+        )
+    }
+
+    /** `/npc edit <name> turn_to_player [true|false]` — head follows nearby players. */
+    private fun editTurnToPlayer(sender: CommandSender, data: NpcData, raw: String?) {
+        val value = if (raw == null) !data.turnToPlayer else parseBoolean(raw)
+        if (value == null) {
+            reply(sender, "<red>Usage: /npc edit <name> turn_to_player <true|false>")
+            return
+        }
+        manager.update(data.copy(turnToPlayer = value))
+        reply(
+            sender,
+            if (value) {
+                "<green>NPC '<white>${data.name}</white>' will now look at nearby players."
+            } else {
+                "<green>NPC '<white>${data.name}</white>' will no longer turn to players."
+            },
+        )
     }
 
     private fun editSkin(sender: CommandSender, data: NpcData, rest: List<String>) {
@@ -283,6 +329,8 @@ class NpcCommand(private val runtime: ServerMobsRuntime) : CommandExecutor, TabC
         line(sender, " <dark_gray>group: <white>${data.group}")
         line(sender, " <dark_gray>location: <white>${data.world} ${data.x},${data.y},${data.z}")
         line(sender, " <dark_gray>skin: <white>${data.skin?.source?.ifBlank { "value" } ?: "none"}")
+        line(sender, " <dark_gray>nametag: <white>${if (data.showNametag) "shown" else "hidden"}")
+        line(sender, " <dark_gray>turn_to_player: <white>${data.turnToPlayer}")
         data.hologram.forEachIndexed { index, holo ->
             line(sender, " <dark_gray>holo[$index]: <white>$holo")
         }
@@ -323,6 +371,8 @@ class NpcCommand(private val runtime: ServerMobsRuntime) : CommandExecutor, TabC
             "$label edit <name> hologram <add|set|remove|clear> ...",
             "$label edit <name> action add <transfer|message|console|player> <value>",
             "$label edit <name> action <remove <index>|clear>",
+            "$label edit <name> nametag <true|false>",
+            "$label edit <name> turn_to_player <true|false>",
             "$label edit <name> move",
             "$label edit <name> group <group>",
             "$label remove <name> | list | info <name> | tp <name> | reload",
@@ -350,11 +400,18 @@ class NpcCommand(private val runtime: ServerMobsRuntime) : CommandExecutor, TabC
         val result = when (args.size) {
             1 -> listOf("create", "edit", "remove", "list", "info", "tp", "reload", "help")
             2 -> if (isNameArgument(args[0])) manager.all().map { it.name } else emptyList()
-            3 -> if (args[0].equals("edit", true)) listOf("skin", "hologram", "action", "move", "group") else emptyList()
+            3 -> if (args[0].equals("edit", true)) {
+                listOf("skin", "hologram", "action", "move", "group", "nametag", "turn_to_player")
+            } else {
+                emptyList()
+            }
+
             4 -> if (args[0].equals("edit", true)) {
                 when (args[2].lowercase()) {
                     "hologram", "holo" -> listOf("add", "set", "remove", "clear")
                     "action" -> listOf("add", "remove", "clear")
+                    "nametag", "name-tag", "nt", "turn_to_player", "turn-to-player", "look", "turn" ->
+                        listOf("true", "false")
                     else -> emptyList()
                 }
             } else {
@@ -366,6 +423,12 @@ class NpcCommand(private val runtime: ServerMobsRuntime) : CommandExecutor, TabC
         }
         val prefix = args.lastOrNull().orEmpty()
         return result.filter { it.startsWith(prefix, ignoreCase = true) }.sorted()
+    }
+
+    private fun parseBoolean(raw: String): Boolean? = when (raw.trim().lowercase()) {
+        "true", "on", "yes", "show", "shown", "enable", "enabled" -> true
+        "false", "off", "no", "hide", "hidden", "disable", "disabled" -> false
+        else -> null
     }
 
     private fun isNameArgument(sub: String): Boolean =

@@ -52,12 +52,15 @@ data-directory: "../../"        # cloud home; NPCs go to <data-directory>/server
 group: ""                       # leave empty to read group-name from plugins/VibeCloud/agent.properties
 
 remove-from-tablist: true       # hide the NPC from the player list after it spawns
+show-nametag: true              # default for new NPCs: show the floating name above the head
 view-distance: 48               # range (blocks) at which an NPC is sent to a player
 
 hologram:
   offset: 2.2                   # height of the top hologram line above the NPC's feet
   line-spacing: 0.3             # vertical gap between hologram lines
 
+# The 1.8 build defaults to "BungeeCord" (1.8 channel names cannot contain a colon);
+# the modern build defaults to "bungeecord:main". Override to match your proxy.
 transfer-channel: "bungeecord:main"   # Velocity; use "BungeeCord" for BungeeCord/Waterfall
 ```
 
@@ -78,6 +81,8 @@ Permission: `servermobs.admin` (default: op). NPC names allow letters, digits, `
 | `/npc edit <name> action add <type> <value>` | Adds a click action (see below) |
 | `/npc edit <name> action remove <index>` | Removes one action |
 | `/npc edit <name> action clear` | Removes all actions |
+| `/npc edit <name> nametag <true\|false>` | Shows/hides the floating name above the NPC (omit the value to toggle) |
+| `/npc edit <name> turn_to_player <true\|false>` | Makes the NPC's head follow nearby players (omit to toggle) |
 | `/npc edit <name> move` | Moves the NPC to your position |
 | `/npc edit <name> group <group>` | Reassigns the NPC to another group |
 | `/npc remove <name>` | Deletes the NPC and its definition |
@@ -92,10 +97,14 @@ Tab completion covers subcommands, NPC names, settings and action types.
 
 ```
 /npc edit shopkeeper skin Notch                     # premium account, looked up from Mojang
-/npc edit shopkeeper skin https://.../skin.png      # direct texture URL (unsigned)
+/npc edit shopkeeper skin https://textures.minecraft.net/texture/<hash>   # direct texture URL
 /npc edit shopkeeper skin <base64value>;<signature> # raw texture value + signature
 /npc edit shopkeeper skin <base64value>             # raw texture value (unsigned)
 ```
+
+`skins` is accepted as an alias of `skin`. A URL is wrapped into an unsigned texture value, which renders on
+1.8 through 1.20.1; on 1.20.2+ some clients only accept a **signed** texture, so for those use the
+`<value>;<signature>` form (e.g. from Mineskin). A name lookup returns Mojang's signed value+signature.
 
 Name lookups run asynchronously and need outbound HTTPS to `api.mojang.com` / `sessionserver.mojang.com`.
 
@@ -103,6 +112,7 @@ Name lookups run asynchronously and need outbound HTTPS to `api.mojang.com` / `s
 
 A click runs every action in order. Hologram text and `message` actions use
 [MiniMessage](https://docs.advntr.dev/minimessage/format) formatting (e.g. `<yellow>`, `<gradient:#ff0000:#0000ff>`).
+Classic `&` codes are also accepted and converted, so `&4Red`, `&l&cBold` and `&#ff00aa` all work as well.
 
 | Type | Aliases | Value | Effect |
 |---|---|---|---|
@@ -122,20 +132,26 @@ Example — a "shop" NPC that teleports players to the citybuild server:
 ```
 
 > **Transfers** use the proxy's BungeeCord plugin-message channel. Velocity answers on `bungeecord:main` (the
-> default); BungeeCord/Waterfall answer on `BungeeCord`. Set `transfer-channel` to match your proxy. The target must
-> be a service (or proxy-known server) name — the proxy does not resolve `<group>#` targets on this path.
+> modern default); BungeeCord/Waterfall answer on `BungeeCord` (the 1.8 default). Set `transfer-channel` to match
+> your proxy. The target must be a service (or proxy-known server) name — the proxy does not resolve `<group>#`
+> targets on this path.
 
 ## Data on disk
 
 | Path | Contents |
 |---|---|
-| `<data-directory>/servermobs/<npc>.yml` | One NPC definition (name, group, location, skin, holograms, actions) |
+| `<data-directory>/servermobs/<npc>.yml` | One NPC definition (name, group, location, nametag, turn-to-player, skin, holograms, actions) |
 
 ## 1.8 vs modern
 
 The modern build uses the server's adventure API (Paper provides it) and `TextDisplay` holograms. The 1.8 build
 bundles its own adventure and falls back to invisible `ArmorStand` holograms, because 1.8 has neither. Behaviour,
 commands, persistence and the MiniMessage formatting are identical; only the shading and the hologram entity differ.
+
+**Tab list on 1.8:** the NPC's skin is resolved from the player-info entry the client receives, so on 1.8 the NPC
+always stays in the player list — removing that entry (the only way to leave the tab list there) would also drop the
+skin. Use holograms and `/npc edit <name> nametag false` for the display instead. The modern build hides it from the
+tab list without affecting the skin.
 
 The files are plain YAML and safe to edit or copy between machines; run `/npc reload` afterwards.
 

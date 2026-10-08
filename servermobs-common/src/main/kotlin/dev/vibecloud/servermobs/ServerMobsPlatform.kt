@@ -13,6 +13,74 @@ fun interface Hologram {
     fun remove()
 }
 
+/** Maps `&`-style colour/format codes to their MiniMessage tags. */
+private val AMPERSAND_CODES: Map<Char, String> = mapOf(
+    '0' to "black",
+    '1' to "dark_blue",
+    '2' to "dark_green",
+    '3' to "dark_aqua",
+    '4' to "dark_red",
+    '5' to "dark_purple",
+    '6' to "gold",
+    '7' to "gray",
+    '8' to "dark_gray",
+    '9' to "blue",
+    'a' to "green",
+    'b' to "aqua",
+    'c' to "red",
+    'd' to "light_purple",
+    'e' to "yellow",
+    'f' to "white",
+    'k' to "obfuscated",
+    'l' to "bold",
+    'm' to "strikethrough",
+    'n' to "underlined",
+    'o' to "italic",
+    'r' to "reset",
+)
+
+/**
+ * Rewrites classic `&`-codes (`&4`, `&l`, `&r`, `&#rrggbb`) into the MiniMessage tags the
+ * platform renderers understand, so admins can colour holograms and messages either way. Input
+ * without an `&` is returned untouched, and an `&` that is not followed by a known code is left
+ * as-is (so plain text like `Tom & Jerry` is unaffected).
+ */
+fun colorize(input: String): String {
+    if (input.indexOf('&') < 0) return input
+    val out = StringBuilder(input.length + 16)
+    var i = 0
+    while (i < input.length) {
+        val current = input[i]
+        if (current == '&' && i + 1 < input.length) {
+            val next = input[i + 1]
+            if (next == '#') {
+                if (i + 7 < input.length) {
+                    val hex = input.substring(i + 2, i + 8)
+                    if (isHex(hex)) {
+                        out.append("<#").append(hex).append('>')
+                        i += 8
+                        continue
+                    }
+                }
+            } else {
+                val tag = AMPERSAND_CODES[next.lowercaseChar()]
+                if (tag != null) {
+                    out.append('<').append(tag).append('>')
+                    i += 2
+                    continue
+                }
+            }
+        }
+        out.append(current)
+        i++
+    }
+    return out.toString()
+}
+
+private fun isHex(value: String): Boolean = value.all {
+    it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F'
+}
+
 /**
  * The small surface that differs between the two ServerMobs builds:
  *
@@ -24,6 +92,20 @@ fun interface Hologram {
  * Everything else — persistence, commands, packet NPCs, interactions — is shared.
  */
 interface ServerMobsPlatform {
+    /**
+     * The proxy plugin-message channel used by the `transfer` action when none is configured. The
+     * modern build uses the namespaced `bungeecord:main`, but 1.8 only accepts the legacy
+     * `BungeeCord` name (its channel names cannot contain a colon).
+     */
+    val defaultTransferChannel: String
+
+    /**
+     * Canonicalises a configured transfer channel for this build. On 1.8 an explicitly configured
+     * `bungeecord:main` is remapped to `BungeeCord`, because Spigot 1.8 rejects the colon.
+     */
+    fun normalizeTransferChannel(raw: String): String =
+        raw.trim().ifEmpty { defaultTransferChannel }
+
     /** Sends a prefixed, MiniMessage-formatted line to [sender]. */
     fun message(sender: CommandSender, raw: String)
 
@@ -50,7 +132,11 @@ interface ServerMobsPlatform {
         yaw: Float,
         pitch: Float,
         hideFromTablist: Boolean,
+        showNametag: Boolean,
     )
+
+    /** Rotates the NPC's head to [yaw] for [user] (used by `turn_to_player`). */
+    fun sendHeadLook(user: User, entityId: Int, yaw: Float)
 
     /** Removes the fake player entity plus its player-info entry from [user]. */
     fun sendNpcDespawn(user: User, entityId: Int, uuid: UUID, name: String)

@@ -52,6 +52,8 @@ class NpcStoreTest {
                 NpcAction(NpcActionType.TRANSFER, "citybuild"),
                 NpcAction(NpcActionType.MESSAGE, "<green>Welcome!"),
             ),
+            showNametag = false,
+            turnToPlayer = true,
         )
 
         store.save(data)
@@ -86,6 +88,14 @@ class NpcStoreTest {
         store.save(sample("good", "lobby"))
 
         assertEquals(listOf("good"), store.list().map { it.name })
+    }
+
+    @Test
+    fun `defaults the nametag and turn-to-player flags when absent`() {
+        store.save(sample("plain", "lobby"))
+        val loaded = assertNotNull(store.find("plain"))
+        assertTrue(loaded.showNametag)
+        assertFalse(loaded.turnToPlayer)
     }
 
     @Test

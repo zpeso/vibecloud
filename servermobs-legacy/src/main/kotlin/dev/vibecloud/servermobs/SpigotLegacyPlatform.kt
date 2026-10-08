@@ -11,6 +11,7 @@ import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEn
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfo
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfo.PlayerData
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSpawnPlayer
+import net.kyori.adventure.text.Component
 import net.kyori.adventure.text.minimessage.MiniMessage
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer
 import org.bukkit.Location
@@ -32,7 +33,23 @@ class SpigotLegacyPlatform : ServerMobsPlatform {
     private val mini = MiniMessage.miniMessage()
     private val legacy = LegacyComponentSerializer.legacySection()
 
-    private fun render(raw: String): String = legacy.serialize(mini.deserialize(raw))
+    /**
+     * 1.8 channel names cannot contain a colon, so the namespaced `bungeecord:main` used by the
+     * modern build is invalid here: 1.8 servers speak the original `BungeeCord` channel.
+     */
+    override val defaultTransferChannel: String = "BungeeCord"
+
+    override fun normalizeTransferChannel(raw: String): String {
+        val trimmed = raw.trim()
+        if (trimmed.isEmpty()) return defaultTransferChannel
+        // An existing config may still carry the modern default — remap it for 1.8.
+        if (trimmed.equals("bungeecord:main", ignoreCase = true) || trimmed.contains(':')) {
+            return defaultTransferChannel
+        }
+        return trimmed
+    }
+
+    private fun render(raw: String): String = legacy.serialize(mini.deserialize(colorize(raw)))
 
     override fun message(sender: CommandSender, raw: String) {
         sender.sendMessage(render(ServerMobsPlatform.PREFIX + raw))
@@ -65,14 +82,18 @@ class SpigotLegacyPlatform : ServerMobsPlatform {
         yaw: Float,
         pitch: Float,
         hideFromTablist: Boolean,
+        showNametag: Boolean,
     ) {
         val profile = UserProfile(uuid, name, textures)
-        // Register the profile (with skin) for the tab list; the client then knows the UUID the
-        // SpawnPlayer packet refers to.
+        // ADD_PLAYER registers the profile — including its texture property — which is what tells
+        // the 1.8 client which skin to download for this UUID. The display name doubles as the
+        // floating name above the head: null falls back to the profile name, an empty component
+        // hides it.
+        val displayName: Component? = if (showNametag) null else Component.empty()
         user.sendPacket(
             WrapperPlayServerPlayerInfo(
                 WrapperPlayServerPlayerInfo.Action.ADD_PLAYER,
-                PlayerData(null, profile, GameMode.SURVIVAL, 0),
+                PlayerData(displayName, profile, GameMode.SURVIVAL, 0),
             ),
         )
         user.sendPacket(
@@ -84,9 +105,14 @@ class SpigotLegacyPlatform : ServerMobsPlatform {
             ),
         )
         user.sendPacket(WrapperPlayServerEntityHeadLook(entityId, yaw))
-        if (hideFromTablist) {
-            user.sendPacket(removePlayerInfo(uuid, name))
-        }
+        // NOTE: 1.8 has no "listed" flag. The only way to drop the profile from the tab list is
+        // REMOVE_PLAYER, but that also deletes the entry the client resolves the skin from — the
+        // NPC then falls back to the default skin. Keeping the skin matters more, so on 1.8 the
+        // NPC stays in the tab list; hide the head nametag instead (`showNametag`).
+    }
+
+    override fun sendHeadLook(user: User, entityId: Int, yaw: Float) {
+        user.sendPacket(WrapperPlayServerEntityHeadLook(entityId, yaw))
     }
 
     override fun sendNpcDespawn(user: User, entityId: Int, uuid: UUID, name: String) {

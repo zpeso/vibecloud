@@ -18,6 +18,10 @@ group: ""
 # Hide the NPC from the player list (tab) after it has spawned. Recommended.
 remove-from-tablist: true
 
+# Default for newly created NPCs: show the floating name above their head. Toggle per NPC
+# with `/npc edit <name> nametag <true|false>`. Hide it when you place a hologram instead.
+show-nametag: true
+
 # Range (in blocks) at which an NPC is sent to a player.
 view-distance: 48
 

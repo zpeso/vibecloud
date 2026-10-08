@@ -48,6 +48,9 @@ data class NpcSkin(val value: String, val signature: String?, val source: String
  * A persisted NPC. [name] is the unique id used by `/npc`; [group] is the VibeCloud group the NPC
  * was created in, so services of that group respawn it on start. [world]/[x]/[y]/[z] are where it
  * lives.
+ *
+ * [showNametag] controls the floating name above the NPC's head, [turnToPlayer] makes the NPC's
+ * head follow the nearest player.
  */
 data class NpcData(
     val name: String,
@@ -61,4 +64,6 @@ data class NpcData(
     val skin: NpcSkin? = null,
     val hologram: List<String> = emptyList(),
     val actions: List<NpcAction> = emptyList(),
+    val showNametag: Boolean = true,
+    val turnToPlayer: Boolean = false,
 )

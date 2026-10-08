@@ -94,6 +94,8 @@ class NpcStore(
             "z" to data.z,
             "yaw" to data.yaw,
             "pitch" to data.pitch,
+            "show-nametag" to data.showNametag,
+            "turn-to-player" to data.turnToPlayer,
         )
         data.skin?.let { skin ->
             document["skin"] = linkedMapOf<String, Any?>(
@@ -144,7 +146,11 @@ class NpcStore(
             val value = (actionMap["value"] as? String).orEmpty()
             NpcAction(type, value)
         }
-        return NpcData(name, group, world, x, y, z, yaw, pitch, skin, hologram, actions)
+        val showNametag = (map["show-nametag"] as? Boolean) ?: true
+        val turnToPlayer = (map["turn-to-player"] as? Boolean) ?: false
+        return NpcData(
+            name, group, world, x, y, z, yaw, pitch, skin, hologram, actions, showNametag, turnToPlayer,
+        )
     }
 
     companion object {

@@ -12,6 +12,7 @@ import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPl
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfoUpdate.Action
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfoUpdate.PlayerInfo
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSpawnEntity
+import net.kyori.adventure.text.Component
 import net.kyori.adventure.text.minimessage.MiniMessage
 import org.bukkit.Location
 import org.bukkit.World
@@ -29,17 +30,19 @@ import java.util.UUID
 class PaperPlatform : ServerMobsPlatform {
     private val mini = MiniMessage.miniMessage()
 
+    override val defaultTransferChannel: String = "bungeecord:main"
+
     override fun message(sender: CommandSender, raw: String) {
-        sender.sendMessage(mini.deserialize(ServerMobsPlatform.PREFIX + raw))
+        sender.sendMessage(mini.deserialize(colorize(ServerMobsPlatform.PREFIX + raw)))
     }
 
     override fun line(sender: CommandSender, raw: String) {
-        sender.sendMessage(mini.deserialize(raw))
+        sender.sendMessage(mini.deserialize(colorize(raw)))
     }
 
     override fun spawnHologram(world: World, location: Location, line: String): Hologram {
         val display = world.spawn(location, TextDisplay::class.java) { entity ->
-            entity.text(mini.deserialize(line))
+            entity.text(mini.deserialize(colorize(line)))
             entity.setBillboard(Display.Billboard.CENTER)
             entity.setSeeThrough(false)
             entity.setShadowed(true)
@@ -62,10 +65,16 @@ class PaperPlatform : ServerMobsPlatform {
         yaw: Float,
         pitch: Float,
         hideFromTablist: Boolean,
+        showNametag: Boolean,
     ) {
         val profile = UserProfile(uuid, name, textures)
+        // The player-info display name is what clients draw above the head, so hiding the nametag
+        // means sending an empty component instead of the profile name.
+        val entry = PlayerInfo(profile).apply {
+            setDisplayName(if (showNametag) Component.text(name) else Component.empty())
+        }
         user.sendPacket(
-            WrapperPlayServerPlayerInfoUpdate(EnumSet.of(Action.ADD_PLAYER), listOf(PlayerInfo(profile))),
+            WrapperPlayServerPlayerInfoUpdate(EnumSet.of(Action.ADD_PLAYER), listOf(entry)),
         )
         user.sendPacket(
             WrapperPlayServerSpawnEntity(
@@ -85,6 +94,10 @@ class PaperPlatform : ServerMobsPlatform {
                 WrapperPlayServerPlayerInfoUpdate(EnumSet.of(Action.UPDATE_LISTED), listOf(hidden)),
             )
         }
+    }
+
+    override fun sendHeadLook(user: User, entityId: Int, yaw: Float) {
+        user.sendPacket(WrapperPlayServerEntityHeadLook(entityId, yaw))
     }
 
     override fun sendNpcDespawn(user: User, entityId: Int, uuid: UUID, name: String) {

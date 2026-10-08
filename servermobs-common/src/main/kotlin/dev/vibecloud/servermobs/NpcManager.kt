@@ -40,15 +40,19 @@ class NpcManager(
     private val sent = HashMap<UUID, MutableSet<String>>()
     private val interactionCooldowns = ConcurrentHashMap<String, Long>()
     private var task: BukkitTask? = null
+    private var lookTask: BukkitTask? = null
 
     fun enable() {
         reload()
         task = Bukkit.getScheduler().runTaskTimer(plugin, Runnable(::tick), TICK_PERIOD_TICKS, TICK_PERIOD_TICKS)
+        lookTask = Bukkit.getScheduler().runTaskTimer(plugin, Runnable(::updateLooks), LOOK_PERIOD_TICKS, LOOK_PERIOD_TICKS)
     }
 
     fun disable() {
         task?.cancel()
         task = null
+        lookTask?.cancel()
+        lookTask = null
         npcs.values.forEach { npc ->
             npc.removeHolograms()
             npc.despawnAll()
@@ -150,7 +154,7 @@ class NpcManager(
     }
 
     private fun transfer(player: Player, target: String) {
-        val channel = config.transferChannel
+        val channel = platform.normalizeTransferChannel(config.transferChannel)
         val payload = ByteArrayOutputStream().use { bytes ->
             DataOutputStream(bytes).use { stream ->
                 stream.writeUTF("Connect")
@@ -159,6 +163,7 @@ class NpcManager(
             bytes.toByteArray()
         }
         player.sendPluginMessage(plugin, channel, payload)
+        logger.info("Sent ${player.name} to '$target' through the proxy (channel '$channel')")
     }
 
     private fun register(data: NpcData) {
@@ -190,6 +195,25 @@ class NpcManager(
     }
 
     /**
+     * Points every `turn_to_player` NPC's head at the players who can see it. Runs more often than
+     * [tick] so the look tracks smoothly; cheap — only the small head-look packet is sent.
+     */
+    private fun updateLooks() {
+        val tracked = npcs.values.filter { it.data.turnToPlayer }
+        if (tracked.isEmpty()) return
+        for ((playerId, names) in sent) {
+            if (names.isEmpty()) continue
+            val player = Bukkit.getPlayer(playerId) ?: continue
+            val user = PacketEvents.getAPI().playerManager.getUser(player) ?: continue
+            for (npc in tracked) {
+                if (!names.contains(npc.data.name.lowercase())) continue
+                if (npc.data.world != player.world.name) continue
+                platform.sendHeadLook(user, npc.entityId, npc.lookYaw(player))
+            }
+        }
+    }
+
+    /**
      * A loaded NPC: a client-side player entity (PacketEvents) plus its hologram entities. The
      * entity id is allocated once and reused for every viewer; the UUID is derived from the name so
      * the skin/tab entry is stable across restarts.
@@ -215,6 +239,7 @@ class NpcManager(
                 data.yaw,
                 data.pitch,
                 config.removeFromTablist,
+                data.showNametag,
             )
         }
 
@@ -244,6 +269,16 @@ class NpcManager(
 
         fun bukkitLocation(world: World): Location = Location(world, data.x, data.y, data.z)
 
+        /** The yaw that makes this NPC face [player], or its stored yaw when they overlap. */
+        fun lookYaw(player: Player): Float {
+            val world = Bukkit.getWorld(data.world) ?: return data.yaw
+            val from = Location(world, data.x, data.y, data.z)
+            val direction = player.location.toVector().subtract(from.toVector())
+            if (direction.lengthSquared() == 0.0) return data.yaw
+            from.setDirection(direction)
+            return from.yaw
+        }
+
         private fun textureProperties(): List<TextureProperty> {
             val skin = data.skin ?: return emptyList()
             return listOf(
@@ -258,6 +293,7 @@ class NpcManager(
 
     private companion object {
         const val TICK_PERIOD_TICKS = 20L
+        const val LOOK_PERIOD_TICKS = 2L
         const val INTERACTION_COOLDOWN_MS = 250L
         const val CLEANUP_THRESHOLD = 2048
     }

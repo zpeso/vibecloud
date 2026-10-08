@@ -66,7 +66,9 @@ class ServerMobsPlugin : JavaPlugin(), ServerMobsRuntime {
     }
 
     private fun registerTransferChannel() {
-        val channel = serverMobsConfig.transferChannel
+        // Normalised so an existing config that still carries the modern "bungeecord:main" default
+        // is registered as "BungeeCord" — Spigot 1.8 rejects channel names containing a colon.
+        val channel = platform.normalizeTransferChannel(serverMobsConfig.transferChannel)
         runCatching { server.messenger.registerOutgoingPluginChannel(this, channel) }
             .onFailure { logger.warning("Could not register transfer channel '$channel': ${it.message}") }
     }

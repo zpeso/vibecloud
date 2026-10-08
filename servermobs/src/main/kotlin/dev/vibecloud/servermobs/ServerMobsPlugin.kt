@@ -66,7 +66,7 @@ class ServerMobsPlugin : JavaPlugin(), ServerMobsRuntime {
     }
 
     private fun registerTransferChannel() {
-        val channel = serverMobsConfig.transferChannel
+        val channel = platform.normalizeTransferChannel(serverMobsConfig.transferChannel)
         runCatching { server.messenger.registerOutgoingPluginChannel(this, channel) }
             .onFailure { logger.warning("Could not register transfer channel '$channel': ${it.message}") }
     }
