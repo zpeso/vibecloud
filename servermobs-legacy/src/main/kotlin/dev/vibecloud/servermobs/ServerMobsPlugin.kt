@@ -41,7 +41,8 @@ class ServerMobsPlugin : JavaPlugin(), ServerMobsRuntime {
 
         PacketEvents.getAPI().init()
 
-        npcManager = NpcManager(this, platform, npcStore, serverMobsConfig)
+        val hologramPlaceholders = HologramPlaceholderCache(this, logger)
+        npcManager = NpcManager(this, platform, npcStore, serverMobsConfig, hologramPlaceholders)
         npcManager.enable()
         // Register after the manager exists: the listener dereferences it on every interact packet.
         PacketEvents.getAPI().eventManager.registerListener(ServerMobsListener(this))

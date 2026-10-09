@@ -49,7 +49,15 @@ class PaperPlatform : ServerMobsPlatform {
             entity.isPersistent = false
             entity.isInvulnerable = true
         }
-        return Hologram { display.remove() }
+        return object : Hologram {
+            override fun update(line: String) {
+                if (!display.isDead) display.text(mini.deserialize(colorize(line)))
+            }
+
+            override fun remove() {
+                display.remove()
+            }
+        }
     }
 
     override fun sendNpcSpawn(

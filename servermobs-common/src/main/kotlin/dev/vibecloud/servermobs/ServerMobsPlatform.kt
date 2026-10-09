@@ -13,8 +13,9 @@ import org.bukkit.command.CommandSender
 import org.bukkit.plugin.Plugin
 import java.util.UUID
 
-/** A single spawned hologram line; removing it despawns the underlying entity. */
-fun interface Hologram {
+/** A single spawned hologram line; text can be refreshed without recreating the entity. */
+interface Hologram {
+    fun update(line: String)
     fun remove()
 }
 
@@ -117,7 +118,7 @@ interface ServerMobsPlatform {
     /** Sends an unprefixed, MiniMessage-formatted line to [sender]. */
     fun line(sender: CommandSender, raw: String)
 
-    /** Spawns one hologram line at [location] and returns a handle to remove it. */
+    /** Spawns one hologram line at [location] and returns a handle to update/remove it. */
     fun spawnHologram(world: World, location: Location, line: String): Hologram
 
     /**

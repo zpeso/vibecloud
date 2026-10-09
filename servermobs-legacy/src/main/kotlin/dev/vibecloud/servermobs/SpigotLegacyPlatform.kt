@@ -72,7 +72,15 @@ class SpigotLegacyPlatform : ServerMobsPlatform {
         stand.isVisible = false
         stand.isSmall = true
         // (setInvulnerable only exists since 1.9; not needed for a name-tag hologram.)
-        return Hologram { stand.remove() }
+        return object : Hologram {
+            override fun update(line: String) {
+                if (!stand.isDead) stand.customName = render(line.ifEmpty { " " })
+            }
+
+            override fun remove() {
+                stand.remove()
+            }
+        }
     }
 
     override fun sendNpcSpawn(

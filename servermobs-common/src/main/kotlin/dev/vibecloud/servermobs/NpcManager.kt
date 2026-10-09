@@ -31,6 +31,7 @@ class NpcManager(
     private val platform: ServerMobsPlatform,
     private val store: NpcStore,
     private val config: ServerMobsConfig,
+    private val placeholderCache: HologramPlaceholderCache? = null,
 ) {
     private val logger = plugin.logger
     private val npcs = LinkedHashMap<String, SpawnedNpc>()
@@ -41,11 +42,21 @@ class NpcManager(
     private val interactionCooldowns = ConcurrentHashMap<String, Long>()
     private var task: BukkitTask? = null
     private var lookTask: BukkitTask? = null
+    private var hologramTask: BukkitTask? = null
 
     fun enable() {
         reload()
         task = Bukkit.getScheduler().runTaskTimer(plugin, Runnable(::tick), TICK_PERIOD_TICKS, TICK_PERIOD_TICKS)
         lookTask = Bukkit.getScheduler().runTaskTimer(plugin, Runnable(::updateLooks), LOOK_PERIOD_TICKS, LOOK_PERIOD_TICKS)
+        placeholderCache?.start()
+        if (placeholderCache != null) {
+            hologramTask = Bukkit.getScheduler().runTaskTimer(
+                plugin,
+                Runnable(::updateHolograms),
+                HOLOGRAM_REFRESH_PERIOD_TICKS,
+                HOLOGRAM_REFRESH_PERIOD_TICKS,
+            )
+        }
     }
 
     fun disable() {
@@ -53,6 +64,9 @@ class NpcManager(
         task = null
         lookTask?.cancel()
         lookTask = null
+        hologramTask?.cancel()
+        hologramTask = null
+        placeholderCache?.stop()
         npcs.values.forEach { npc ->
             npc.removeHolograms()
             npc.despawnAll()
@@ -199,6 +213,10 @@ class NpcManager(
      * more often than [tick] so the look tracks smoothly; cheap — only the small look packets are
      * sent.
      */
+    private fun updateHolograms() {
+        npcs.values.forEach { it.updateHolograms() }
+    }
+
     private fun updateLooks() {
         val tracked = npcs.values.filter { it.data.turnToPlayer }
         if (tracked.isEmpty()) return
@@ -279,13 +297,26 @@ class NpcManager(
         fun spawnHolograms() {
             if (data.hologram.isEmpty()) return
             val world = Bukkit.getWorld(data.world) ?: return
-            // Align the first line to where the old second line was. This keeps a single line at
-            // the configured offset, and shifts a multi-line stack so its first line clears the NPC.
-            val firstLineY = data.y + config.hologramOffset +
-                    maxOf(data.hologram.size - 2, 0) * config.hologramLineSpacing
-            data.hologram.forEachIndexed { index, line ->
-                val y = firstLineY - index * config.hologramLineSpacing
-                holograms.add(platform.spawnHologram(world, Location(world, data.x, y, data.z), line))
+            // List order is bottom-to-top, so the newest/appended line appears above the previous
+            // last line. Raise the bottom baseline to keep even a single line clear of the NPC.
+            val bottomLineY = data.y + config.hologramOffset + HOLOGRAM_BASELINE_LIFT +
+                    config.hologramLineSpacing
+            hologramLineHeights(bottomLineY, config.hologramLineSpacing, data.hologram.size)
+                .forEachIndexed { index, y ->
+                    val line = data.hologram[index]
+                    holograms.add(platform.spawnHologram(
+                        world,
+                        Location(world, data.x, y, data.z),
+                        placeholderCache?.resolve(line) ?: line,
+                    ))
+                }
+        }
+
+        fun updateHolograms() {
+            val cache = placeholderCache ?: return
+            holograms.forEachIndexed { index, hologram ->
+                val line = data.hologram.getOrNull(index) ?: return@forEachIndexed
+                runCatching { hologram.update(cache.resolve(line)) }
             }
         }
 
@@ -324,6 +355,8 @@ class NpcManager(
     private companion object {
         const val TICK_PERIOD_TICKS = 20L
         const val LOOK_PERIOD_TICKS = 2L
+        const val HOLOGRAM_REFRESH_PERIOD_TICKS = 20L
+        const val HOLOGRAM_BASELINE_LIFT = 0.5
         const val TABLIST_REMOVE_DELAY_TICKS = 2L
         const val INTERACTION_COOLDOWN_MS = 250L
         const val CLEANUP_THRESHOLD = 2048

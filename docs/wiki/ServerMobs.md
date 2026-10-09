@@ -56,8 +56,8 @@ show-nametag: true              # default for new NPCs: show the floating name a
 view-distance: 48               # range (blocks) at which an NPC is sent to a player
 
 hologram:
-  offset: 2.0                   # baseline above NPC feet for the first line
-  line-spacing: 0.3             # vertical gap between hologram lines
+  offset: 2.0                   # baseline above NPC feet; first line gets an extra line-spacing
+  line-spacing: 0.3             # each newly added line stacks above the previous line
 
 # Sign URL skins through MineSkin so every client (1.8 and 1.20.2+) accepts them.
 sign-skins: true
@@ -124,6 +124,17 @@ A click runs every action in order. Hologram text and `message` actions use
 [MiniMessage](https://docs.advntr.dev/minimessage/format) formatting (e.g. `<yellow>`, `<gradient:#ff0000:#0000ff>`).
 Classic `&` and `§` color/format codes are also accepted, so `&4Red`, `§4Red`, `&l&cBold` and `&#ff00aa` work.
 For a blank hologram row use `/npc edit <name> hologram add {empty}`; it remains a line in the stack.
+Player counts are cached from the local VibeCloud bridge and placeholders refresh every few seconds:
+`{playercount:group:build}` sums every service in the `build` group, while
+`{playercount:service:build-1}` reads one service. Example:
+
+```text
+/npc edit rewards hologram add &ePlayers: &f{playercount:group:build}
+/npc edit rewards hologram add &7This server: {playercount:service:build-1}
+```
+
+This requires `plugins/VibeCloud/agent.properties` to be present and the bridge to be reachable; until its first
+successful response, placeholder text is shown as written.
 
 | Type | Aliases | Value | Effect |
 |---|---|---|---|
@@ -154,6 +165,10 @@ Example — a "shop" NPC that teleports players to the citybuild server:
 | `<data-directory>/servermobs/<npc>.yml` | One NPC definition (name, group, location, nametag, turn-to-player, skin, holograms, actions) |
 
 ## 1.8 vs modern
+
+Hologram lines are ordered bottom-to-top in their saved list: the first line is the lowest, and adding a line
+places it above the current top line. The bottom line starts at `hologram.offset + hologram.line-spacing` above the
+NPC's feet. Player-count placeholders update in place every second from the cached bridge snapshot.
 
 The modern build uses the server's adventure API (Paper provides it) and `TextDisplay` holograms. The 1.8 build
 bundles its own adventure and falls back to invisible `ArmorStand` holograms, because 1.8 has neither. Behaviour,
