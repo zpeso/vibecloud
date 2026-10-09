@@ -30,6 +30,7 @@ import java.util.UUID
  */
 class SpigotLegacyPlatform : ServerMobsPlatform {
     private val mini = MiniMessage.miniMessage()
+    override val delayedTablistRemoval: Boolean = true
     private val legacy = LegacyComponentSerializer.legacySection()
 
     /**
@@ -63,7 +64,9 @@ class SpigotLegacyPlatform : ServerMobsPlatform {
         // stand is spawned lower to land the text at [location] — the height the caller asked for
         // (by default where the NPC's own nametag would sit).
         val stand = world.spawn(location.clone().subtract(0.0, ARMORSTAND_LABEL_OFFSET, 0.0), ArmorStand::class.java)
-        stand.customName = render(line)
+        // Keep an actual (space-only) label so an intentionally blank hologram line retains its
+        // vertical slot on 1.8 armor stands.
+        stand.customName = render(line.ifEmpty { " " })
         stand.isCustomNameVisible = true
         stand.setGravity(false)
         stand.isVisible = false
@@ -103,10 +106,12 @@ class SpigotLegacyPlatform : ServerMobsPlatform {
             ),
         )
         user.sendPacket(WrapperPlayServerEntityHeadLook(entityId, yaw))
-        // NOTE: 1.8 has no "listed" flag. The only way to drop the profile from the tab list is
-        // REMOVE_PLAYER, but that also deletes the entry the client resolves the skin from — the
-        // NPC then falls back to the default skin. Keeping the skin matters more, so on 1.8 the
-        // NPC stays in the tab list; the head nametag is still hidden with a scoreboard team.
+        // NPCManager sends REMOVE_PLAYER two ticks later. That brief delay allows the 1.8 client
+        // to receive the profile and begin resolving the skin before the tab entry is removed.
+    }
+
+    override fun hideNpcFromTablist(user: User, uuid: UUID, name: String) {
+        user.sendPacket(removePlayerInfo(uuid, name))
     }
 
     override fun sendNpcDespawn(user: User, entityId: Int, uuid: UUID, name: String) {

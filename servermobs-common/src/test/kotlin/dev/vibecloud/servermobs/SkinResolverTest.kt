@@ -36,7 +36,7 @@ class SkinResolverTest {
     @Test
     fun `falls back to an unsigned texture value when signing is disabled`() {
         val unsigned = SkinResolver(Logger.getLogger("servermobs-test"), signSkins = false)
-        val skin = unsigned.resolveUrl("https://textures.minecraft.net/texture/abc")
+        val skin = unsigned.resolveUrl("https://textures.minecraft.net/texture/abc")!!
         assertNull(skin.signature)
         val decoded = String(Base64.getDecoder().decode(skin.value))
         assertTrue(decoded.contains("https://textures.minecraft.net/texture/abc"))

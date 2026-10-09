@@ -18,7 +18,7 @@ fun interface Hologram {
     fun remove()
 }
 
-/** Maps `&`-style colour/format codes to their MiniMessage tags. */
+/** Maps legacy `&`/`§` colour and format codes to their MiniMessage tags. */
 private val AMPERSAND_CODES: Map<Char, String> = mapOf(
     '0' to "black",
     '1' to "dark_blue",
@@ -45,18 +45,18 @@ private val AMPERSAND_CODES: Map<Char, String> = mapOf(
 )
 
 /**
- * Rewrites classic `&`-codes (`&4`, `&l`, `&r`, `&#rrggbb`) into the MiniMessage tags the
+ * Rewrites classic `&`/`§` codes (`&4`, `§4`, `&l`, `&r`, `&#rrggbb`) into the MiniMessage tags the
  * platform renderers understand, so admins can colour holograms and messages either way. Input
- * without an `&` is returned untouched, and an `&` that is not followed by a known code is left
- * as-is (so plain text like `Tom & Jerry` is unaffected).
+ * without a legacy marker is returned untouched, and an `&`/`§` that is not followed by a known
+ * code is left as-is (so plain text like `Tom & Jerry` is unaffected).
  */
 fun colorize(input: String): String {
-    if (input.indexOf('&') < 0) return input
+    if (input.indexOf('&') < 0 && input.indexOf('§') < 0) return input
     val out = StringBuilder(input.length + 16)
     var i = 0
     while (i < input.length) {
         val current = input[i]
-        if (current == '&' && i + 1 < input.length) {
+        if ((current == '&' || current == '§') && i + 1 < input.length) {
             val next = input[i + 1]
             if (next == '#') {
                 if (i + 7 < input.length) {
@@ -122,8 +122,8 @@ interface ServerMobsPlatform {
 
     /**
      * Sends [user] the packets that make a fake player entity appear at (x,y,z). Modern servers
-     * use `PlayerInfoUpdate` + `SpawnEntity`, while 1.8 needs the legacy `PlayerInfo` +
-     * `SpawnPlayer` packets; both hide the NPC from the tab list when [hideFromTablist].
+     * use `PlayerInfoUpdate` + `SpawnEntity`; 1.8 uses legacy `PlayerInfo` + `SpawnPlayer` and
+     * removes the tab-list entry after a short delay so the client can first read the skin profile.
      */
     fun sendNpcSpawn(
         user: User,
@@ -169,6 +169,12 @@ interface ServerMobsPlatform {
             WrapperPlayServerTeams(teamName, WrapperPlayServerTeams.TeamMode.CREATE, info, entry),
         )
     }
+
+    /** Whether this platform needs a delayed player-info removal to hide a spawned NPC from tab. */
+    val delayedTablistRemoval: Boolean get() = false
+
+    /** Removes the NPC's player-info entry after the spawn packet has had time to load its skin. */
+    fun hideNpcFromTablist(user: User, uuid: UUID, name: String) = Unit
 
     /** Removes the fake player entity plus its player-info entry from [user]. */
     fun sendNpcDespawn(user: User, entityId: Int, uuid: UUID, name: String)

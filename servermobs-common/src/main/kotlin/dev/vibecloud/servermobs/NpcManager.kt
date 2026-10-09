@@ -230,6 +230,8 @@ class NpcManager(
         val nametagTeam: String = "smh" + entityId
         private val holograms = ArrayList<Hologram>()
 
+        private val pendingTablistRemovals = HashMap<UUID, Any>()
+
         fun spawnFor(player: Player) {
             val user = PacketEvents.getAPI().playerManager.getUser(player) ?: return
             platform.sendNpcSpawn(
@@ -243,13 +245,29 @@ class NpcManager(
                 data.z,
                 data.yaw,
                 data.pitch,
-                config.removeFromTablist,
+                config.removeFromTablist && !platform.delayedTablistRemoval,
             )
+            if (config.removeFromTablist && platform.delayedTablistRemoval) {
+                // 1.8 clients need the profile in their player-info cache when the spawn packet
+                // arrives to resolve the skin. Remove it two ticks later; the spawned entity keeps
+                // the profile/skin, while the tab entry is only briefly visible during that window.
+                val key = data.name.lowercase()
+                val token = Any()
+                pendingTablistRemovals[player.uniqueId] = token
+                Bukkit.getScheduler().runTaskLater(plugin, Runnable {
+                    if (pendingTablistRemovals[player.uniqueId] !== token) return@Runnable
+                    pendingTablistRemovals.remove(player.uniqueId)
+                    if (sent[player.uniqueId]?.contains(key) != true) return@Runnable
+                    val currentUser = PacketEvents.getAPI().playerManager.getUser(player) ?: return@Runnable
+                    platform.hideNpcFromTablist(currentUser, uuid, data.name)
+                }, TABLIST_REMOVE_DELAY_TICKS)
+            }
             // Hide the floating name via a scoreboard team (works on 1.8 and modern alike).
             if (!data.showNametag) platform.hideNametag(user, nametagTeam, data.name)
         }
 
         fun despawnFor(player: Player) {
+            pendingTablistRemovals.remove(player.uniqueId)
             val user = PacketEvents.getAPI().playerManager.getUser(player) ?: return
             platform.sendNpcDespawn(user, entityId, uuid, data.name)
         }
@@ -261,9 +279,12 @@ class NpcManager(
         fun spawnHolograms() {
             if (data.hologram.isEmpty()) return
             val world = Bukkit.getWorld(data.world) ?: return
+            // Align the first line to where the old second line was. This keeps a single line at
+            // the configured offset, and shifts a multi-line stack so its first line clears the NPC.
+            val firstLineY = data.y + config.hologramOffset +
+                    maxOf(data.hologram.size - 2, 0) * config.hologramLineSpacing
             data.hologram.forEachIndexed { index, line ->
-                val y = data.y + config.hologramOffset +
-                        (data.hologram.size - 1 - index) * config.hologramLineSpacing
+                val y = firstLineY - index * config.hologramLineSpacing
                 holograms.add(platform.spawnHologram(world, Location(world, data.x, y, data.z), line))
             }
         }
@@ -303,6 +324,7 @@ class NpcManager(
     private companion object {
         const val TICK_PERIOD_TICKS = 20L
         const val LOOK_PERIOD_TICKS = 2L
+        const val TABLIST_REMOVE_DELAY_TICKS = 2L
         const val INTERACTION_COOLDOWN_MS = 250L
         const val CLEANUP_THRESHOLD = 2048
         const val NPC_EYE_HEIGHT = 1.62

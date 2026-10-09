@@ -15,9 +15,8 @@ data-directory: "../../"
 # read it from plugins/VibeCloud/agent.properties (written by the cloud agent).
 group: ""
 
-# Hide the NPC from the player list (tab) after it has spawned. Recommended.
-# NOTE (1.8): this is ignored on legacy servers, because removing the player-info entry is the
-# only way to leave the tab list AND it also removes the entry the client reads the skin from.
+# Hide the NPC from the player list (tab) after it has spawned. On 1.8, its profile is removed
+# two ticks after spawning so the skin can start loading; it may flash in tab very briefly.
 remove-from-tablist: true
 
 # Default for newly created NPCs: show the floating name above their head. Toggle per NPC
@@ -27,15 +26,14 @@ show-nametag: true
 # Range (in blocks) at which an NPC is sent to a player.
 view-distance: 48
 
-# Layout of the hologram lines above the NPC.
-# `offset` is the height of the top line above the NPC's feet — 2.0 is about where the
-# NPC's nametag sits (the plugin compensates for the armour stand's own name height).
+# Layout of hologram lines above the NPC. `offset` is the base height above its feet;
+# line spacing stacks following lines upward. The 1.8 build compensates for armor-stand label height.
 hologram:
   offset: 2.0
   line-spacing: 0.3
 
-# Sign URL skins through MineSkin so the 1.8 client accepts them (it rejects unsigned textures).
-# Without this a URL is used unsigned and shows as the default Steve/Alex skin.
+# Sign URL skins through MineSkin so 1.8 clients accept them (they reject unsigned textures).
+# The URL must be a public, valid skin image; failed signing leaves the current NPC skin unchanged.
 sign-skins: true
 mineskin-api: "https://api.mineskin.org"
 

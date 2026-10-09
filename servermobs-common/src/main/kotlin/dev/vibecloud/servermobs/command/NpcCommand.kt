@@ -200,8 +200,12 @@ class NpcCommand(private val runtime: ServerMobsRuntime) : CommandExecutor, TabC
                 runtime.bukkitPlugin,
                 Runnable {
                     if (resolved == null) {
-                        reply(sender, "<red>Could not resolve a skin for '$spec'. " +
-                                "Names must be premium (Mojang) accounts; URLs must be direct images.")
+                        if (runtime.skinResolver.isUrl(spec)) {
+                            reply(sender, "<red>Could not sign that skin image URL; the NPC skin was not changed.")
+                            reply(sender, "<gray>Use a public direct PNG skin URL, or provide a player's name instead.")
+                        } else {
+                            reply(sender, "<red>Could not resolve a skin for '$spec'. Names must be premium (Mojang) accounts.")
+                        }
                     } else {
                         manager.get(data.name)?.let { manager.update(it.copy(skin = resolved)) }
                         reply(sender, "<green>Skin updated for '<white>${data.name}</white>'.")
@@ -214,22 +218,24 @@ class NpcCommand(private val runtime: ServerMobsRuntime) : CommandExecutor, TabC
     private fun editHologram(sender: CommandSender, data: NpcData, rest: List<String>) {
         when (rest.getOrNull(0)?.lowercase()) {
             "add" -> {
-                val line = rest.drop(1).joinToString(" ").trim()
-                if (line.isEmpty()) {
-                    reply(sender, "<red>Usage: /npc edit <name> hologram add <text>")
+                val rawLine = rest.drop(1).joinToString(" ").trim()
+                if (rawLine.isEmpty()) {
+                    reply(sender, "<red>Usage: /npc edit <name> hologram add <text|{empty}>")
                     return
                 }
+                val line = rawLine.takeUnless { it.equals("{empty}", ignoreCase = true) }.orEmpty()
                 manager.update(data.copy(hologram = data.hologram + line))
                 reply(sender, "<green>Added holo line ${data.hologram.size + 1} to '<white>${data.name}</white>'.")
             }
 
             "set" -> {
                 val index = rest.getOrNull(1)?.toIntOrNull()
-                val line = rest.drop(2).joinToString(" ").trim()
-                if (index == null || index < 0 || index >= data.hologram.size || line.isEmpty()) {
-                    reply(sender, "<red>Usage: /npc edit <name> hologram set <index> <text>")
+                val rawLine = rest.drop(2).joinToString(" ").trim()
+                if (index == null || index < 0 || index >= data.hologram.size || rawLine.isEmpty()) {
+                    reply(sender, "<red>Usage: /npc edit <name> hologram set <index> <text|{empty}>")
                     return
                 }
+                val line = rawLine.takeUnless { it.equals("{empty}", ignoreCase = true) }.orEmpty()
                 val updated = data.hologram.toMutableList().apply { this[index] = line }
                 manager.update(data.copy(hologram = updated))
                 reply(sender, "<green>Updated holo line ${index + 1} of '<white>${data.name}</white>'.")
@@ -371,6 +377,7 @@ class NpcCommand(private val runtime: ServerMobsRuntime) : CommandExecutor, TabC
             "$label create <name>",
             "$label edit <name> skin <player|url|value>",
             "$label edit <name> hologram <add|set|remove|clear> ...",
+            "    <gray>Use {empty} for a blank line; &4, §4 and MiniMessage colours work</gray>",
             "$label edit <name> action add <transfer|message|console|player> <value>",
             "    <gray>player = run the command as the clicking player</gray>",
             "$label edit <name> action <remove <index>|clear>",

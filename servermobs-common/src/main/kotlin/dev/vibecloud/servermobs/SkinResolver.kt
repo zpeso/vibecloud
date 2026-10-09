@@ -16,7 +16,7 @@ import java.util.logging.Logger
  * Accepted specs:
  *  - `http(s)://...`     a direct skin image URL. Clients require a **signed** texture, so the URL
  *                        is sent to [MineSkin](https://mineskin.org) to be signed (when
- *                        [signSkins] is on); if that fails it falls back to an unsigned value,
+ *                        [signSkins] is on); a failed signing request is reported as unresolved,
  *  - `<value>;<signature>` a raw Mojang texture value + signature (used as-is),
  *  - `<value>`           a raw base64 texture value (used as-is),
  *  - `SomePlayerName`    looked up from the Mojang API (blocking; call [lookupPlayerAsync]).
@@ -75,17 +75,17 @@ class SkinResolver(
     }
 
     /**
-     * Resolves a direct image URL: signs it through MineSkin (so every client accepts it) or, when
-     * signing is disabled or fails, wraps it into an unsigned texture value as a fallback.
+     * Resolves a direct image URL to a MineSkin-signed texture. If signing is disabled, the URL
+     * is wrapped unsigned (which 1.8 clients will reject); a failed signing request returns null.
      */
-    fun resolveUrl(url: String): NpcSkin {
+    fun resolveUrl(url: String): NpcSkin? {
         if (signSkins) {
             signUrl(url)?.let { return it }
             logger.warning(
-                "Could not sign skin URL '$url' through MineSkin; using it unsigned. " +
-                        "Clients on 1.8 (and 1.20.2+) may show the default skin — use a " +
-                        "signed '<value>;<signature>' pair instead if this keeps failing.",
+                "Could not sign skin URL '$url' through MineSkin. Check that it is a publicly " +
+                        "accessible skin image URL; the NPC skin was not changed.",
             )
+            return null
         }
         return NpcSkin(value = valueForUrl(url), signature = null, source = url)
     }
@@ -136,7 +136,20 @@ class SkinResolver(
             connection.outputStream.use { stream -> stream.write(body.toByteArray(charset("UTF-8"))) }
             val code = connection.responseCode
             if (code != 200) {
-                logger.warning("MineSkin returned HTTP $code for '$url'")
+                val response = runCatching {
+                    connection.errorStream?.bufferedReader()?.use { it.readText() }
+                }.getOrNull().orEmpty()
+                val detail = runCatching {
+                    val parsed = parse(response)
+                    (parsed["error"] as? String)
+                        ?: (parsed["message"] as? String)
+                        ?: response.take(300)
+                }.getOrNull().orEmpty()
+
+                logger.warning(
+                    "MineSkin returned HTTP $code for '$url'" +
+                            if (detail.isNotBlank()) ": $detail" else "",
+                )
                 null
             } else {
                 parseSigned(connection.inputStream.use { stream: InputStream -> stream.bufferedReader().readText() }, url)

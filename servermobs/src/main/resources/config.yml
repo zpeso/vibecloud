@@ -25,15 +25,14 @@ show-nametag: true
 # Range (in blocks) at which an NPC is sent to a player.
 view-distance: 48
 
-# Layout of the hologram lines above the NPC.
-# `offset` is the height of the top line above the NPC's feet — 2.0 is about where the
-# NPC's own nametag would sit. Lower it if the hologram floats too high.
+# Layout of hologram lines above the NPC. `offset` is the base height above its feet;
+# line spacing stacks following lines upward. Lower it if the hologram floats too high.
 hologram:
   offset: 2.0
   line-spacing: 0.3
 
-# Sign URL skins through MineSkin so every client (1.8 and 1.20.2+) accepts them. Without this
-# a URL is used unsigned, which some clients render as the default Steve/Alex skin.
+# Sign URL skins through MineSkin so every client (1.8 and 1.20.2+) accepts them. URLs must be
+# public, valid skin image URLs; failed signing leaves the current NPC skin unchanged.
 sign-skins: true
 mineskin-api: "https://api.mineskin.org"
 

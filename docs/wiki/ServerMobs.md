@@ -56,7 +56,7 @@ show-nametag: true              # default for new NPCs: show the floating name a
 view-distance: 48               # range (blocks) at which an NPC is sent to a player
 
 hologram:
-  offset: 2.0                   # height of the top hologram line above the NPC's feet (~nametag height)
+  offset: 2.0                   # baseline above NPC feet for the first line
   line-spacing: 0.3             # vertical gap between hologram lines
 
 # Sign URL skins through MineSkin so every client (1.8 and 1.20.2+) accepts them.
@@ -78,8 +78,8 @@ Permission: `servermobs.admin` (default: op). NPC names allow letters, digits, `
 |---|---|
 | `/npc create <name>` | Creates an NPC at your position, in this server's group |
 | `/npc edit <name> skin <player\|url\|value[;signature]>` | Sets the skin (see below) |
-| `/npc edit <name> hologram add <text>` | Adds a hologram line above the NPC |
-| `/npc edit <name> hologram set <index> <text>` | Replaces one line |
+| `/npc edit <name> hologram add <text|{empty}>` | Adds a line; `{empty}` creates a blank spacer |
+| `/npc edit <name> hologram set <index> <text|{empty}>` | Replaces one line; `{empty}` makes it blank |
 | `/npc edit <name> hologram remove <index>` | Removes one line |
 | `/npc edit <name> hologram clear` | Removes all lines |
 | `/npc edit <name> action add <type> <value>` | Adds a click action (see below) |
@@ -106,20 +106,24 @@ Tab completion covers subcommands, NPC names, settings and action types.
 /npc edit shopkeeper skin <base64value>             # raw texture value (unsigned)
 ```
 
-`skins` is accepted as an alias of `skin`. A URL is a direct image link; because Minecraft clients require a
-**signed** texture (1.8 rejects unsigned ones and shows the default skin), the URL is sent to
-[MineSkin](https://mineskin.org) to be signed, then cached in the NPC's file. Disable this with
-`sign-skins: false`, or point `mineskin-api` at your own instance. A player-name lookup returns Mojang's
-already-signed value+signature.
+`skins` is accepted as an alias of `skin`. A URL must point directly to a **publicly accessible skin PNG**.
+When `sign-skins: true`, ServerMobs submits the image to [MineSkin](https://mineskin.org) to obtain a
+Mojang-signed texture. If signing fails, the existing NPC skin is left unchanged and the server log records
+MineSkin's response. `textures.minecraft.net/texture/<hash>` URLs are not necessarily image files; verify the
+URL returns HTTP 200 and `image/png` before using it. The URL supplied in the reported issue returned HTTP 404.
 
-URL signing and name lookups run asynchronously and need outbound HTTPS (`api.mineskin.org` for URLs,
-`api.mojang.com` / `sessionserver.mojang.com` for names).
+If a URL is not accepted, use `/npc edit <name> skin <premium-player-name>` (for example `NaaIhr`), or obtain
+a signed `<base64-value>;<signature>` from MineSkin and set that pair directly. A raw texture URL only works
+unsigned when `sign-skins: false`, and 1.8 clients reject unsigned textures. URL signing and name lookups run
+asynchronously and need outbound HTTPS (`api.mineskin.org` for URLs, `api.mojang.com` / `sessionserver.mojang.com`
+for names).
 
 ## Actions
 
 A click runs every action in order. Hologram text and `message` actions use
 [MiniMessage](https://docs.advntr.dev/minimessage/format) formatting (e.g. `<yellow>`, `<gradient:#ff0000:#0000ff>`).
-Classic `&` codes are also accepted and converted, so `&4Red`, `&l&cBold` and `&#ff00aa` all work as well.
+Classic `&` and `§` color/format codes are also accepted, so `&4Red`, `§4Red`, `&l&cBold` and `&#ff00aa` work.
+For a blank hologram row use `/npc edit <name> hologram add {empty}`; it remains a line in the stack.
 
 | Type | Aliases | Value | Effect |
 |---|---|---|---|
@@ -157,9 +161,9 @@ commands, persistence and the MiniMessage formatting are identical; only the sha
 
 **Skin, nametag and tab list:** the head nametag is hidden with a scoreboard team whose name-tag visibility is
 `NEVER`, so `/npc edit <name> nametag false` works on both builds. The modern build removes the NPC from the tab
-list with the `listed` flag. On **1.8** there is no such flag: the only way to leave the tab list is to drop the
-player-info entry, and that is also where the client reads the skin from — so on 1.8 the NPC stays in the tab list
-while it has a skin (drop the skin if you prefer an empty tab list). Use holograms plus `nametag false` instead.
+list with the `listed` flag. On **1.8**, ServerMobs sends the profile, spawns the NPC, then removes the tab entry
+after two ticks so the client can start loading the skin. As with other player NPC plugins, the entry can flash
+briefly when the NPC first appears; this is an unavoidable 1.8 client limitation.
 
 The files are plain YAML and safe to edit or copy between machines; run `/npc reload` afterwards.
 

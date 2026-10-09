@@ -54,10 +54,9 @@ class ServerMobsPlugin : JavaPlugin(), ServerMobsRuntime {
 
         registerTransferChannel()
         if (serverMobsConfig.removeFromTablist) {
-            logger.warning(
-                "'remove-from-tablist' is ignored on 1.8: dropping the player-info entry (the only " +
-                        "way to leave the tab list there) also removes the NPC's skin. Hide the " +
-                        "nametag with '/npc edit <name> nametag false' instead.",
+            logger.info(
+                "1.8 tab-list removal is enabled: NPC profiles are removed two ticks after spawn " +
+                        "to let clients begin loading their skins.",
             )
         }
         logger.info(

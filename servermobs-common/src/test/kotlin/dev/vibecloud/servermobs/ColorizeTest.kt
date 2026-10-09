@@ -12,6 +12,12 @@ class ColorizeTest {
     }
 
     @Test
+    fun `converts section-sign legacy codes too`() {
+        assertEquals("<dark_red>Hi", colorize("§4Hi"))
+        assertEquals("<bold><red>Hi", colorize("§l§cHi"))
+    }
+
+    @Test
     fun `converts formatting codes and combines them`() {
         assertEquals("<bold><red>Bold", colorize("&l&cBold"))
         assertEquals("<underlined><yellow>Link", colorize("&n&eLink"))
