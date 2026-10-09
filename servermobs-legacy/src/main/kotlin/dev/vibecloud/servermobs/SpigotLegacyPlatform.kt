@@ -1,6 +1,7 @@
 package dev.vibecloud.servermobs
 
 import com.github.retrooper.packetevents.protocol.entity.data.EntityData
+import com.github.retrooper.packetevents.protocol.entity.data.EntityDataTypes
 import com.github.retrooper.packetevents.protocol.player.GameMode
 import com.github.retrooper.packetevents.protocol.player.TextureProperty
 import com.github.retrooper.packetevents.protocol.player.User
@@ -110,7 +111,7 @@ class SpigotLegacyPlatform : ServerMobsPlatform {
                 entityId,
                 uuid,
                 PacketLocation(x, y, z, yaw, pitch),
-                emptyList<EntityData<*>>(),
+                skinPartsMetadata(),
             ),
         )
         user.sendPacket(WrapperPlayServerEntityHeadLook(entityId, yaw))
@@ -133,8 +134,24 @@ class SpigotLegacyPlatform : ServerMobsPlatform {
             PlayerData(null, UserProfile(uuid, name), null, 0),
         )
 
+    /**
+     * The single metadata entry that turns on every skin layer on 1.8: the player "skin flags"
+     * byte at index 10 (after the 8 base entity fields and the living-entity fields health at 6,
+     * potion colour at 7, ambient at 8 and arrows at 9).
+     */
+    private fun skinPartsMetadata(): List<EntityData<*>> = listOf(
+        EntityData(
+            SKIN_PARTS_METADATA_INDEX,
+            EntityDataTypes.BYTE,
+            ServerMobsPlatform.SKIN_PARTS_ALL_VISIBLE,
+        ),
+    )
+
     private companion object {
         /** How far above a small 1.8 ArmorStand its custom name is drawn. */
         const val ARMORSTAND_LABEL_OFFSET = 1.5
+
+        /** 1.8 index of the player "displayed skin parts" byte. */
+        const val SKIN_PARTS_METADATA_INDEX = 10
     }
 }

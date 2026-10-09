@@ -182,6 +182,14 @@ interface ServerMobsPlatform {
 
     companion object {
         const val PREFIX = "<#ed3030>ServerMobs <dark_gray>» <gray>"
+
+        /**
+         * The "displayed skin parts" bit mask with every layer enabled: cape (0x01), jacket
+         * (0x02), left sleeve (0x04), right sleeve (0x08), left pant leg (0x10), right pant leg
+         * (0x20) and hat (0x40). Spawn packets default this to 0, so without sending it a fake
+         * player renders only the base skin and no second layer (hat/jacket/etc.).
+         */
+        const val SKIN_PARTS_ALL_VISIBLE: Byte = 0x7F
     }
 }
 

@@ -110,12 +110,13 @@ class NpcManager(
     /** Replaces an existing NPC's definition, persisting it and re-rendering every viewer. */
     fun update(data: NpcData) {
         val existing = npcs[data.name.lowercase()] ?: return
+        val updated = data.preserveSkinFrom(existing.data)
         existing.despawnAll()
         existing.removeHolograms()
-        store.save(data)
-        existing.data = data
+        store.save(updated)
+        existing.data = updated
         existing.spawnHolograms()
-        sent.values.forEach { it.remove(data.name.lowercase()) }
+        sent.values.forEach { it.remove(updated.name.lowercase()) }
         tick()
     }
 

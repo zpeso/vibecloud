@@ -1,5 +1,7 @@
 package dev.vibecloud.servermobs
 
+import com.github.retrooper.packetevents.protocol.entity.data.EntityData
+import com.github.retrooper.packetevents.protocol.entity.data.EntityDataTypes
 import com.github.retrooper.packetevents.protocol.entity.type.EntityTypes
 import com.github.retrooper.packetevents.protocol.player.TextureProperty
 import com.github.retrooper.packetevents.protocol.player.User
@@ -7,6 +9,7 @@ import com.github.retrooper.packetevents.protocol.player.UserProfile
 import com.github.retrooper.packetevents.protocol.world.Location as PacketLocation
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerDestroyEntities
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityHeadLook
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityMetadata
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfoRemove
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfoUpdate
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfoUpdate.Action
@@ -88,6 +91,20 @@ class PaperPlatform : ServerMobsPlatform {
                 null,
             ),
         )
+        // Show the skin's second layer (hat/jacket/sleeves/legs). The spawn packet always sends
+        // skin parts as 0, which is why fake players would otherwise render single-layered.
+        user.sendPacket(
+            WrapperPlayServerEntityMetadata(
+                entityId,
+                listOf(
+                    EntityData(
+                        SKIN_PARTS_METADATA_INDEX,
+                        EntityDataTypes.BYTE,
+                        ServerMobsPlatform.SKIN_PARTS_ALL_VISIBLE,
+                    ),
+                ),
+            ),
+        )
         user.sendPacket(WrapperPlayServerEntityHeadLook(entityId, yaw))
         if (hideFromTablist) {
             val hidden = PlayerInfo(profile).apply { isListed = false }
@@ -100,5 +117,14 @@ class PaperPlatform : ServerMobsPlatform {
     override fun sendNpcDespawn(user: User, entityId: Int, uuid: UUID, name: String) {
         user.sendPacket(WrapperPlayServerDestroyEntities(entityId))
         user.sendPacket(WrapperPlayServerPlayerInfoRemove(uuid))
+    }
+
+    private companion object {
+        /**
+         * Entity-metadata index of the player "displayed skin parts" byte on 1.21.4: after the
+         * 8 shared entity fields (0-7) and the 7 living-entity fields (8-14) come absorption (15),
+         * score (16) and then the model/skin parts (17).
+         */
+        const val SKIN_PARTS_METADATA_INDEX = 17
     }
 }

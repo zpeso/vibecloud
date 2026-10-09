@@ -66,4 +66,8 @@ data class NpcData(
     val actions: List<NpcAction> = emptyList(),
     val showNametag: Boolean = true,
     val turnToPlayer: Boolean = false,
-)
+) {
+    /** Keeps a previously configured skin when an edit submits an older skin-less copy. */
+    fun preserveSkinFrom(existing: NpcData): NpcData =
+        if (skin == null && existing.skin != null) copy(skin = existing.skin) else this
+}
