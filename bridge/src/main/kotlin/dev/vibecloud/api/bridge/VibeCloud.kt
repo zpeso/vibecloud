@@ -25,8 +25,8 @@ import java.time.Duration
  * Provider collections are snapshots of the cloud state (players join/leave, services
  * start/stop); each provider also exposes direct lookups such as
  * [CloudPlayerProvider.findByName] or [CloudServiceProvider.findByGroup] for a fresh read.
- * The exception is [CloudPlayerProvider.playerCount], which serves a background-refreshed
- * cache and is safe to call on the server's main thread (e.g. for scoreboard updates).
+ * [temporary] exposes an asynchronously refreshed in-memory status snapshot for frequent reads;
+ * [CloudPlayerProvider.playerCount] is a convenience backed by that same cache.
  */
 class VibeCloud private constructor(
     private val baseUrl: String,
@@ -38,15 +38,28 @@ class VibeCloud private constructor(
         .connectTimeout(timeout)
         .build()
 
-    private val players = CloudPlayerProvider(this, playerCountRefreshInterval)
+    private val statusCache = CloudStatusCache(this, playerCountRefreshInterval)
+    private val players = CloudPlayerProvider(this, statusCache)
     private val services = CloudServiceProvider(this)
     private val groups = CloudGroupProvider(this)
+    private val temporary = TemporaryCloudData(this, statusCache)
 
     /** Access to the players online across the whole network. */
     fun players(): CloudPlayerProvider = players
 
     /** Access to all cloud services (backends and proxies). */
     fun services(): CloudServiceProvider = services
+
+    /**
+     * Cached, read-only cloud state for frequent polling (including from a server's main thread).
+     * Reads from this provider never perform HTTP; a status request runs in the background when
+     * the cache expires. The default refresh cadence is five seconds and can be configured with
+     * [Builder.playerCountRefreshInterval].
+     */
+    fun temporary(): TemporaryCloudData {
+        statusCache.refresh()
+        return temporary
+    }
 
     /** Access to the configured groups. */
     fun groups(): CloudGroupProvider = groups
@@ -153,19 +166,30 @@ class VibeCloud private constructor(
         var timeout: Duration = Duration.ofSeconds(3)
 
         /**
-         * How often the cached network player count (`players().playerCount()`) refreshes in
-         * the background. Default 5 seconds, matching the agent heartbeat cadence.
+         * How often the cached status snapshot used by `temporary()` and `players().playerCount()`
+         * refreshes in the background. Default 5 seconds, matching the agent heartbeat cadence.
          */
-        var playerCountRefreshInterval: Duration = Duration.ofSeconds(5)
+        var temporaryRefreshInterval: Duration = Duration.ofSeconds(5)
+
+        /** Backwards-compatible alias for [temporaryRefreshInterval]. */
+        var playerCountRefreshInterval: Duration
+            get() = temporaryRefreshInterval
+            set(value) {
+                temporaryRefreshInterval = value
+            }
 
         fun baseUrl(baseUrl: String) = apply { this.baseUrl = baseUrl }
         fun token(token: String) = apply { this.token = token }
         fun timeout(timeout: Duration) = apply { this.timeout = timeout }
-        fun playerCountRefreshInterval(interval: Duration) = apply { this.playerCountRefreshInterval = interval }
+        fun playerCountRefreshInterval(interval: Duration) = apply { this.temporaryRefreshInterval = interval }
+        fun temporaryRefreshInterval(interval: Duration) = apply { this.temporaryRefreshInterval = interval }
 
         fun build(): VibeCloud {
             require(token.isNotBlank()) { "bridge token is required" }
-            return VibeCloud(baseUrl.removeSuffix("/"), token, timeout, playerCountRefreshInterval)
+            require(!temporaryRefreshInterval.isNegative && !temporaryRefreshInterval.isZero) {
+                "temporary refresh interval must be positive"
+            }
+            return VibeCloud(baseUrl.removeSuffix("/"), token, timeout, temporaryRefreshInterval)
         }
     }
 

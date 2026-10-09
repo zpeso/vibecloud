@@ -1,9 +1,6 @@
 package dev.vibecloud.api.bridge
 
 import java.io.IOException
-import java.time.Duration
-import java.util.concurrent.CompletableFuture
-import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * A player currently online somewhere in the network. Instances are lightweight snapshots —
@@ -18,7 +15,19 @@ class CloudPlayer internal constructor(
     val name: String,
     val service: String,
     val group: String,
+    /** Detailed fields from the latest agent roster, when this snapshot includes them. */
+    val details: PlayerDetail? = null,
 ) {
+    /** Convenience access to the agent-reported world, if available. */
+    val world: String? get() = details?.world
+    /** Convenience access to the agent-reported ping, if available. */
+    val pingMs: Int? get() = details?.pingMs
+    /** Convenience access to the agent-reported UUID, if available. */
+    val uniqueId: String? get() = details?.uuid
+    /** Convenience access to the agent-reported health, if available. */
+    val health: Double? get() = details?.health
+    /** Convenience access to the agent-reported food level, if available. */
+    val food: Int? get() = details?.food
     override fun equals(other: Any?): Boolean = other is CloudPlayer && other.name == name
     override fun hashCode(): Int = name.hashCode()
     override fun toString(): String = "CloudPlayer(name=$name, service=$service, group=$group)"
@@ -28,66 +37,27 @@ class CloudPlayer internal constructor(
 class CloudPlayerNotFoundException(name: String) : IOException("Cloud player '$name' is not online")
 
 /**
- * Players online across the whole network. Collections are snapshots from the cloud's bridge;
- * the finders query the cloud directly for the freshest state. The exception is [playerCount],
- * which serves a background-refreshed cache and never blocks.
+ * Players online across the whole network. The existing finders query the cloud directly for
+ * fresh state; use [VibeCloud.temporary] for cached roster lookups that never block.
+ * [playerCount] reads from that same asynchronously refreshed cache.
  */
 class CloudPlayerProvider internal constructor(
     private val cloud: VibeCloud,
-    playerCountRefreshInterval: Duration,
+    private val cache: CloudStatusCache,
 ) {
-    private val refreshIntervalNanos = playerCountRefreshInterval.toNanos().coerceAtLeast(1)
-
-    /** Last known network player count; written only by the background refresh task. */
-    @Volatile
-    private var cachedPlayerCount: Int = 0
-
-    /** Start of the last refresh attempt; offset backwards so the first call refreshes immediately. */
-    @Volatile
-    private var lastRefreshAttemptNanos: Long = System.nanoTime() - refreshIntervalNanos
-
-    /** Guards against overlapping background refreshes. */
-    private val refreshInFlight = AtomicBoolean(false)
     /**
-     * All players online in the network. Kept for convenience; for single lookups prefer
-     * [findByName]/[findByUniqueId] so you don't parse the whole roster.
+     * All players online in the network. This is a fresh, blocking HTTP read; use
+     * `cloud.temporary().players().all()` for frequent cached reads.
      */
     fun all(): List<CloudPlayer> = cloud.status().services
         .filter { it.agentOnline }
         .flatMap { service -> service.players.map { CloudPlayer(cloud, it, service.name, service.group) } }
 
     /**
-     * Number of players online across the whole network, read from an in-memory cache.
-     *
-     * A stale read starts one background refresh and immediately returns the last known value,
-     * so this call never blocks and is safe on the server's main thread — e.g. from a scoreboard
-     * task that runs every tick or every second. Calling it frequently is cheap: HTTP traffic
-     * stays at about one request per refresh interval (default 5s; configurable via the
-     * `VibeCloud.connect` builder's `playerCountRefreshInterval`). Returns 0 until the first
-     * fetch completes; while the cloud is unreachable the last known count is kept.
+     * Number of players online across the whole network, read from an in-memory cache. A stale
+     * read starts one background refresh and immediately returns the last known value.
      */
-    fun playerCount(): Int {
-        maybeStartBackgroundRefresh()
-        return cachedPlayerCount
-    }
-
-    /** Launches a background status fetch when the cached count is older than the refresh interval. */
-    private fun maybeStartBackgroundRefresh() {
-        val now = System.nanoTime()
-        if (now - lastRefreshAttemptNanos < refreshIntervalNanos) return
-        if (!refreshInFlight.compareAndSet(false, true)) return
-        lastRefreshAttemptNanos = now
-        CompletableFuture.runAsync {
-            try {
-                cachedPlayerCount = cloud.status().totalPlayersOnline
-            } catch (_: Exception) {
-                // Cloud unreachable or a malformed document: keep the last known count and
-                // retry on a later call. Never propagate into the caller's thread.
-            } finally {
-                refreshInFlight.set(false)
-            }
-        }
-    }
+    fun playerCount(): Int = cache.snapshot().totalPlayersOnline
 
     /** Finds a player by their exact name (case-insensitive), or `null`. */
     fun findByName(name: String): CloudPlayer? = all().firstOrNull { it.name.equals(name, ignoreCase = true) }

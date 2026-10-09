@@ -17,7 +17,7 @@ There are three ways to build on VibeCloud, depending on where your code runs:
 ```kotlin
 repositories { maven("https://jitpack.io") }
 dependencies {
-    compileOnly("com.github.zpeso.vibecloud:bridge:v0.7.5")  // dev.vibecloud.api.bridge.*
+    compileOnly("com.github.zpeso.vibecloud:bridge:v1.0.1")  // dev.vibecloud.api.bridge.*
 }
 ```
 
@@ -80,15 +80,23 @@ val suggestions = cloud.completeCloudCommand(listOf("group", ""))
 
 ### Scoreboards and other frequent readers
 
-`cloud.players().playerCount()` is the one call that never performs an HTTP request on the calling thread: it
-reads an in-memory cache that a background task refreshes at most every 5 seconds (the `playerCountRefreshInterval`
-builder option). Calling it every tick or every second is cheap and main-thread-safe — HTTP traffic stays at about
-one request per refresh interval. It returns 0 until the first fetch completes and keeps the last known count while
-the cloud is unreachable:
+Use `cloud.temporary()` for frequent reads: its player, service, and group data comes from one in-memory status
+snapshot that refreshes asynchronously every five seconds by default. Cached reads never issue HTTP on the caller's
+thread, so they are safe for scoreboards, events, or checks that run every second. Before the first refresh, cached
+collections are empty and counts are zero; while the bridge is unreachable, the last successful snapshot remains.
 
 ```kotlin
-val online = cloud.players().playerCount()   // cached network player count, never blocks
+val cached = VibeCloud.instance().temporary()
+val online = cached.players().playerCount()
+val cloudPlayer = cached.players().findByName(player.name)
+val group = cloudPlayer?.group             // cached, no HTTP request
+val services = cached.services().findByGroup("lobby")
 ```
+
+The old `cloud.players().playerCount()` convenience call uses the same cache. Configure its cadence with
+`temporaryRefreshInterval(Duration.ofSeconds(3))` on the `VibeCloud.connect` builder (the existing
+`playerCountRefreshInterval(...)` builder method remains as an alias). Call `cached.refreshAsync()` if you need to
+request an immediate background refresh; it returns a `CompletableFuture<CloudStatus>`.
 
 ### API reference
 
@@ -97,8 +105,10 @@ val online = cloud.players().playerCount()   // cached network player count, nev
 | `VibeCloud.forService()` | Connect using the installed agent config (plugins inside managed services) |
 | `VibeCloud.connect { … }` | Connect with explicit base URL/token; stores the singleton |
 | `VibeCloud.instance()` / `instanceOrNull()` | Access the singleton afterwards |
-| `cloud.players().all() / findByName(name) / refresh(player)` | Rosters and lookups |
-| `cloud.players().playerCount()` | Cached network player count (background refresh, default 5s; never blocks) |
+| `cloud.players().all() / findByName(name) / refresh(player)` | Fresh roster/lookups (HTTP; use asynchronously) |
+| `cloud.temporary().players().all() / findByName(name)` | Cached player roster and details; never performs HTTP on the caller |
+| `cloud.temporary().playerCount()` / `cloud.players().playerCount()` | Cached network player count (background refresh, default 5s) |
+| `cloud.temporary().services() / groups()` | Cached service and group snapshots |
 | `cloud.players().sendMessage(player, lines)` | Chat message (legacy `§` codes supported) |
 | `cloud.players().kick(player, reason)` | Kick with reason |
 | `cloud.players().connect(player, targetService)` | Transfer via the proxy (`send`); needs a running proxy |
