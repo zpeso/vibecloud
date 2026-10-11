@@ -26,7 +26,10 @@ class VibeCloudClient private constructor(
     private val token: String,
     private val timeout: Duration,
 ) {
+    // HTTP/1.1 is pinned deliberately: the bridge is a local, plain-text endpoint, and the JDK
+    // client's default HTTP/2 would otherwise pay for an h2c upgrade on the first request.
     private val http: HttpClient = HttpClient.newBuilder()
+        .version(HttpClient.Version.HTTP_1_1)
         .connectTimeout(timeout)
         .build()
 

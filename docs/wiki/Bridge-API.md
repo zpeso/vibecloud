@@ -109,18 +109,25 @@ request an immediate background refresh; it returns a `CompletableFuture<CloudSt
 | `cloud.temporary().players().all() / findByName(name)` | Cached player roster and details; never performs HTTP on the caller |
 | `cloud.temporary().playerCount()` / `cloud.players().playerCount()` | Cached network player count (background refresh, default 5s) |
 | `cloud.temporary().services() / groups()` | Cached service and group snapshots |
-| `cloud.players().sendMessage(player, lines)` | Chat message (legacy `§` codes supported) |
-| `cloud.players().kick(player, reason)` | Kick with reason |
-| `cloud.players().connect(player, targetService)` | Transfer via the proxy (`send`); needs a running proxy |
+| `cloud.players().sendMessage(player, lines)` | Chat message (legacy `§` codes supported); returns a `CompletableFuture`, never blocks |
+| `cloud.players().kick(player, reason)` | Kick with reason; returns a `CompletableFuture`, never blocks |
+| `cloud.players().connect(player, targetService)` | Transfer via the proxy (`send`); returns a `CompletableFuture`, never blocks, needs a running proxy |
 | `cloud.services().all() / findByName / findByGroup(group) / findOnline()` | Service snapshots |
-| `CloudService.executeCommand(commandLine)` | Console command on that service (runs on its main thread) |
+| `CloudService.executeCommand(commandLine)` | Console command on that service (runs on its main thread); returns a `CompletableFuture` |
 | `cloud.groups().all() / findByName(name)` | Group configuration |
 | `cloud.status()` | Full status document in one call |
 | `cloud.executeCloudCommand(args) / completeCloudCommand(args)` | The `/cloud` surface from code |
 
-Actions return immediately and are executed by the target service's agent within one heartbeat (default 5 s).
-Transfers are dispatched through the proxy's console, so they work with every client version. A player who left in
-the meantime yields `CloudPlayerNotFoundException` / graceful `null` lookups.
+Actions are asynchronous: they return immediately with a `CompletableFuture` that completes when the cloud accepted
+the action, or fails with an `IOException` (bridge unreachable, rejected token, no running proxy, unknown target).
+Message and kick are executed by the target service's agent within one heartbeat (default 5 s). A **transfer is
+written to the proxy's console right away** — no heartbeat wait — and works with every client version. A player who
+left in the meantime yields `CloudPlayerNotFoundException` / graceful `null` lookups.
+
+The HTTP transport is tuned for the loopback bridge: HTTP/1.1 is pinned (no h2c upgrade) and the keep-alive
+connection is opened during `connect` and kept warm by the background status refresh, so an action is a single
+round trip. Actions run on a shared daemon dispatcher, which is why the calling thread is never blocked - a server
+main thread can call `connect`/`sendMessage`/`kick` directly.
 
 ## 2. Embedding the controller (your own app)
 
@@ -184,7 +191,7 @@ curl -H "Authorization: Bearer $(cat bridge.token)" http://127.0.0.1:25580/bridg
 | `GET /bridge/host` | Root-server CPU/memory/swap/uptime/load/OS/Java + per-process CPU |
 | `GET /bridge/activity` | Recent lifecycle events, newest first |
 | `GET /bridge/console?service=` | Last 200 console lines |
-| `POST /bridge/players` | `action=message|kick|transfer` (form-encoded) |
+| `POST /bridge/players` | `action=transfer&target=` → `202`, written to the proxy console off the request thread; `action=message|kick|inventory` → queued for the player's agent |
 | `POST /bridge/services/command` | Run a console command on a service |
 | `POST /bridge/cloud` | The `/cloud` command surface (`arg` repeated, `mode=execute|complete`) |
 | `POST /bridge/heartbeat` | Agent-only telemetry ingestion |

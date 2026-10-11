@@ -1,14 +1,17 @@
 package dev.vibecloud.api.bridge
 
 import java.io.IOException
+import java.util.concurrent.CompletableFuture
 
 /**
  * A player currently online somewhere in the network. Instances are lightweight snapshots —
  * grab a fresh handle from [CloudPlayerProvider] when you need up-to-date data.
  *
- * Actions ([sendMessage], [kick], [connect]) are dispatched through the cloud to the agent on
- * the player's service and executed there on the server's main thread. They return immediately;
- * use [CloudPlayerProvider.refresh] afterwards to observe the effect.
+ * Actions ([sendMessage], [kick], [connect]) are dispatched through the cloud: the call returns
+ * immediately, never blocking the caller, and yields a [CompletableFuture] that completes when
+ * the cloud accepted the action (message/kick are then executed by the player's agent on its
+ * server's main thread; a transfer is written to the proxy's console right away). Use
+ * [CloudPlayerProvider.refresh] afterwards to observe the effect.
  */
 class CloudPlayer internal constructor(
     internal val cloud: VibeCloud,
@@ -73,44 +76,60 @@ class CloudPlayerProvider internal constructor(
 
     /**
      * Sends a chat message to the player. Lines are sent as chat messages on the player's
-     * server (legacy `§` color codes are supported).
+     * server (legacy `§` color codes are supported). Returns immediately; see [sendMessage].
      */
-    fun sendMessage(player: CloudPlayer, vararg lines: String): Unit =
+    fun sendMessage(player: CloudPlayer, vararg lines: String): CompletableFuture<Void> =
         sendMessage(player, lines.toList())
 
-    /** Sends a chat message to the player. */
-    fun sendMessage(player: CloudPlayer, lines: List<String>) = sendPlayerAction(
+    /**
+     * Sends a chat message to the player. The call does not block: the bridge request runs on a
+     * shared daemon dispatcher. The returned future completes when the cloud accepted the message
+     * (delivered by the player's agent on its next heartbeat) and fails with an [IOException] if
+     * the bridge is unreachable or rejects the call.
+     */
+    fun sendMessage(player: CloudPlayer, lines: List<String>): CompletableFuture<Void> = sendPlayerAction(
         player, CloudCommandType.MESSAGE, "lines" to lines.joinToString("\n"),
     )
 
-    /** Kicks the player with an optional reason. */
-    fun kick(player: CloudPlayer, reason: String = "Kicked by the cloud") = sendPlayerAction(
-        player, CloudCommandType.KICK, "reason" to reason,
-    )
+    /**
+     * Kicks the player with an optional reason. Returns immediately; the returned future completes
+     * when the cloud accepted the kick (delivered by the player's agent on its next heartbeat).
+     */
+    fun kick(
+        player: CloudPlayer,
+        reason: String = "Kicked by the cloud",
+    ): CompletableFuture<Void> = sendPlayerAction(player, CloudCommandType.KICK, "reason" to reason)
 
     /**
      * Connects (transfers) the player to another service. The cloud dispatches the transfer
-     * through the proxy's console (`send <player> <server>`), so it works with every client
+     * through the proxy's console (`send <player> <server>`) so it works with every client
      * version and needs no extra configuration. Requires a running proxy service; accepts a
-     * service name or a `<group>#` target to pick the group's first running service. Throws
-     * [IOException] when no proxy is running or the target does not exist.
+     * service name or a `<group>#` target to pick the group's first running service.
+     *
+     * The call returns immediately — the transfer request is handed to the bridge in the
+     * background, so no game thread ever waits on it. The returned future completes once the
+     * cloud accepted the transfer, and fails with an [IOException] when the bridge is unreachable,
+     * rejected the request, or found no running proxy / unknown target.
      */
-    fun connect(player: CloudPlayer, target: CloudService) {
+    fun connect(player: CloudPlayer, target: CloudService): CompletableFuture<Void> =
         connect(player, target.name)
-    }
 
     /** Connects the player to the service (or `<group>#`) with the given name. */
-    fun connect(player: CloudPlayer, targetService: String) = sendPlayerAction(
+    fun connect(player: CloudPlayer, targetService: String): CompletableFuture<Void> = sendPlayerAction(
         player, CloudCommandType.TRANSFER, "target" to targetService,
     )
 
-    private fun sendPlayerAction(player: CloudPlayer, type: CloudCommandType, field: Pair<String, String>) {
+    private fun sendPlayerAction(
+        player: CloudPlayer,
+        type: CloudCommandType,
+        field: Pair<String, String>,
+    ): CompletableFuture<Void> {
         val form = formEncode(
             "player" to player.name,
             "action" to type.wireName,
             field.first to field.second,
         )
-        cloud.post("/bridge/players", form) { it }
+        return cloud.postAsync("/bridge/players", form)
     }
 
     internal fun formEncode(vararg fields: Pair<String, String>): String =
@@ -138,14 +157,18 @@ class CloudService internal constructor(
     val playersOnline: Int?,
     val players: List<String>,
 ) {
-    /** Runs a console command on this service (e.g. `executeCommand("say Restarting soon")`). */
-    fun executeCommand(commandLine: String) {
+    /**
+     * Runs a console command on this service (e.g. `executeCommand("say Restarting soon")`). The
+     * call returns immediately and never blocks the caller; the returned future completes when the
+     * cloud queued the command for the service's agent (executed on its next heartbeat).
+     */
+    fun executeCommand(commandLine: String): CompletableFuture<Void> {
         val form = cloud.services().formEncode(
             "service" to name,
             "action" to CloudCommandType.COMMAND.wireName,
             "command" to commandLine,
         )
-        cloud.post("/bridge/services", form) { it }
+        return cloud.postAsync("/bridge/services", form)
     }
 
     override fun toString(): String = "CloudService(name=$name, group=$group, state=$state, port=$port)"

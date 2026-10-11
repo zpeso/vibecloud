@@ -7,6 +7,9 @@ import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.nio.file.Path
 import java.time.Duration
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
 /**
  * Main entry point into the VibeCloud API. Obtain the singleton via [instance]:
@@ -27,6 +30,15 @@ import java.time.Duration
  * [CloudPlayerProvider.findByName] or [CloudServiceProvider.findByGroup] for a fresh read.
  * [temporary] exposes an asynchronously refreshed in-memory status snapshot for frequent reads;
  * [CloudPlayerProvider.playerCount] is a convenience backed by that same cache.
+ *
+ * ## Latency
+ *
+ * State-changing actions ([CloudPlayerProvider.connect], [CloudPlayerProvider.sendMessage],
+ * [CloudPlayerProvider.kick], [CloudService.executeCommand]) never block the caller: they are
+ * handed to a shared daemon dispatcher and return a [CompletableFuture]. The transport pins
+ * HTTP/1.1 and keeps the connection alive (the background status refresh keeps it warm), so a
+ * local bridge call is a single round trip with no handshake. Read calls that need a result
+ * (`status()`, `all()`, `findByName`) still block; use [temporary] for hot paths.
  */
 class VibeCloud private constructor(
     private val baseUrl: String,
@@ -34,7 +46,11 @@ class VibeCloud private constructor(
     private val timeout: Duration,
     private val playerCountRefreshInterval: Duration,
 ) {
+    // HTTP/1.1 is pinned deliberately: the bridge is a local, plain-text endpoint, and the JDK
+    // client's default HTTP/2 would otherwise pay for an h2c upgrade on the first request. The
+    // client pools and reuses the keep-alive connection for every call.
     private val http: HttpClient = HttpClient.newBuilder()
+        .version(HttpClient.Version.HTTP_1_1)
         .connectTimeout(timeout)
         .build()
 
@@ -43,6 +59,12 @@ class VibeCloud private constructor(
     private val services = CloudServiceProvider(this)
     private val groups = CloudGroupProvider(this)
     private val temporary = TemporaryCloudData(this, statusCache)
+
+    init {
+        // Open the connection in the background so the first action/read does not pay for the TCP
+        // setup (and the h2c negotiation the pinned HTTP/1.1 version avoids).
+        warmUp()
+    }
 
     /** Access to the players online across the whole network. */
     fun players(): CloudPlayerProvider = players
@@ -121,16 +143,36 @@ class VibeCloud private constructor(
 
     internal fun <T> get(path: String, parse: (String) -> T): T = send(request("GET", path), parse)
 
-    internal fun <T> post(path: String, form: String, parse: (String) -> T): T = send(
-        HttpRequest.newBuilder()
-            .uri(URI.create(baseUrl + path))
-            .timeout(timeout)
-            .header("Authorization", "Bearer $token")
-            .header("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
-            .POST(HttpRequest.BodyPublishers.ofString(form))
-            .build(),
-        parse,
-    )
+    internal fun <T> post(path: String, form: String, parse: (String) -> T): T =
+        send(postRequest(path, form), parse)
+
+    /**
+     * Fire-and-forget POST. The request runs on the shared daemon dispatcher, so the caller (often
+     * a server's main thread) returns immediately. The returned future completes when the bridge
+     * answered; it fails with the same [IOException]s as the blocking calls (`VibeCloud bridge
+     * unreachable`, a rejected token, or a 4xx/5xx response).
+     */
+    internal fun postAsync(path: String, form: String): CompletableFuture<Void> =
+        CompletableFuture.supplyAsync({ send(postRequest(path, form)) { it } }, dispatcher)
+            .thenAccept { }
+
+    private fun postRequest(path: String, form: String): HttpRequest = HttpRequest.newBuilder()
+        .uri(URI.create(baseUrl + path))
+        .timeout(timeout)
+        .header("Authorization", "Bearer $token")
+        .header("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
+        .POST(HttpRequest.BodyPublishers.ofString(form))
+        .build()
+
+    /**
+     * Opens the keep-alive connection in the background. Failures are ignored: this is a warm-up,
+     * not an operation, and an unreachable bridge surfaces on the next real call.
+     */
+    private fun warmUp() {
+        dispatcher.execute {
+            runCatching { send(request("GET", "/bridge/status")) { it } }
+        }
+    }
 
     private fun <T> send(request: HttpRequest, parse: (String) -> T): T {
         val response = try {
@@ -194,6 +236,16 @@ class VibeCloud private constructor(
     }
 
     companion object {
+        /**
+         * Shared daemon dispatcher for fire-and-forget bridge traffic. A single thread keeps
+         * actions in the order they were issued (message before kick, transfer before the next
+         * one) while never blocking a caller; a bridge request is a sub-millisecond local round
+         * trip, so one thread is far more throughput than plugins ever need.
+         */
+        private val dispatcher: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "vibecloud-bridge").apply { isDaemon = true }
+        }
+
         @Volatile
         private var connected: VibeCloud? = null
 

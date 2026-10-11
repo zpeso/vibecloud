@@ -13,12 +13,19 @@ import java.net.http.HttpResponse
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Clock
+import java.time.Duration
 import java.time.Instant
 import java.time.ZoneOffset
 import java.time.ZonedDateTime
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executor
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.test.fail
 
 class BridgeHttpServerTest {
     private val clock = Clock.fixed(
@@ -27,11 +34,16 @@ class BridgeHttpServerTest {
     )
     private val fixedNow: Instant = clock.instant()
 
-    private fun service(name: String, state: ServiceState) = Service(
+    private fun service(
+        name: String,
+        state: ServiceState,
+        type: ServerType = ServerType.PAPER,
+        group: String = "lobby",
+    ) = Service(
         id = "id-$name",
         name = name,
-        groupName = "lobby",
-        type = ServerType.PAPER,
+        groupName = group,
+        type = type,
         version = "26.3",
         state = state,
         port = 25567,
@@ -62,6 +74,8 @@ class BridgeHttpServerTest {
         services: List<Service>,
         cloudCommands: (() -> BridgeCloudCommands?)? = null,
         consoleHistory: ((String, Int) -> List<String>)? = null,
+        sendConsoleCommand: ((String, String) -> Boolean)? = null,
+        dispatchExecutor: Executor? = null,
     ): Running {
         val settings = BridgeSettings(port = 0)
         val tokenStore = BridgeTokenStore(Files.createTempFile("bridge", ".token"), SilentLogger())
@@ -79,6 +93,10 @@ class BridgeHttpServerTest {
             cloudCommands = cloudCommands ?: { null },
             metricsHistory = metrics,
             consoleHistory = consoleHistory ?: { _, _ -> emptyList() },
+            sendConsoleCommand = sendConsoleCommand ?: { _, _ -> false },
+            dispatchExecutor = dispatchExecutor ?: Executors.newSingleThreadExecutor { runnable ->
+                Thread(runnable, "test-bridge-dispatch").apply { isDaemon = true }
+            },
         )
         server.start()
         return Running(server, tracker, registry, tokenStore, metrics)
@@ -90,6 +108,7 @@ class BridgeHttpServerTest {
         http.send(
             HttpRequest.newBuilder(URI.create(url))
                 .header("Authorization", "Bearer ${running.tokenStore.obtain()}")
+                .timeout(Duration.ofSeconds(10))
                 .GET().build(),
             HttpResponse.BodyHandlers.ofString(),
         )
@@ -134,10 +153,20 @@ class BridgeHttpServerTest {
             HttpRequest.newBuilder(URI.create(url))
                 .header("Authorization", "Bearer ${running.tokenStore.obtain()}")
                 .header("Content-Type", "application/x-www-form-urlencoded")
+                .timeout(Duration.ofSeconds(10))
                 .POST(HttpRequest.BodyPublishers.ofString(body))
                 .build(),
             HttpResponse.BodyHandlers.ofString(),
         )
+
+    private fun awaitUntil(what: String, timeoutMillis: Long = 5_000, condition: () -> Boolean) {
+        val deadline = System.currentTimeMillis() + timeoutMillis
+        while (System.currentTimeMillis() < deadline) {
+            if (condition()) return
+            Thread.sleep(10)
+        }
+        fail("timed out waiting for: $what")
+    }
 
     @Test
     fun `inventory snapshots flow from the heartbeat to the endpoint`() {
@@ -547,6 +576,57 @@ class BridgeHttpServerTest {
                 HttpResponse.BodyHandlers.ofString(),
             )
             assertEquals(404, response.statusCode())
+        } finally {
+            running.server.stop()
+        }
+    }
+
+    @Test
+    fun `transfer is answered before the proxy console write completes`() {
+        val gate = CountDownLatch(1)
+        val written = CopyOnWriteArrayList<String>()
+        val running = startServer(
+            listOf(
+                service("proxy-1", ServiceState.RUNNING, ServerType.VELOCITY, group = "proxy"),
+                service("lobby-1", ServiceState.RUNNING),
+            ),
+            sendConsoleCommand = { name, command ->
+                written.add("$name|$command")
+                gate.await(10, TimeUnit.SECONDS)
+                true
+            },
+        )
+        try {
+            // The console writer blocks on the gate until we open it below. A synchronous handler
+            // could not answer this POST at all - the request would time out instead.
+            val response = post(
+                running,
+                "http://127.0.0.1:${running.server.boundPort()}/bridge/players",
+                "player=Steve&action=transfer&target=lobby-1",
+            )
+            assertEquals(202, response.statusCode())
+            assertTrue(response.body().contains("\"transferred\":true"), response.body())
+
+            gate.countDown()
+            awaitUntil("the transfer reaches the proxy console") { written.isNotEmpty() }
+            assertEquals("proxy-1|send Steve lobby-1", written.single())
+        } finally {
+            gate.countDown()
+            running.server.stop()
+        }
+    }
+
+    @Test
+    fun `transfer without a running proxy is rejected`() {
+        val running = startServer(listOf(service("lobby-1", ServiceState.RUNNING)))
+        try {
+            val response = post(
+                running,
+                "http://127.0.0.1:${running.server.boundPort()}/bridge/players",
+                "player=Steve&action=transfer&target=lobby-1",
+            )
+            assertEquals(501, response.statusCode())
+            assertTrue(response.body().contains("no running proxy"), response.body())
         } finally {
             running.server.stop()
         }

@@ -241,7 +241,8 @@ class NetworkMessenger : Listener {
     private val cloud get() = VibeCloud.instance
 
     fun broadcastExcept(sender: String, message: String) {
-        // Call from an async thread - every provider call is an HTTP request.
+        // Roster reads are HTTP requests: call them from an async thread (or use cloud.temporary()).
+        // The actions below never block - they dispatch in the background.
         cloud.players().all()
             .filter { it.name != sender }
             .forEach { it.sendMessage("§b[Network] §f$message") }
@@ -268,6 +269,12 @@ Actions run through the cloud: message/kick are queued for the target service's 
 main thread within one heartbeat interval (default 5s). `player.connect(...)` is dispatched through the proxy's
 console (`send <player> <server>`), so it works with every client version and needs no configuration - it just
 requires a running proxy service.
+
+Every action is asynchronous: `sendMessage`, `kick`, `connect` and `CloudService.executeCommand` return at once
+(never blocking the caller's thread) and hand back a `CompletableFuture` that completes when the cloud accepted
+the action, or fails with an `IOException` (bridge unreachable, rejected token, no running proxy, unknown target).
+A transfer does not wait for the agent's heartbeat - the cloud writes it to the proxy console immediately, so the
+only delay is the proxy's own `send`.
 
 ### The /cloud command (in-game console)
 
@@ -342,7 +349,8 @@ GET /bridge/metrics     → {"history":{"points":[{t,players,running,services,tp
 GET /bridge/host        → host system metrics: {cpu, process-cpu, cores, memory-total-mb, memory-used-mb, swap-total-mb, swap-used-mb, jvm-used-mb, jvm-max-mb, uptime-seconds, load-average, os-name, os-version, os-arch, java-version, version, started-at, processes:{"<service>":cpu}}
 GET /bridge/activity    → {"events":[{t,kind,message},...]} newest first (service lifecycle)
 GET /bridge/console?service=<name> → {"lines":[...]}  (last 200 console lines)
-POST /bridge/players  action=inventory → queue an inventory snapshot request (202 {"queued":true,"request-id":...})
+POST /bridge/players  action=transfer&target=<service|group#> → write `send <player> <server>` to the proxy console (202 {"transferred":true}, dispatched off the request thread)
+POST /bridge/players  action=message|kick|inventory → queue for the player's agent (202 {"queued":true,"request-id":...})
 GET /bridge/players/inventory?service=&player= → last snapshot {service,player,captured-at,items:[{slot,material,count,durability,name,lore[],enchantments[]}]}
 ```
 

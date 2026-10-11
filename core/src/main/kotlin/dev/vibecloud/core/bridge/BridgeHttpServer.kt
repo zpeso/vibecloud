@@ -15,6 +15,8 @@ import java.time.Clock
 import java.time.Duration
 import java.time.Instant
 import java.util.UUID
+import java.util.concurrent.Executor
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -39,7 +41,10 @@ import java.util.concurrent.atomic.AtomicBoolean
  *  - `GET  /bridge/console?service=<name>` → recent console output of one service
  *  - `POST /bridge/heartbeat` → agent heartbeat; requires `Authorization: Bearer <token>`;
  *    the response carries queued player/service commands for that service
- *  - `POST /bridge/players`  → queue a player action (`message`, `kick`, `transfer`)
+ *  - `POST /bridge/players`  → queue a player action (`message`, `kick`, `transfer`). A transfer
+ *    is written to the proxy console off the request thread and answers `202` at once, so the
+ *    caller never waits on the service manager's stdin writer; `message`/`kick` are answered
+ *    `202` immediately after they are queued for the player's agent
  *  - `POST /bridge/services/command` → queue a console command for one service
  *  - `POST /bridge/cloud`    → run a cloud command (the in-game `/cloud` command); form fields:
  *    repeated `arg` (the argument list, excluding `/cloud`), optional `player` (caller), and
@@ -66,6 +71,12 @@ class BridgeHttpServer(
     private val clock: Clock = Clock.systemUTC(),
     /** Writes a console command to a running service (stdin), used for proxy `send` transfers. */
     private val sendConsoleCommand: (serviceName: String, command: String) -> Boolean = { _, _ -> false },
+    /**
+     * Runs bridge work off the request thread — currently the proxy console write of a player
+     * transfer, which would otherwise hold the response until the service manager's mutex and
+     * stdin write are done. Injectable so tests can drive it deterministically.
+     */
+    private val dispatchExecutor: Executor = DISPATCHER,
     /** Executes the in-game `/cloud` command server-side; null disables the endpoint. */
     private val cloudCommands: () -> BridgeCloudCommands? = { null },
     /** Rolling cloud statistics sampled by the reconciler; rendered for the dashboard charts. */
@@ -270,9 +281,12 @@ class BridgeHttpServer(
     }
 
     /**
-     * `POST /bridge/players` — queues a player action for the service the player is on. The
-     * queue is served by the agent's next heartbeat (typically within one interval), so an
-     * action for a player who just left is dropped instead of erroring.
+     * `POST /bridge/players` — dispatches a player action. `message`/`kick`/`inventory` are queued
+     * for the service the player is on and served by the agent's next heartbeat (typically within
+     * one interval), so an action for a player who just left is dropped instead of erroring. A
+     * `transfer` is version-independent and goes straight to the proxy console; the write is
+     * handed to [dispatchExecutor] so the response does not wait on the service manager, and the
+     * caller gets `202` immediately.
      */
     private fun handlePlayerAction(exchange: HttpExchange) {
         try {
@@ -332,12 +346,25 @@ class BridgeHttpServer(
                         return
                     }
                     // Version-independent transfer via the proxy console — no client transfer
-                    // packet, no advertised host, works on every client version.
-                    if (!dispatchTransfer(playerName, targetService)) {
+                    // packet, no advertised host, works on every client version. Validate here (so
+                    // a proxy-less network still answers 501), then hand the console write to the
+                    // dispatcher: `sendConsoleCommand` takes the service slot's mutex and writes
+                    // to the proxy's stdin, and an HTTP caller must never wait for that.
+                    val proxy = runningProxy()
+                    if (proxy == null) {
                         respond(exchange, 501, errorJson("no running proxy; transfers need a proxy service"))
                         return
                     }
-                    respond(exchange, 200, JsonWriter.obj("transferred" to JsonWriter.bool(true)))
+                    val proxyName = proxy.name
+                    dispatchExecutor.execute {
+                        if (!sendConsoleCommand(proxyName, "send $playerName $targetService")) {
+                            logger.warn(
+                                "Could not write the transfer of $playerName to $targetService " +
+                                    "to the $proxyName console",
+                            )
+                        }
+                    }
+                    respond(exchange, 202, JsonWriter.obj("transferred" to JsonWriter.bool(true)))
                     return
                 }
                 "inventory" -> {
@@ -503,16 +530,11 @@ class BridgeHttpServer(
     }
 
     /**
-     * Player transfer without the client transfer packet (which needs 1.20.5+ clients): the
-     * command goes to the proxy's console — `send <player> <server>` — so it works for every
-     * client version and needs no per-service configuration. Returns false when no proxy is
-     * running (transfers are not possible on proxy-less networks).
+     * The running proxy that player transfers are written to, or null on a proxy-less network
+     * (transfers are only possible with a proxy).
      */
-    private fun dispatchTransfer(playerName: String, targetService: String): Boolean {
-        val proxy = cloudView.services().firstOrNull {
-            it.type.isProxy && it.state == ServiceState.RUNNING
-        } ?: return false
-        return sendConsoleCommand(proxy.name, "send $playerName $targetService")
+    private fun runningProxy(): Service? = cloudView.services().firstOrNull {
+        it.type.isProxy && it.state == ServiceState.RUNNING
     }
 
     private fun commandsJson(commands: List<BridgeCommand>): String = JsonWriter.arr(
@@ -1183,6 +1205,11 @@ class BridgeHttpServer(
     private fun errorJson(message: String): String = JsonWriter.obj("error" to JsonWriter.str(message))
 
     private companion object {
+        /** Shared daemon pool for work the HTTP response must not wait for. */
+        val DISPATCHER: ExecutorService = Executors.newFixedThreadPool(2) { runnable ->
+            Thread(runnable, "bridge-dispatch").apply { isDaemon = true }
+        }
+
         const val BACKLOG = 16
         const val WORKER_THREADS = 4
         const val MAX_BODY_BYTES = 64 * 1024
