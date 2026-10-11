@@ -41,8 +41,11 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
 
+      # Requesting build.log is what enqueues the build on JitPack. We deliberately do not
+      # wait for it: a cold build takes minutes and would only stall this job. A short
+      # timeout is enough to register the request; the build then completes asynchronously.
       - name: Kick JitPack (API artifacts)
         run: |
-          curl -fsSL --max-time 300 \
+          curl -fsSL --max-time 60 \
             "https://jitpack.io/com/github/zpeso/vibecloud/${GITHUB_REF_NAME}/build.log" \
-            -o /dev/null || echo "JitPack poll ended — it still builds lazily on first resolve."
+            -o /dev/null || echo "JitPack build requested — it completes asynchronously."

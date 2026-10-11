@@ -1,14 +1,28 @@
 # JitPack build configuration (https://jitpack.io/#zpeso/vibecloud)
 #
-# JDK selection goes through JitPack's own `jdk` field. The previous
-# `sdk install java 21.0.4-tem` / `sdk use` pin made the build fail before Gradle
-# even started ("Error: An unexpected error occurred while trying to open file
-# .../gradle-wrapper.jar") on the current build image, so it is gone.
+# Why there is no `jdk:` field here anymore
+# ----------------------------------------
+# `jdk: - openjdk21` made JitPack install its JDK through SDKMAN, which resolves to
+# JDK 21.0.2 (and previously a pinned 21.0.4-tem). Those builds fail on JitPack's older
+# build hosts with:
+#
+#   Error: An unexpected error occurred while trying to open file
+#     /home/jitpack/build/gradle/wrapper/gradle-wrapper.jar
+#
+# Cause (JitPack issue #8096): since JDK 22 Files.readAttributes uses statx, and Docker
+# releases before 18.04 block statx in their default seccomp profile. The JDK then gets
+# EPERM and cannot open *any* jar — the Gradle wrapper included. The stat fallback
+# (JDK-8337966) only shipped in 21.0.6 / 17.0.14, so 21.0.2/21.0.4 have nothing to fall
+# back to. That is why about every other JitPack build of the same commit succeeded
+# (newer host) or failed (older host), and why the fallback JDK-25 toolchain is never the
+# problem: the failure happens before Gradle starts.
+#
+# The build image already ships a patched JDK 21 (21.0.10+ as of the current image),
+# which has the stat fallback. Launching Gradle with that avoids SDKMAN entirely and also
+# removes the other failure mode we hit — SDKMAN resolving `openjdk21` to a candidate it
+# cannot download, which aborts the build before `install` ever runs.
 #
 # Gradle 9.8 needs Java 17+ to launch; the project's Java 25 compile toolchain is
-# provisioned automatically by the foojay-resolver-convention plugin
-# (settings.gradle.kts) on top of this launcher JDK.
-jdk:
-  - openjdk21
+# provisioned on top of it by the foojay-resolver-convention plugin (settings.gradle.kts).
 install:
-  - ./gradlew publishToMavenLocal
+  - if [ -x /usr/lib/jvm/java-21-openjdk-amd64/bin/java ]; then export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64; export PATH="$JAVA_HOME/bin:$PATH"; fi; java -version; ./gradlew publishToMavenLocal
