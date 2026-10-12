@@ -22,6 +22,15 @@ class PlayerInspectorTest {
     }
 
     @Test
+    fun `SERVICE_LOG_PREFIX uses legacy section codes only`() {
+        // 1.8-era servers render only legacy §-codes; the prefix must not contain MiniMessage
+        // tags (which require the adventure libraries those servers do not bundle).
+        val prefix = VibeCloudAgentPlugin.SERVICE_LOG_PREFIX
+        assertTrue(prefix.contains("\u00a7c"), "prefix must start with the legacy red code, got '$prefix'")
+        assertTrue(!prefix.contains('<'), "prefix must not contain MiniMessage tags, got '$prefix'")
+    }
+
+    @Test
     fun `roster entry keeps the append-only field order`() {
         // Field 16 (flying) was the last field through 0.8.x; 17+ were appended in 0.9.0.
         // The cloud parses by index, so both sides must agree on positions 0..23.

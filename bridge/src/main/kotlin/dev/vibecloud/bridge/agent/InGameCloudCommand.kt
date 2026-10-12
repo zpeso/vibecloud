@@ -1,9 +1,6 @@
 package dev.vibecloud.bridge.agent
 
 import dev.vibecloud.api.bridge.VibeCloud
-import net.kyori.adventure.text.Component
-import net.kyori.adventure.text.minimessage.MiniMessage
-import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer
 import org.bukkit.ChatColor
 import org.bukkit.command.Command
 import org.bukkit.command.CommandExecutor
@@ -55,7 +52,8 @@ class InGameCloudCommand(private val plugin: VibeCloudAgentPlugin) : CommandExec
 
     /**
      * Prints a response block with the branded prefix leading the first line; remaining lines
-     * follow unchanged so console-style tables and listings keep their alignment.
+     * follow unchanged so console-style tables and listings keep their alignment. Messages are
+     * sent as legacy `§`-coded strings, which every Bukkit version (including 1.8) renders.
      */
     private fun sendResponse(sender: CommandSender, lines: List<String>) {
         if (lines.isEmpty()) return
@@ -64,15 +62,11 @@ class InGameCloudCommand(private val plugin: VibeCloudAgentPlugin) : CommandExec
         }
     }
 
-    /** The branded cloud prefix (MiniMessage) followed by a `§`-coded line. */
-    private fun branded(line: String): Component =
-        MiniMessage.miniMessage()
-            .deserialize(VibeCloudAgentPlugin.SERVICE_LOG_PREFIX)
-            .append(legacy(line))
+    /** The legacy `§`-coded cloud prefix prepended to the first line. */
+    private fun branded(line: String): String = VibeCloudAgentPlugin.SERVICE_LOG_PREFIX + line
 
-    /** Converts a legacy `§`-coded line into a component (visually identical to raw sending). */
-    private fun legacy(line: String): Component =
-        LegacyComponentSerializer.legacySection().deserialize(line)
+    /** Pass-through: response lines already carry legacy `§` codes. */
+    private fun legacy(line: String): String = line
 
     override fun onTabComplete(
         sender: CommandSender,

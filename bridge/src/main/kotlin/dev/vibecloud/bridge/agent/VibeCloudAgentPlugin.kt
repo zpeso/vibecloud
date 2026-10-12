@@ -2,7 +2,6 @@ package dev.vibecloud.bridge.agent
 
 import dev.vibecloud.api.bridge.AgentConfig
 import dev.vibecloud.api.bridge.VibeCloud
-import net.kyori.adventure.text.minimessage.MiniMessage
 import org.bukkit.Bukkit
 import org.bukkit.entity.Player
 import org.bukkit.plugin.java.JavaPlugin
@@ -116,17 +115,24 @@ class VibeCloudAgentPlugin : JavaPlugin() {
     /**
      * The cloud-side service log, mirrored to online players: when this service stops, everyone
      * holding the `cloud.logs` permission receives the stop notice in the cloud's branded
-     * MiniMessage format. The console gets the same notice as a plain log line.
+     * legacy `§`-code format. The console gets the same notice as a plain log line.
      */
     private fun announceServiceStopped() {
         val current = config ?: return
-        val message = MiniMessage.miniMessage().deserialize(
-            SERVICE_LOG_PREFIX + "Service " + current.serviceName + " is now stopped",
-        )
+        deliverServiceLog("Service " + current.serviceName + " is now stopped")
+    }
+
+    /**
+     * Renders one service-log notice with the legacy `§`-coded cloud prefix and delivers it to
+     * every online player holding `cloud.logs` plus the console. Legacy codes are used instead
+     * of MiniMessage/adventure so 1.8-era servers (which bundle neither) can load the agent.
+     */
+    internal fun deliverServiceLog(line: String) {
+        val message = SERVICE_LOG_PREFIX + line
         Bukkit.getOnlinePlayers()
             .filter { it.hasPermission(CLOUD_LOGS_PERMISSION) }
             .forEach { it.sendMessage(message) }
-        getLogger().info("Service ${current.serviceName} is now stopped")
+        getLogger().info(line)
     }
 
     /** Roster meta entries for all players; rebuilt on the main thread every tick or two. */
@@ -238,15 +244,7 @@ class VibeCloudAgentPlugin : JavaPlugin() {
                 // Cloud service-log broadcast: lifecycle notices (started/stopped/crashed)
                 // relaying what the cloud's activity feed records. Employees hold `cloud.logs`.
                 val lines = command.payload["lines"].orEmpty()
-                if (lines.isNotEmpty()) {
-                    val message = MiniMessage.miniMessage().deserialize(
-                        SERVICE_LOG_PREFIX + lines,
-                    )
-                    Bukkit.getOnlinePlayers()
-                        .filter { it.hasPermission(CLOUD_LOGS_PERMISSION) }
-                        .forEach { it.sendMessage(message) }
-                    getLogger().info("Service log: $lines")
-                }
+                if (lines.isNotEmpty()) deliverServiceLog(lines)
             }
 
             "command" -> {
@@ -301,7 +299,8 @@ class VibeCloudAgentPlugin : JavaPlugin() {
          * Branded prefix for agent messages (cloud red, small-caps name, separator) — used for
          * the service-stop broadcast and the in-game `/cloud` command output alike.
          */
-        const val SERVICE_LOG_PREFIX = "<#ed3030>ᴄʟᴏᴜᴅ <dark_gray>» "
+        /** Legacy `§`-coded cloud prefix (no MiniMessage: 1.8-era servers bundle no adventure). */
+        const val SERVICE_LOG_PREFIX = "§cᴄʟᴏᴜᴅ §8» §7"
         const val CLOUD_LOGS_PERMISSION = "cloud.logs"
     }
 }

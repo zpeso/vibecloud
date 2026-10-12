@@ -1,7 +1,6 @@
 package dev.vibecloud.bridge.agent
 
-import net.kyori.adventure.text.Component
-import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer
+import org.bukkit.ChatColor
 import org.bukkit.entity.Player
 import org.bukkit.inventory.ItemStack
 import org.bukkit.inventory.meta.Damageable
@@ -118,8 +117,13 @@ internal object PlayerInspector {
     /** Serializes one stack: `<slot>|<material>|<count>|<durability%>|<name>|<lore>|<enchants>`. */
     private fun encodeItem(item: ItemStack, slot: String): String {
         val meta: ItemMeta? = item.itemMeta
-        val displayName = meta?.displayName()?.let(::plainText)?.takeIf { it.isNotBlank() }.orEmpty()
-        val lore = meta?.lore().orEmpty().map(::plainText).filter { it.isNotBlank() }
+        // Legacy String getters instead of the modern Component ones (getDisplayName/getLore
+        // exist and behave identically on every Bukkit version the agent supports, 1.8 up).
+        // Output is stripped of legacy color codes so the cloud-side snapshot stays plain text.
+        @Suppress("DEPRECATION")
+        val displayName = meta?.getDisplayName()?.takeIf { it.isNotBlank() }?.let(::stripLegacy).orEmpty()
+        @Suppress("DEPRECATION")
+        val lore = meta?.getLore().orEmpty().map(::stripLegacy).filter { it.isNotBlank() }
         val durability = if (meta is Damageable && item.type.maxDurability > 0) {
             val remaining = item.type.maxDurability - meta.damage
             ((remaining * 100) / item.type.maxDurability).coerceIn(0, 100)
@@ -147,8 +151,8 @@ internal object PlayerInspector {
         else -> "helmet"
     }
 
-    private fun plainText(component: Component): String =
-        PlainTextComponentSerializer.plainText().serialize(component)
+    /** Removes legacy `§` color/format codes from a display name or lore line. */
+    private fun stripLegacy(value: String): String = ChatColor.stripColor(value).orEmpty()
 
     private fun round(value: Double): String = String.format(Locale.US, "%.1f", value)
 
