@@ -34,8 +34,48 @@ class CloudConfigRepositoryTest {
             assertTrue(reloaded.directories.templates.isAbsolute)
             assertTrue(reloaded.directories.services.isAbsolute)
             assertFalse(Files.exists(directory.resolve("config.yml.tmp")))
+            // bridge.service-log expands with its defaults so users can discover the keys.
+            assertEquals(ServiceLogMessages.DEFAULT_PREFIX, reloaded.bridge.serviceLog.prefix)
+            assertEquals("%service% is now running", reloaded.bridge.serviceLog.started)
         } finally {
             directory.toFile().deleteRecursively()
         }
+    }
+
+    @Test
+    fun `service log customizations round-trip and survive a reload`() {
+        val directory = Files.createTempDirectory("cloud-config-test")
+        try {
+            val file = directory.resolve("config.yml")
+            repositoryWithCustomLog(file).loadOrCreate()
+
+            val reloaded = CloudConfigRepository(file).loadOrCreate().bridge.serviceLog
+            assertEquals("§3NCloud §8» ", reloaded.prefix)
+            assertEquals("[start] %service%", reloaded.starting)
+            assertEquals("[go] %service%", reloaded.started)
+            assertEquals("[halt] %service%", reloaded.stopping)
+            assertEquals("[halted] %service%", reloaded.stopped)
+            assertEquals("[boom] %service% ( %reason% )", reloaded.crashed)
+        } finally {
+            directory.toFile().deleteRecursively()
+        }
+    }
+
+    private fun repositoryWithCustomLog(file: java.nio.file.Path): CloudConfigRepository {
+        java.nio.file.Files.write(
+            file,
+            listOf(
+                "bridge:",
+                "  port: 25580",
+                "  service-log:",
+                "    prefix: '\u00a73NCloud \u00a78» '",
+                "    starting: '[start] %service%'",
+                "    started: '[go] %service%'",
+                "    stopping: '[halt] %service%'",
+                "    stopped: '[halted] %service%'",
+                "    crashed: '[boom] %service% ( %reason% )'",
+            ),
+        )
+        return CloudConfigRepository(file)
     }
 }

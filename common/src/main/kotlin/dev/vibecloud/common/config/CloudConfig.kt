@@ -70,6 +70,28 @@ data class ReconciliationSettings(
 }
 
 /**
+ * User-editable text of the network-wide in-game service log (`bridge.service-log` in config.yml).
+ * Values render to plain strings with legacy `§` color codes before being queued for agents, so
+ * they display identically on every supported Minecraft version (1.8 upward).
+ *
+ * Placeholders: `%service%` (affected service name) and `%reason%` (crash reason).
+ */
+data class ServiceLogMessages(
+    /** Prefix prepended to every service-log line broadcast to agents. */
+    val prefix: String = DEFAULT_PREFIX,
+    val starting: String = "%service% is starting...",
+    val started: String = "%service% is now running",
+    val stopping: String = "%service% is stopping...",
+    val stopped: String = "%service% is now stopped",
+    val crashed: String = "%service% has crashed: %reason%",
+) {
+    companion object {
+        /** Legacy `§`-coded cloud prefix (no MiniMessage: 1.8-era servers bundle no adventure). */
+        const val DEFAULT_PREFIX = "§cᴄʟᴏᴜᴅ §8» §7"
+    }
+}
+
+/**
  * Settings for the local HTTP bridge that backend agent plugins report to. The bridge exposes the
  * cloud status (groups, services, live player counts) and receives agent heartbeats. Port 0 means
  * "bind a random free port" and is mainly useful for tests.
@@ -82,6 +104,8 @@ data class BridgeSettings(
     val offlineTimeout: Duration = Duration.ofSeconds(20),
     /** Optional explicit path to the agent plugin jar; defaults to the copy bundled in the distribution. */
     val agentJar: String = "",
+    /** Customizable text of the network-wide in-game service log. */
+    val serviceLog: ServiceLogMessages = ServiceLogMessages(),
 ) {
     init {
         require(port in 0..65535) { "bridge.port must be within 0..65535 (0 = random free port)" }

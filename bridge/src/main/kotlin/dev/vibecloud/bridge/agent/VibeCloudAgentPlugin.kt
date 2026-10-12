@@ -31,6 +31,9 @@ import java.util.concurrent.TimeUnit
  */
 class VibeCloudAgentPlugin : JavaPlugin() {
     private var config: AgentConfig? = null
+
+    /** Internal access for the command class without colliding with JavaPlugin.getConfig(). */
+    internal val agent: AgentConfig? get() = config
     private var executor: ScheduledExecutorService? = null
     private var heartbeatTask: ScheduledFuture<*>? = null
     private var lastCommandId: Long = 0
@@ -119,19 +122,22 @@ class VibeCloudAgentPlugin : JavaPlugin() {
      */
     private fun announceServiceStopped() {
         val current = config ?: return
-        deliverServiceLog("Service " + current.serviceName + " is now stopped")
+        val template = current.stoppedTemplate
+        val line = template.replace("%service%", current.serviceName)
+        // The agent's own whisper is rendered locally, so it prepends the (configurable) prefix;
+        // cloud-broadcast `log` lines arrive already prefixed and are shown as-is.
+        deliverServiceLog(current.logPrefix + line)
     }
 
     /**
-     * Renders one service-log notice with the legacy `§`-coded cloud prefix and delivers it to
-     * every online player holding `cloud.logs` plus the console. Legacy codes are used instead
-     * of MiniMessage/adventure so 1.8-era servers (which bundle neither) can load the agent.
+     * Delivers one service-log notice to every online player holding `cloud.logs` plus the
+     * console. Callers pass the FULLY rendered line including its legacy `§`-coded prefix —
+     * legacy codes render natively on every supported version, 1.8 upward.
      */
     internal fun deliverServiceLog(line: String) {
-        val message = SERVICE_LOG_PREFIX + line
         Bukkit.getOnlinePlayers()
             .filter { it.hasPermission(CLOUD_LOGS_PERMISSION) }
-            .forEach { it.sendMessage(message) }
+            .forEach { it.sendMessage(line) }
         getLogger().info(line)
     }
 
@@ -299,7 +305,10 @@ class VibeCloudAgentPlugin : JavaPlugin() {
          * Branded prefix for agent messages (cloud red, small-caps name, separator) — used for
          * the service-stop broadcast and the in-game `/cloud` command output alike.
          */
-        /** Legacy `§`-coded cloud prefix (no MiniMessage: 1.8-era servers bundle no adventure). */
+        /**
+         * Fallback prefix when `agent.properties` carries no `log-prefix` (hand-staged config);
+         * equals the cloud's `bridge.service-log.prefix` default.
+         */
         const val SERVICE_LOG_PREFIX = "§cᴄʟᴏᴜᴅ §8» §7"
         const val CLOUD_LOGS_PERMISSION = "cloud.logs"
     }

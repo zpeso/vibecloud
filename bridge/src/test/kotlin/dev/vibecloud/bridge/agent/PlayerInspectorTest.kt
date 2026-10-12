@@ -1,4 +1,5 @@
 package dev.vibecloud.bridge.agent
+import dev.vibecloud.api.bridge.AgentConfig
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -26,8 +27,53 @@ class PlayerInspectorTest {
         // 1.8-era servers render only legacy §-codes; the prefix must not contain MiniMessage
         // tags (which require the adventure libraries those servers do not bundle).
         val prefix = VibeCloudAgentPlugin.SERVICE_LOG_PREFIX
+        assertEquals(AgentConfig.DEFAULT_LOG_PREFIX, prefix)
         assertTrue(prefix.contains("\u00a7c"), "prefix must start with the legacy red code, got '$prefix'")
         assertTrue(!prefix.contains('<'), "prefix must not contain MiniMessage tags, got '$prefix'")
+    }
+
+    @Test
+    fun `agent config falls back to defaults for missing log properties`() {
+        val file = java.nio.file.Files.createTempFile("agent", ".properties")
+        try {
+            java.nio.file.Files.writeString(
+                file,
+                """
+                cloud-url=http://127.0.0.1:25580
+                service-id=lobby-1
+                service-name=lobby-1
+                token=test-token
+                """.trimIndent(),
+            )
+            val config = AgentConfig.load(file)
+            assertEquals(AgentConfig.DEFAULT_LOG_PREFIX, config.logPrefix)
+            assertEquals("%service% is now stopped", config.stoppedTemplate)
+        } finally {
+            java.nio.file.Files.deleteIfExists(file)
+        }
+    }
+
+    @Test
+    fun `agent config reads the customizable log properties`() {
+        val file = java.nio.file.Files.createTempFile("agent", ".properties")
+        try {
+            java.nio.file.Files.writeString(
+                file,
+                """
+                cloud-url=http://127.0.0.1:25580
+                service-id=lobby-1
+                service-name=lobby-1
+                token=test-token
+                log-prefix=My Prefix
+                log-stopped=Bye %service%
+                """.trimIndent(),
+            )
+            val config = AgentConfig.load(file)
+            assertEquals("My Prefix", config.logPrefix)
+            assertEquals("Bye %service%", config.stoppedTemplate)
+        } finally {
+            java.nio.file.Files.deleteIfExists(file)
+        }
     }
 
     @Test

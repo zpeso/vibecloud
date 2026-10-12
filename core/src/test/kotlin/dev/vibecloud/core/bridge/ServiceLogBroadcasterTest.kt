@@ -6,6 +6,7 @@ import dev.vibecloud.api.event.ServiceStoppedEvent
 import dev.vibecloud.api.service.Service
 import dev.vibecloud.api.service.ServiceState
 import dev.vibecloud.api.server.ServerType
+import dev.vibecloud.common.config.ServiceLogMessages
 import java.nio.file.Path
 import java.time.Instant
 import kotlin.test.Test
@@ -37,6 +38,7 @@ class ServiceLogBroadcasterTest {
         val queue = BridgeCommandQueue()
         val broadcaster = ServiceLogBroadcaster(
             commandQueue = { queue },
+            messages = { ServiceLogMessages() },
             services = {
                 listOf(
                     service("lobby-1", ServerType.PAPER, ServiceState.RUNNING),
@@ -55,7 +57,11 @@ class ServiceLogBroadcasterTest {
         assertEquals(1, drained.size)
         val command = drained.single()
         assertEquals("log", command.type)
-        assertTrue(command.payload["lines"].orEmpty().contains("citybuild-3"))
+        // Fully rendered: prefix + default started template with the %service% placeholder filled.
+        assertEquals(
+            ServiceLogMessages.DEFAULT_PREFIX + "citybuild-3 is now running",
+            command.payload["lines"],
+        )
         assertTrue(queue.drain("citybuild-1-id").isEmpty())
     }
 
@@ -63,6 +69,7 @@ class ServiceLogBroadcasterTest {
     fun `broadcast has nothing to deliver when the queue is not up yet or nothing runs`() {
         val broadcaster = ServiceLogBroadcaster(
             commandQueue = { null },
+            messages = { ServiceLogMessages() },
             services = { listOf(service("lobby-1", ServerType.PAPER, ServiceState.RUNNING)) },
         )
 
@@ -75,12 +82,40 @@ class ServiceLogBroadcasterTest {
         val queue = BridgeCommandQueue()
         val broadcaster = ServiceLogBroadcaster(
             commandQueue = { queue },
+            messages = { ServiceLogMessages() },
             services = { listOf(service("lobby-1", ServerType.PAPER, ServiceState.RUNNING)) },
         )
 
         assertEquals(1, broadcaster.broadcast(ServiceCrashedEvent(service("lobby-2", ServerType.PAPER, ServiceState.CRASHED), 1, "OutOfMemoryError")))
         assertEquals(
-            "lobby-2 has crashed: OutOfMemoryError",
+            ServiceLogMessages.DEFAULT_PREFIX + "lobby-2 has crashed: OutOfMemoryError",
+            queue.drain("lobby-1-id").single().payload["lines"],
+        )
+    }
+
+    @Test
+    fun `custom prefix and templates replace both placeholders`() {
+        val queue = BridgeCommandQueue()
+        val messages = ServiceLogMessages(
+            prefix = "§6Cloud §8| ",
+            started = "[ %service% ] started",
+            crashed = "%service% exploded: %reason%",
+        )
+        val broadcaster = ServiceLogBroadcaster(
+            commandQueue = { queue },
+            messages = { messages },
+            services = { listOf(service("lobby-1", ServerType.PAPER, ServiceState.RUNNING)) },
+        )
+
+        broadcaster.broadcast(ServiceStartedEvent(service("citybuild-2", ServerType.PAPER, ServiceState.RUNNING)))
+        assertEquals(
+            "§6Cloud §8| [ citybuild-2 ] started",
+            queue.drain("lobby-1-id").single().payload["lines"],
+        )
+
+        broadcaster.broadcast(ServiceCrashedEvent(service("citybuild-2", ServerType.PAPER, ServiceState.CRASHED), 2, "OutOfMemoryError"))
+        assertEquals(
+            "§6Cloud §8| citybuild-2 exploded: OutOfMemoryError",
             queue.drain("lobby-1-id").single().payload["lines"],
         )
     }

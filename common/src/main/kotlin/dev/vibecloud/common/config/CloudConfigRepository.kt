@@ -89,6 +89,7 @@ class CloudConfigRepository(configFile: Path) {
             val runtimeMap = asStringMap(rootMap["runtime"], "runtime")
             val reconciliationMap = asStringMap(rootMap["reconciliation"], "reconciliation")
             val bridgeMap = asStringMap(rootMap["bridge"], "bridge")
+            val serviceLogMap = asStringMap(bridgeMap["service-log"], "bridge.service-log")
             val groupsMap = asStringMap(rootMap["groups"], "groups")
 
             val runtime = RuntimeSettings(
@@ -140,6 +141,16 @@ class CloudConfigRepository(configFile: Path) {
                     heartbeatInterval = Duration.ofSeconds(bridgeMap.long("heartbeat-interval-seconds", 5L)),
                     offlineTimeout = Duration.ofSeconds(bridgeMap.long("offline-timeout-seconds", 20L)),
                     agentJar = bridgeMap.string("agent-jar", ""),
+                    serviceLog = serviceLogMap.let {
+                        ServiceLogMessages(
+                            prefix = it.string("prefix", ServiceLogMessages.DEFAULT_PREFIX),
+                            starting = it.string("starting", "%service% is starting..."),
+                            started = it.string("started", "%service% is now running"),
+                            stopping = it.string("stopping", "%service% is stopping..."),
+                            stopped = it.string("stopped", "%service% is now stopped"),
+                            crashed = it.string("crashed", "%service% has crashed: %reason%"),
+                        )
+                    },
                 ),
                 groups = groups,
             )
@@ -188,6 +199,14 @@ class CloudConfigRepository(configFile: Path) {
                     "bind-address" to config.bridge.bindAddress,
                     "heartbeat-interval-seconds" to config.bridge.heartbeatInterval.seconds,
                     "offline-timeout-seconds" to config.bridge.offlineTimeout.seconds,
+                    "service-log" to linkedMapOf(
+                        "prefix" to config.bridge.serviceLog.prefix,
+                        "starting" to config.bridge.serviceLog.starting,
+                        "started" to config.bridge.serviceLog.started,
+                        "stopping" to config.bridge.serviceLog.stopping,
+                        "stopped" to config.bridge.serviceLog.stopped,
+                        "crashed" to config.bridge.serviceLog.crashed,
+                    ),
                 ),
                 "groups" to linkedMapOf<String, Any>(),
             )

@@ -16,17 +16,28 @@ data class AgentConfig(
     val groupName: String,
     val token: String,
     val heartbeatIntervalSeconds: Int,
+    /** Legacy `§`-coded prefix for the agent's locally-rendered service log notices. */
+    val logPrefix: String = DEFAULT_LOG_PREFIX,
+    /** Template for the agent's own stop notice; supports the `%service%` placeholder. */
+    val stoppedTemplate: String = DEFAULT_STOPPED_TEMPLATE,
 ) {
     val heartbeatInterval: java.time.Duration
         get() = java.time.Duration.ofSeconds(heartbeatIntervalSeconds.toLong())
 
+    /**
+     * The config directory inside a server's `plugins/` folder that the cloud manages. The
+     * Bukkit data folder must match this name (plugin.yml `name: VibeCloud`) so the agent and
+     * `VibeCloudClient.forService()` read the same file the cloud writes.
+     */
     companion object {
-        /**
-         * The config directory inside a server's `plugins/` folder that the cloud manages. The
-         * Bukkit data folder must match this name (plugin.yml `name: VibeCloud`) so the agent and
-         * `VibeCloudClient.forService()` read the same file the cloud writes.
-         */
         const val CONFIG_DIRECTORY = "VibeCloud"
+
+        /** Mirrors the cloud's `bridge.service-log.prefix` default (kept agent-local: the agent
+         * does not depend on the cloud's config modules and this must render on 1.8, too). */
+        const val DEFAULT_LOG_PREFIX = "§cᴄʟᴏᴜᴅ §8» §7"
+
+        /** Mirrors the cloud's `bridge.service-log.stopped` default. */
+        const val DEFAULT_STOPPED_TEMPLATE = "%service% is now stopped"
 
         fun load(file: Path): AgentConfig {
             val properties = Properties()
@@ -46,6 +57,10 @@ data class AgentConfig(
                     .toIntOrNull()
                     ?.coerceAtLeast(1)
                     ?: 5,
+                logPrefix = properties.getProperty("log-prefix", "").trim().takeIf(String::isNotEmpty)
+                    ?: DEFAULT_LOG_PREFIX,
+                stoppedTemplate = properties.getProperty("log-stopped", "").trim().takeIf(String::isNotEmpty)
+                    ?: DEFAULT_STOPPED_TEMPLATE,
             )
         }
 

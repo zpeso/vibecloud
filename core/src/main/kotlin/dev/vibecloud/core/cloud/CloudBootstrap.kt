@@ -137,6 +137,7 @@ class CloudBootstrap(
             val serviceLogBroadcaster = ServiceLogBroadcaster(
                 commandQueue = { commandQueueHolder },
                 services = { serviceManagerReference.get()?.all().orEmpty().toList() },
+                messages = { config.bridge.serviceLog },
             )
             // Resolved later in create(); the /cloud group commands need it for version switches.
             var templateManagerHolder: FileTemplateManager? = null

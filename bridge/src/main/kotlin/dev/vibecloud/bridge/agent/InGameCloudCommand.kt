@@ -62,8 +62,9 @@ class InGameCloudCommand(private val plugin: VibeCloudAgentPlugin) : CommandExec
         }
     }
 
-    /** The legacy `§`-coded cloud prefix prepended to the first line. */
-    private fun branded(line: String): String = VibeCloudAgentPlugin.SERVICE_LOG_PREFIX + line
+    /** The legacy `§`-coded cloud prefix (configurable via `agent.properties`) on the first line. */
+    private fun branded(line: String): String =
+        (plugin.agent?.logPrefix ?: VibeCloudAgentPlugin.SERVICE_LOG_PREFIX) + line
 
     /** Pass-through: response lines already carry legacy `§` codes. */
     private fun legacy(line: String): String = line
