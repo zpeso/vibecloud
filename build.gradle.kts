@@ -150,7 +150,9 @@ tasks.register("release") {
         println("   tag:     $tag pushed — CI attaches the zip to the GitHub")
         println("            Release and kicks JitPack so the API artifacts")
         println("            are rebuilt from this exact tag")
-        println("   JitPack: https://jitpack.io/#zpeso/vibecloud/$tag")
+        println("   JitPack: https://jitpack.io/#zpeso/vibecloud/$version")
+        println("            com.github.zpeso.vibecloud:api:$version")
+        println("            com.github.zpeso.vibecloud:bridge:$version")
         println("=============================================================")
     }
 }

@@ -540,7 +540,9 @@ class BridgeHttpServer(
     private fun commandsJson(commands: List<BridgeCommand>): String = JsonWriter.arr(
         commands.map { command ->
             JsonWriter.obj(
-                "id" to JsonWriter.num(command.id.toInt()),
+                // Full long, not Int: an id truncated by toInt() would wrap negative and the
+                // agent's `id > lastSeen` check would silently drop (or misorder) the command.
+                "id" to JsonWriter.num(command.id),
                 "type" to JsonWriter.str(command.type),
                 "player" to (command.playerName?.let { JsonWriter.str(it) } ?: "null"),
                 *command.payload.map { (key, value) -> key to JsonWriter.str(value) }.toTypedArray(),

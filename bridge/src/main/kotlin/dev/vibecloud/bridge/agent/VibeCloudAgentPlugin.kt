@@ -234,6 +234,21 @@ class VibeCloudAgentPlugin : JavaPlugin() {
                 getLogger().fine("Ignoring transfer command ${command.id} (handled by the proxy)")
             }
 
+            "log" -> {
+                // Cloud service-log broadcast: lifecycle notices (started/stopped/crashed)
+                // relaying what the cloud's activity feed records. Employees hold `cloud.logs`.
+                val lines = command.payload["lines"].orEmpty()
+                if (lines.isNotEmpty()) {
+                    val message = MiniMessage.miniMessage().deserialize(
+                        SERVICE_LOG_PREFIX + lines,
+                    )
+                    Bukkit.getOnlinePlayers()
+                        .filter { it.hasPermission(CLOUD_LOGS_PERMISSION) }
+                        .forEach { it.sendMessage(message) }
+                    getLogger().info("Service log: $lines")
+                }
+            }
+
             "command" -> {
                 val line = command.payload["command"].orEmpty()
                 if (line.isNotEmpty()) {

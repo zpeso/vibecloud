@@ -15,6 +15,7 @@ import dev.vibecloud.core.bridge.BridgeAgentRegistry
 import dev.vibecloud.core.bridge.BridgeCommandQueue
 import dev.vibecloud.core.bridge.BridgeCloudCommands
 import dev.vibecloud.core.bridge.BridgeHttpServer
+import dev.vibecloud.core.bridge.ServiceLogBroadcaster
 import dev.vibecloud.core.bridge.BridgeManager
 import dev.vibecloud.core.bridge.BridgeTokenStore
 import dev.vibecloud.core.bridge.HostMetrics
@@ -130,6 +131,13 @@ class CloudBootstrap(
             // command queue, neither of which exists while the bridge server is being
             // constructed — resolve both lazily on first request instead.
             var commandQueueHolder: BridgeCommandQueue? = null
+            // Lifecycle notices fanned out to running agents as `log` commands (all holders of
+            // cloud.logs see start/stop/restart/crash in-game). Resolved lazily with the queue
+            // holder — the bridge server owns the queue and is constructed afterwards.
+            val serviceLogBroadcaster = ServiceLogBroadcaster(
+                commandQueue = { commandQueueHolder },
+                services = { serviceManagerReference.get()?.all().orEmpty().toList() },
+            )
             // Resolved later in create(); the /cloud group commands need it for version switches.
             var templateManagerHolder: FileTemplateManager? = null
             // Shared rolling metrics history: the manager samples it, the HTTP endpoint renders it.
@@ -148,6 +156,10 @@ class CloudBootstrap(
                     is ServiceDeletedEvent -> activityLog.add("deleted", "Service ${event.service.name} deleted")
                     else -> Unit
                 }
+                // Network-wide service log: mirrors lifecycle events to running agents. Best
+                // effort — a broadcast failure must never disturb the event bus or the manager.
+                runCatching { serviceLogBroadcaster.broadcast(event) }
+                    .onFailure { logger.warn("Could not broadcast service log: ${it.message}") }
             }
             val cloudCommands: () -> BridgeCloudCommands? = {
                 serviceManagerReference.get()?.let { manager ->

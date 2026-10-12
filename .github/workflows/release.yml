@@ -44,8 +44,16 @@ jobs:
       # Requesting build.log is what enqueues the build on JitPack. We deliberately do not
       # wait for it: a cold build takes minutes and would only stall this job. A short
       # timeout is enough to register the request; the build then completes asynchronously.
+      #
+      # JitPack canonicalises this repo's tags to the version WITHOUT the leading "v": it
+      # publishes com.github.zpeso.vibecloud:<module>:X.Y.Z and resolves the build by that
+      # name. Asking for the "vX.Y.Z" path 404s and enqueues nothing, which is why releases
+      # never built. Strip the "v" with ${GITHUB_REF_NAME#v}.
+      #
+      # For a brand-new version the request legitimately blocks until --max-time while the
+      # build is queued, so a non-zero exit here is expected and not a failure.
       - name: Kick JitPack (API artifacts)
         run: |
           curl -fsSL --max-time 60 \
-            "https://jitpack.io/com/github/zpeso/vibecloud/${GITHUB_REF_NAME}/build.log" \
+            "https://jitpack.io/com/github/zpeso/vibecloud/${GITHUB_REF_NAME#v}/build.log" \
             -o /dev/null || echo "JitPack build requested — it completes asynchronously."

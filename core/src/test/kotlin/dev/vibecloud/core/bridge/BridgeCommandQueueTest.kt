@@ -42,8 +42,12 @@ class BridgeCommandQueueTest {
     }
 
     @Test
-    fun `nextId increments monotonically`() {
+    fun `nextId increments monotonically and spans a cloud restart`() {
         val queue = BridgeCommandQueue()
         assertTrue(queue.nextId() < queue.nextId())
+        // The sequence is epoch-seeded: a restarted cloud (fresh queue instance) must produce
+        // ids strictly greater than every id the previous process handed out, otherwise agents
+        // persist their last-seen id and silently drop all new commands.
+        assertTrue(queue.nextId() >= BridgeCommandQueue.EPOCH_SEED)
     }
 }
