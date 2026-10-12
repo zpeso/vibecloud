@@ -61,6 +61,34 @@ class CloudConfigRepositoryTest {
         }
     }
 
+    @Test
+    fun `missing service-log section is backfilled into an existing config`() {
+        val directory = Files.createTempDirectory("cloud-config-test")
+        try {
+            val file = directory.resolve("config.yml")
+            // A pre-1.0.9 config.yml: bridge settings exist, service-log does not.
+            Files.write(
+                file,
+                listOf(
+                    "bridge:",
+                    "  port: 25581",
+                ),
+            )
+
+            val backfilled = CloudConfigRepository(file).loadOrCreate()
+            assertEquals(25581, backfilled.bridge.port)
+            // First load already persisted the new section with its defaults; a fresh
+            // repository reads the file (no further backfill) and sees the same values.
+            val raw = Files.readAllLines(file).joinToString("\n")
+            assertTrue(raw.contains("service-log"), "config.yml should now contain the service-log section:\n$raw")
+            val reloaded = CloudConfigRepository(file).loadOrCreate()
+            assertEquals(25581, reloaded.bridge.port)
+            assertEquals(ServiceLogMessages.DEFAULT_PREFIX, reloaded.bridge.serviceLog.prefix)
+        } finally {
+            directory.toFile().deleteRecursively()
+        }
+    }
+
     private fun repositoryWithCustomLog(file: java.nio.file.Path): CloudConfigRepository {
         java.nio.file.Files.write(
             file,

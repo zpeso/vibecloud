@@ -32,6 +32,9 @@ class CloudConfigRepository(configFile: Path) {
     })
     private var cached: CloudConfig? = null
 
+    /** Set by [readFile] when an existing config predates a newly added config section. */
+    private var upgradeNeeded = false
+
     @Synchronized
     fun loadOrCreate(): CloudConfig {
         if (!Files.exists(configFile)) {
@@ -41,6 +44,13 @@ class CloudConfigRepository(configFile: Path) {
             return defaults
         }
         val parsed = readFile()
+        // Backfill: an existing config.yml predating `bridge.service-log` shows no keys to
+        // customize. The parsed config already carries the defaults for missing values, so
+        // persisting it adds the new section while preserving every explicitly-set value.
+        if (upgradeNeeded) {
+            upgradeNeeded = false
+            write(parsed)
+        }
         cached = parsed
         return parsed
     }
@@ -89,6 +99,7 @@ class CloudConfigRepository(configFile: Path) {
             val runtimeMap = asStringMap(rootMap["runtime"], "runtime")
             val reconciliationMap = asStringMap(rootMap["reconciliation"], "reconciliation")
             val bridgeMap = asStringMap(rootMap["bridge"], "bridge")
+            upgradeNeeded = !bridgeMap.containsKey("service-log")
             val serviceLogMap = asStringMap(bridgeMap["service-log"], "bridge.service-log")
             val groupsMap = asStringMap(rootMap["groups"], "groups")
 
