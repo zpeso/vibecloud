@@ -1,6 +1,7 @@
 package dev.vibecloud.bridge.agent
 
 import dev.vibecloud.api.bridge.AgentConfig
+import dev.vibecloud.api.bridge.ServiceIdentity
 import dev.vibecloud.api.bridge.VibeCloud
 import org.bukkit.Bukkit
 import org.bukkit.entity.Player
@@ -64,8 +65,16 @@ class VibeCloudAgentPlugin : JavaPlugin() {
         }
         config = loaded
         // Publish the facade singleton so this command and third-party plugins on this server
-        // can talk to the cloud without re-reading the agent config.
-        runCatching { VibeCloud.connect { builder -> builder.baseUrl(loaded.cloudUrl).token(loaded.token) } }
+        // can talk to the cloud without re-reading the agent config. The local service identity
+        // is passed in too, so plugins can ask for their own service name via
+        // `VibeCloud.currentServiceName()`.
+        runCatching {
+            VibeCloud.connect { builder ->
+                builder.baseUrl(loaded.cloudUrl)
+                    .token(loaded.token)
+                    .currentService(ServiceIdentity(loaded.serviceId, loaded.serviceName, loaded.groupName))
+            }
+        }
             .onFailure { failure -> getLogger().warning("Could not initialize the VibeCloud API facade: ${failure.message}") }
 
         // In-game /cloud command (permission minetropia.cloud) executed server-side.

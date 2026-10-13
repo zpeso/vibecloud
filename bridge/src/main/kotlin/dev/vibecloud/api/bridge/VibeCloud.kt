@@ -45,6 +45,7 @@ class VibeCloud private constructor(
     private val token: String,
     private val timeout: Duration,
     private val playerCountRefreshInterval: Duration,
+    private val serviceIdentity: ServiceIdentity?,
 ) {
     // HTTP/1.1 is pinned deliberately: the bridge is a local, plain-text endpoint, and the JDK
     // client's default HTTP/2 would otherwise pay for an h2c upgrade on the first request. The
@@ -85,6 +86,13 @@ class VibeCloud private constructor(
 
     /** Access to the configured groups. */
     fun groups(): CloudGroupProvider = groups
+
+    /**
+     * The identity of the service this server runs as — only available on cloud-managed
+     * servers where the facade was connected through [forService] (or the builder was given
+     * an identity). `null` means this server is not managed by the cloud.
+     */
+    fun currentService(): ServiceIdentity? = serviceIdentity
 
     /**
      * Overall cloud status: group/service totals, players online, per-service state. Kept for
@@ -213,6 +221,12 @@ class VibeCloud private constructor(
          */
         var temporaryRefreshInterval: Duration = Duration.ofSeconds(5)
 
+        /**
+         * Identity of the service this facade runs in. [forService] fills this from the agent
+         * config; set it yourself only when your server receives the identity another way.
+         */
+        var currentService: ServiceIdentity? = null
+
         /** Backwards-compatible alias for [temporaryRefreshInterval]. */
         var playerCountRefreshInterval: Duration
             get() = temporaryRefreshInterval
@@ -222,6 +236,7 @@ class VibeCloud private constructor(
 
         fun baseUrl(baseUrl: String) = apply { this.baseUrl = baseUrl }
         fun token(token: String) = apply { this.token = token }
+        fun currentService(identity: ServiceIdentity?) = apply { this.currentService = identity }
         fun timeout(timeout: Duration) = apply { this.timeout = timeout }
         fun playerCountRefreshInterval(interval: Duration) = apply { this.temporaryRefreshInterval = interval }
         fun temporaryRefreshInterval(interval: Duration) = apply { this.temporaryRefreshInterval = interval }
@@ -231,7 +246,7 @@ class VibeCloud private constructor(
             require(!temporaryRefreshInterval.isNegative && !temporaryRefreshInterval.isZero) {
                 "temporary refresh interval must be positive"
             }
-            return VibeCloud(baseUrl.removeSuffix("/"), token, timeout, temporaryRefreshInterval)
+            return VibeCloud(baseUrl.removeSuffix("/"), token, timeout, temporaryRefreshInterval, currentService)
         }
     }
 
@@ -263,14 +278,25 @@ class VibeCloud private constructor(
         fun instanceOrNull(): VibeCloud? = connected
 
         /**
+         * The name of the service this server runs as (e.g. `lobby-2`), read from the agent
+         * config by [forService]. `null` when not connected or when this server is not managed
+         * by the cloud — never throws, so scoreboards and event handlers can probe it safely.
+         */
+        @JvmStatic
+        fun currentServiceName(): String? = connected?.currentService()?.serviceName
+
+        /**
          * Convenience for plugins/agents running inside a cloud-managed service: connects from
          * the installed `plugins/VibeCloud/agent.properties` and stores the result as
-         * [instance].
+         * [instance]. The local service identity becomes available through
+         * [currentServiceName] / `instance.currentService()`.
          */
         @JvmStatic
         fun forService(): VibeCloud = connect { builder ->
             val config = AgentConfig.load(Path.of("plugins", AgentConfig.CONFIG_DIRECTORY, "agent.properties"))
-            builder.baseUrl(config.cloudUrl).token(config.token)
+            builder.baseUrl(config.cloudUrl)
+                .token(config.token)
+                .currentService(ServiceIdentity(config.serviceId, config.serviceName, config.groupName))
         }
 
         /** Connects with custom settings and stores the result as [instance]. */

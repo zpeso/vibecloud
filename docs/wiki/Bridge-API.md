@@ -47,6 +47,19 @@ VibeCloud.connect { builder ->
 val cloud = VibeCloud.instance()
 ```
 
+### Ask "which service am I on?"
+
+Inside a cloud-managed server, the facade knows the local service identity — it comes from the agent config,
+no HTTP round trip, never throws:
+
+```kotlin
+val me = VibeCloud.currentServiceName()        // "citybuild-2", or null outside the cloud
+val full = VibeCloud.instance.currentService() // ServiceIdentity(serviceId, serviceName, groupName)
+myPlugin.onThisService("citybuild-2", ::registerEvents)  // e.g. only run game logic on one named service
+```
+
+`null` means this server is not managed by the cloud (or the facade connected without an identity).
+
 ### What you can do
 
 Every call is a snapshot + an HTTP round-trip to the cloud — call from an **async thread**
@@ -105,6 +118,7 @@ request an immediate background refresh; it returns a `CompletableFuture<CloudSt
 | `VibeCloud.forService()` | Connect using the installed agent config (plugins inside managed services) |
 | `VibeCloud.connect { … }` | Connect with explicit base URL/token; stores the singleton |
 | `VibeCloud.instance()` / `instanceOrNull()` | Access the singleton afterwards |
+| `VibeCloud.currentServiceName()` / `instance.currentService()` | Local service identity from the agent config (no HTTP; `null` outside the cloud) |
 | `cloud.players().all() / findByName(name) / refresh(player)` | Fresh roster/lookups (HTTP; use asynchronously) |
 | `cloud.temporary().players().all() / findByName(name)` | Cached player roster and details; never performs HTTP on the caller |
 | `cloud.temporary().playerCount()` / `cloud.players().playerCount()` | Cached network player count (background refresh, default 5s) |
