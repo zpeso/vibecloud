@@ -1,6 +1,8 @@
 package dev.vibecloud.core.bridge
 
 import dev.vibecloud.api.event.ServiceCrashedEvent
+import dev.vibecloud.api.event.ServiceStoppingEvent
+import dev.vibecloud.api.event.ServiceStartingEvent
 import dev.vibecloud.api.event.ServiceStartedEvent
 import dev.vibecloud.api.event.ServiceStoppedEvent
 import dev.vibecloud.api.service.Service
@@ -11,6 +13,7 @@ import java.nio.file.Path
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class ServiceLogBroadcasterTest {
@@ -78,7 +81,7 @@ class ServiceLogBroadcasterTest {
     }
 
     @Test
-    fun `crash notices include a truncated reason`() {
+    fun `stopping and crashed observations broadcast nothing`() {
         val queue = BridgeCommandQueue()
         val broadcaster = ServiceLogBroadcaster(
             commandQueue = { queue },
@@ -86,11 +89,35 @@ class ServiceLogBroadcasterTest {
             services = { listOf(service("lobby-1", ServerType.PAPER, ServiceState.RUNNING)) },
         )
 
-        assertEquals(1, broadcaster.broadcast(ServiceCrashedEvent(service("lobby-2", ServerType.PAPER, ServiceState.CRASHED), 1, "OutOfMemoryError")))
-        assertEquals(
-            ServiceLogMessages.DEFAULT_PREFIX + "lobby-2 has crashed: OutOfMemoryError",
-            queue.drain("lobby-1-id").single().payload["lines"],
+        // A graceful stop fires `stopping` and (within a second) `stopped`: only the final
+        // state is broadcast, so stopping needs no chatter.
+        assertEquals(0, broadcaster.broadcast(ServiceStoppingEvent(service("lobby-2", ServerType.PAPER, ServiceState.STOPPING))))
+        // Crashes broadcast nothing by design: the affected server is dead, there is no agent
+        // to relay the notice, and the cloud log carries the reason.
+        assertEquals(0, broadcaster.broadcast(ServiceCrashedEvent(service("lobby-2", ServerType.PAPER, ServiceState.CRASHED), 1, "OutOfMemoryError")))
+        // Nothing was enqueued for either.
+        assertTrue(queue.drain("lobby-1-id").isEmpty())
+    }
+
+    @Test
+    fun `each observed state produces exactly its own message`() {
+        val queue = BridgeCommandQueue()
+        val broadcaster = ServiceLogBroadcaster(
+            commandQueue = { queue },
+            messages = { ServiceLogMessages() },
+            services = { listOf(service("lobby-1", ServerType.PAPER, ServiceState.RUNNING)) },
         )
+
+        assertEquals(1, broadcaster.broadcast(ServiceStartingEvent(service("citybuild-4", ServerType.PAPER, ServiceState.STARTING))))
+        assertEquals(ServiceLogMessages.DEFAULT_PREFIX + "citybuild-4 is starting...", queue.drain("lobby-1-id").single().payload["lines"])
+
+        assertEquals(1, broadcaster.broadcast(ServiceStartedEvent(service("citybuild-4", ServerType.PAPER, ServiceState.RUNNING))))
+        assertEquals(ServiceLogMessages.DEFAULT_PREFIX + "citybuild-4 is now running", queue.drain("lobby-1-id").single().payload["lines"])
+
+        assertEquals(1, broadcaster.broadcast(ServiceStoppedEvent(service("citybuild-4", ServerType.PAPER, ServiceState.STOPPED))))
+        assertEquals(ServiceLogMessages.DEFAULT_PREFIX + "citybuild-4 is now stopped", queue.drain("lobby-1-id").single().payload["lines"])
+
+        assertFalse(broadcaster.broadcast(ServiceStoppingEvent(service("citybuild-4", ServerType.PAPER, ServiceState.STOPPING))) > 0)
     }
 
     @Test
@@ -99,7 +126,6 @@ class ServiceLogBroadcasterTest {
         val messages = ServiceLogMessages(
             prefix = "§6Cloud §8| ",
             started = "[ %service% ] started",
-            crashed = "%service% exploded: %reason%",
         )
         val broadcaster = ServiceLogBroadcaster(
             commandQueue = { queue },
@@ -113,9 +139,9 @@ class ServiceLogBroadcasterTest {
             queue.drain("lobby-1-id").single().payload["lines"],
         )
 
-        broadcaster.broadcast(ServiceCrashedEvent(service("citybuild-2", ServerType.PAPER, ServiceState.CRASHED), 2, "OutOfMemoryError"))
+        broadcaster.broadcast(ServiceStoppedEvent(service("citybuild-2", ServerType.PAPER, ServiceState.STOPPED)))
         assertEquals(
-            "§6Cloud §8| citybuild-2 exploded: OutOfMemoryError",
+            "§6Cloud §8| citybuild-2 is now stopped",
             queue.drain("lobby-1-id").single().payload["lines"],
         )
     }

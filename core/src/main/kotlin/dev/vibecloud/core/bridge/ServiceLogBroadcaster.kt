@@ -15,10 +15,16 @@ import dev.vibecloud.common.config.ServiceLogMessages
  * service with a live agent relays the notice to its online players holding `cloud.logs`
  * (rendered by the agent in the cloud's branded format) and to its console log.
  *
- * This is the in-game mirror of the dashboard's activity feed — start/stop/restart/crash
- * notices become visible everywhere, not only on the affected service itself. Proxies are
- * skipped (they host no agent, so a queued command there would never drain), and so is every
- * non-running service — an offline service has nobody to tell.
+ * One notice per observed state, no transitional chatter: a graceful stop fires `stopping`
+ * and (within a second) `stopped`, so only the final `stopped` is broadcast; a start yields
+ * `starting` at start-accepted and `started` once the server reports readiness; a crash
+ * broadcasts nothing (the affected service is dead — nobody there can relay, and an agentless
+ * end needs no chat notice).
+ *
+ * This is the in-game mirror of the dashboard's activity feed — notices become visible
+ * everywhere, not only on the affected service itself. Proxies are skipped (they host no
+ * agent, so a queued command there would never drain), and so is every non-running service —
+ * an offline service has nobody to tell.
  */
 class ServiceLogBroadcaster(
     /** Resolved lazily: the bridge server (and with it the command queue) comes up later. */
@@ -30,7 +36,8 @@ class ServiceLogBroadcaster(
 ) {
     /** Enqueues one `log` command per running backend service; returns how many were queued. */
     fun broadcast(event: CloudEvent): Int {
-        val line = messageFor(event) ?: return 0
+        val line = messageFor(event)
+        if (line == null) return 0
         val queue = commandQueue() ?: return 0
         val targets = services().filter {
             it.state == ServiceState.RUNNING && !it.type.isProxy
@@ -53,6 +60,10 @@ class ServiceLogBroadcaster(
      * Renders the fully prefixed notice the agent displays as-is; the customizable templates
      * (`bridge.service-log.*`) support `%service%` and `%reason%` placeholders. The agent cannot
      * be trusted with rendering: it must work unchanged across template edits.
+     *
+     * Only final states are broadcast: `stopped` (not the transitional `stopping` that grants
+     * nothing — the `stopped` notice follows within a second), `starting` and `started` at their
+     * events, and no notice at all for crashes. `null` means "nothing to broadcast".
      */
     private fun messageFor(event: CloudEvent): String? {
         val messages = messages()
@@ -67,9 +78,13 @@ class ServiceLogBroadcaster(
         return when (event) {
             is ServiceStartingEvent -> messages.starting
             is ServiceStartedEvent -> messages.started
-            is ServiceStoppingEvent -> messages.stopping
+            // Transitional: a graceful stop fires `stopping` and `stopped` back to back, so the
+            // `stopping` template is no longer broadcast (kept in config for compatibility).
+            is ServiceStoppingEvent -> return null
             is ServiceStoppedEvent -> messages.stopped
-            is ServiceCrashedEvent -> messages.crashed.replace(REASON_PLACEHOLDER, event.reason.take(CRASHED_REASON_LENGTH))
+            // Crashes broadcast nothing by design: the affected server is gone, so there is no
+            // agent to relay the notice, and the cloud log/activity feed carries the reason.
+            is ServiceCrashedEvent -> return null
             else -> return null
         }
             .replace(SERVICE_PLACEHOLDER, service.name)
@@ -77,8 +92,6 @@ class ServiceLogBroadcaster(
     }
 
     private companion object {
-        const val CRASHED_REASON_LENGTH = 120
         const val SERVICE_PLACEHOLDER = "%service%"
-        const val REASON_PLACEHOLDER = "%reason%"
     }
 }

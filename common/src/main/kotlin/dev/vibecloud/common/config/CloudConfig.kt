@@ -81,8 +81,12 @@ data class ServiceLogMessages(
     val prefix: String = DEFAULT_PREFIX,
     val starting: String = "%service% is starting...",
     val started: String = "%service% is now running",
+    /** No longer broadcast: a graceful stop fires `stopping` and `stopped` within a second, so
+     *  only `stopped` is shown. Kept in config for compatibility; customizing it has no effect. */
     val stopping: String = "%service% is stopping...",
     val stopped: String = "%service% is now stopped",
+    /** No longer broadcast: crashes render no service-log notice. Kept in config for
+     *  compatibility; customizing it has no effect (the reason appears in the cloud log). */
     val crashed: String = "%service% has crashed: %reason%",
 ) {
     companion object {
