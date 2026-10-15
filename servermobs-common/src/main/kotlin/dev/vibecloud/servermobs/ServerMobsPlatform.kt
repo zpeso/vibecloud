@@ -137,6 +137,20 @@ interface ServerMobsPlatform {
     fun sendFloatingItemDespawn(user: User, entityId: Int)
 
     /**
+     * Whether toppers fall on the client despite being client-side: clients simulate item
+     * gravity, and the NoGravity metadata flag that stops that on 1.10+ does not exist on 1.8.
+     * When true, the manager periodically calls [sendFloatingItemAnchor] to pin toppers in place.
+     */
+    val floatingItemNeedsAnchor: Boolean get() = false
+
+    /**
+     * Pins a topper at its configured position (an absolute entity teleport). Only called when
+     * [floatingItemNeedsAnchor] is true; [NpcManager][dev.vibecloud.servermobs.NpcManager]'s
+     * anchor task re-sends it every couple of ticks for every viewer of the topper.
+     */
+    fun sendFloatingItemAnchor(user: User, entityId: Int, x: Double, y: Double, z: Double) = Unit
+
+    /**
      * Material names suggested for `/npc edit <name> hologram item set <Tab>`: every material
      * the running server accepts for a floating item (cached at first call), lower-case and
      * sorted, so anything tab-completed always passes `Material.matchMaterial` on the same

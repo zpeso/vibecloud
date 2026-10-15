@@ -9,6 +9,7 @@ import com.github.retrooper.packetevents.protocol.player.UserProfile
 import com.github.retrooper.packetevents.protocol.world.Location as PacketLocation
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerDestroyEntities
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityHeadLook
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityTeleport
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfo
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfo.PlayerData
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSpawnPlayer
@@ -129,6 +130,22 @@ class SpigotLegacyPlatform(private val plugin: Plugin) : ServerMobsPlatform {
 
     override fun sendFloatingItemDespawn(user: User, entityId: Int) {
         user.sendPacket(WrapperPlayServerDestroyEntities(entityId))
+    }
+
+    /** 1.8 clients simulate item gravity with no NoGravity flag to turn it off — anchor needed. */
+    override val floatingItemNeedsAnchor: Boolean = true
+
+    override fun sendFloatingItemAnchor(user: User, entityId: Int, x: Double, y: Double, z: Double) {
+        // An absolute teleport pins the client-side item back at its configured spot every
+        // couple of ticks — the same correction the server would send for a real (gravity-less)
+        // entity. Cheap: a tiny packet per viewer of the topper.
+        user.sendPacket(
+            WrapperPlayServerEntityTeleport(
+                entityId,
+                PacketLocation(x, y, z, 0f, 0f),
+                true,
+            ),
+        )
     }
 
     /** Every material this 1.8 server knows (cached once), minus air — all render as items. */

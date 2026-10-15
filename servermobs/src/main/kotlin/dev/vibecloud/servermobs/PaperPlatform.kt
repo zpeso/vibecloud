@@ -91,6 +91,9 @@ class PaperPlatform(private val plugin: Plugin) : ServerMobsPlatform {
             WrapperPlayServerEntityMetadata(
                 entityId,
                 listOf(
+                    // Clients simulate item gravity and would let the topper drop to the
+                    // floor — the shared NoGravity flag stops the client-side simulation.
+                    EntityData(NOGRAVITY_METADATA_INDEX, EntityDataTypes.BOOLEAN, true),
                     EntityData(ITEM_METADATA_INDEX, EntityDataTypes.ITEMSTACK, stack),
                 ),
             ),
@@ -182,5 +185,11 @@ class PaperPlatform(private val plugin: Plugin) : ServerMobsPlatform {
          * shared entity fields (0-7) are followed directly by the item stack.
          */
         const val ITEM_METADATA_INDEX = 8
+
+        /**
+         * Entity-metadata index of the shared NoGravity flag (a boolean in the base fields,
+         * index 5 since 1.10) — what keeps a client-side item hovering instead of falling.
+         */
+        const val NOGRAVITY_METADATA_INDEX = 5
     }
 }

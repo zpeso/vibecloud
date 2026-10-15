@@ -43,6 +43,7 @@ class NpcManager(
     private var task: BukkitTask? = null
     private var lookTask: BukkitTask? = null
     private var hologramTask: BukkitTask? = null
+    private var anchorTask: BukkitTask? = null
     private var joinListener: org.bukkit.event.Listener? = null
 
     fun enable() {
@@ -59,6 +60,16 @@ class NpcManager(
             )
         }
         registerJoinListener()
+        if (platform.floatingItemNeedsAnchor) {
+            // 1.8 clients simulate item gravity on client-side items with no flag to stop it;
+            // re-anchor the toppers periodically so they never drift to the floor.
+            anchorTask = Bukkit.getScheduler().runTaskTimer(
+                plugin,
+                Runnable(::anchorFloatingItems),
+                ANCHOR_PERIOD_TICKS,
+                ANCHOR_PERIOD_TICKS,
+            )
+        }
     }
 
     fun disable() {
@@ -68,6 +79,8 @@ class NpcManager(
         lookTask = null
         hologramTask?.cancel()
         hologramTask = null
+        anchorTask?.cancel()
+        anchorTask = null
         joinListener?.let { listener ->
             org.bukkit.event.HandlerList.unregisterAll(listener)
         }
@@ -285,6 +298,29 @@ class NpcManager(
     }
 
     /**
+     * Pins every visible, already-delivered floating topper back at its configured position.
+     * Only scheduled on platforms that need it (`floatingItemNeedsAnchor`, i.e. 1.8): the item
+     * entities are client-side, and the 1.8 client applies item gravity that no metadata flag
+     * can stop. Modern clients honour NoGravity and get no anchor traffic.
+     */
+    private fun anchorFloatingItems() {
+        for ((playerId, names) in sent) {
+            if (names.isEmpty()) continue
+            val player = Bukkit.getPlayer(playerId) ?: continue
+            val user = PacketEvents.getAPI().playerManager.getUser(player) ?: continue
+            val world = player.world
+            for (npc in npcs.values) {
+                if (npc.data.floatingItem.isBlank()) continue
+                if (!names.contains(npc.data.name.lowercase())) continue
+                if (npc.data.world != world.name) continue
+                runCatching {
+                    platform.sendFloatingItemAnchor(user, npc.floatingItemId, npc.data.x, npc.floatingItemY(), npc.data.z)
+                }.onFailure { logger.warning("Could not anchor topper of '${npc.data.name}': ${it.message}") }
+            }
+        }
+    }
+
+    /**
      * Turns every `turn_to_player` NPC's body and head towards the players who can see it. Runs
      * more often than [tick] so the look tracks smoothly; cheap — only the small look packets are
      * sent.
@@ -380,7 +416,7 @@ class NpcManager(
         }
 
         /** One line-slot gap above the topmost hologram line (a dropped item sits on its anchor). */
-        private fun floatingItemY(): Double {
+        internal fun floatingItemY(): Double {
             val bottomLineY = data.y + config.hologramOffset + HOLOGRAM_BASELINE_LIFT
             val topLineY = if (data.hologram.isEmpty()) {
                 bottomLineY
@@ -470,6 +506,7 @@ class NpcManager(
         const val TABLIST_REMOVE_DELAY_TICKS = 2L
         const val JOIN_REDELIVERY_DELAY_TICKS = 60L
         const val UPDATE_REDELIVERY_DELAY_TICKS = 40L
+        const val ANCHOR_PERIOD_TICKS = 2L
         const val INTERACTION_COOLDOWN_MS = 250L
         const val CLEANUP_THRESHOLD = 2048
         const val NPC_EYE_HEIGHT = 1.62
