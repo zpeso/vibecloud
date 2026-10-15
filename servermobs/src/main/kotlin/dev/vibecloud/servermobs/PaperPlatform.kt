@@ -21,9 +21,7 @@ import org.bukkit.Material
 import org.bukkit.World
 import org.bukkit.command.CommandSender
 import org.bukkit.entity.Display
-import org.bukkit.entity.Item
 import org.bukkit.entity.TextDisplay
-import org.bukkit.inventory.ItemStack
 import org.bukkit.plugin.Plugin
 import java.util.EnumSet
 import java.util.UUID
@@ -67,28 +65,40 @@ class PaperPlatform(private val plugin: Plugin) : ServerMobsPlatform {
         }
     }
 
-    override fun spawnFloatingItem(world: World, location: Location, materialSpec: String): FloatingItem {
+    override fun sendFloatingItemSpawn(user: User, entityId: Int, x: Double, y: Double, z: Double, materialSpec: String) {
         val material = Material.matchMaterial(materialSpec.trim())
-        ?: throw IllegalArgumentException("Unknown material '$materialSpec'")
-        // A real, server-side dropped item: the client renders it exactly like an item on the
-        // ground and animates the classic bob + spin itself. NoGravity keeps it a hovering
-        // topper, the pickup delay makes it untouchable and unlimitedLifetime (Paper) stops the
-        // regular 5-minute item despawn. The delay is capped at Short.MAX_VALUE on purpose: the
-        // value is stored in a 16-bit field, so anything larger wraps to -1 (instantly pickable
-        // — the item would vanish on the first player walking by).
-        val item = world.spawn(location, Item::class.java) { entity ->
-            entity.setItemStack(ItemStack(material, 1))
-            entity.isPersistent = false
-            entity.isInvulnerable = true
-            entity.setGravity(false)
-            entity.setPickupDelay(Short.MAX_VALUE.toInt())
-            entity.setUnlimitedLifetime(true)
+            ?: throw IllegalArgumentException("Unknown material '$materialSpec'")
+        // A client-side dropped item: the client renders the real item sprite (whatever the
+        // material — boots stay boots, a stick stays a stick) and animates bob + spin itself.
+        // No server entity exists, so there is no gravity, no pickup and no 5-minute despawn.
+        val stack = io.github.retrooper.packetevents.util.SpigotConversionUtil
+            .fromBukkitItemStack(org.bukkit.inventory.ItemStack(material, 1))
+        if (stack == null || stack.isEmpty) {
+            throw IllegalArgumentException("Could not convert '$materialSpec' into a client item")
         }
-        return object : FloatingItem {
-            override fun remove() {
-                item.remove()
-            }
-        }
+        user.sendPacket(
+            WrapperPlayServerSpawnEntity(
+                entityId,
+                UUID.nameUUIDFromBytes(("servermobs-item-$entityId").toByteArray()),
+                EntityTypes.ITEM,
+                PacketLocation(x, y, z, 0f, 0f),
+                0f,
+                0,
+                null,
+            ),
+        )
+        user.sendPacket(
+            WrapperPlayServerEntityMetadata(
+                entityId,
+                listOf(
+                    EntityData(ITEM_METADATA_INDEX, EntityDataTypes.ITEMSTACK, stack),
+                ),
+            ),
+        )
+    }
+
+    override fun sendFloatingItemDespawn(user: User, entityId: Int) {
+        user.sendPacket(WrapperPlayServerDestroyEntities(entityId))
     }
 
     /** Every item material this server knows (cached once); includes modern-only materials. */
@@ -166,5 +176,11 @@ class PaperPlatform(private val plugin: Plugin) : ServerMobsPlatform {
          * score (16) and then the model/skin parts (17).
          */
         const val SKIN_PARTS_METADATA_INDEX = 17
+
+        /**
+         * Entity-metadata index of the dropped-item stack for an ITEM entity on 1.21.4: the 8
+         * shared entity fields (0-7) are followed directly by the item stack.
+         */
+        const val ITEM_METADATA_INDEX = 8
     }
 }

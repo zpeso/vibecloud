@@ -22,8 +22,6 @@ import org.bukkit.command.CommandSender
 import org.bukkit.entity.ArmorStand
 import org.bukkit.inventory.ItemStack
 import org.bukkit.plugin.Plugin
-import org.bukkit.scheduler.BukkitTask
-import org.bukkit.util.EulerAngle
 import java.util.UUID
 
 /**
@@ -90,34 +88,47 @@ class SpigotLegacyPlatform(private val plugin: Plugin) : ServerMobsPlatform {
         }
     }
 
-    override fun spawnFloatingItem(world: World, location: Location, materialSpec: String): FloatingItem {
+    override fun sendFloatingItemSpawn(user: User, entityId: Int, x: Double, y: Double, z: Double, materialSpec: String) {
         val material = Material.matchMaterial(materialSpec.trim())
                 ?: throw IllegalArgumentException("Unknown material '$materialSpec'")
-        // The classic 1.8 hologram topper: an invisible armor stand wearing the item as its
-        // helmet so every version renders the 3D item without packets. The stand is spawned
-        // lower so the HELMET lands at [location] and the callers' positions stay comparable
-        // with the other platform. A task spins the head pose so it reads like a dropped item.
-        val stand = world.spawn(location.clone().subtract(0.0, HELMET_LABEL_OFFSET, 0.0), ArmorStand::class.java)
-        stand.isVisible = false
-        stand.setGravity(false)
-        stand.isSmall = true
-        stand.setHelmet(ItemStack(material, 1))
-        var spin: BukkitTask? = Bukkit.getScheduler().runTaskTimer(
-            plugin,
-            Runnable {
-                if (stand.isDead || !stand.isValid) return@Runnable
-                runCatching { stand.setHeadPose(stand.headPose.add(0.0, SPIN_STEP, 0.0)) }
-            },
-            SPIN_PERIOD_TICKS,
-            SPIN_PERIOD_TICKS,
+        // A client-side dropped item rendered purely from packets: every material shows as its
+        // real item sprite (boots stay boots, sticks and potatoes work like everything else) and
+        // the client animates the bob + spin itself. No server entity exists, so there is no
+        // pickup, no gravity and no despawn to fight. Armor-stand helmet slots were replaced:
+        // they render every item through the head-slot armor model (iron_boots became an iron
+        // HELMET) and showed nothing for non-armor items at all.
+        val stack = io.github.retrooper.packetevents.util.SpigotConversionUtil
+            .fromBukkitItemStack(ItemStack(material, 1))
+                ?: throw IllegalArgumentException("Could not convert '$materialSpec' into a client item")
+        // 1.8's Spawn Object has no meaningful data field for items — the stack arrives through
+        // entity metadata (Slot at index 10), sent right after the spawn in the same burst.
+        user.sendPacket(
+            com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSpawnEntity(
+                entityId,
+                UUID.nameUUIDFromBytes(("servermobs-item-$entityId").toByteArray()),
+                com.github.retrooper.packetevents.protocol.entity.type.EntityTypes.ITEM,
+                PacketLocation(x, y, z, 0f, 0f),
+                0f,
+                0,
+                null,
+            ),
         )
-        return object : FloatingItem {
-            override fun remove() {
-                spin?.cancel()
-                spin = null
-                stand.remove()
-            }
-        }
+        user.sendPacket(
+            com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityMetadata(
+                entityId,
+                listOf(
+                    com.github.retrooper.packetevents.protocol.entity.data.EntityData(
+                        ITEM_METADATA_INDEX,
+                        com.github.retrooper.packetevents.protocol.entity.data.EntityDataTypes.ITEMSTACK,
+                        stack,
+                    ),
+                ),
+            ),
+        )
+    }
+
+    override fun sendFloatingItemDespawn(user: User, entityId: Int) {
+        user.sendPacket(WrapperPlayServerDestroyEntities(entityId))
     }
 
     /** Every material this 1.8 server knows (cached once), minus air — all render as items. */
@@ -199,14 +210,10 @@ class SpigotLegacyPlatform(private val plugin: Plugin) : ServerMobsPlatform {
         /** How far above a small 1.8 ArmorStand its custom name is drawn. */
         const val ARMORSTAND_LABEL_OFFSET = 1.5
 
-        /** How far above a small 1.8 ArmorStand its helmet slot is drawn. */
-        const val HELMET_LABEL_OFFSET = 1.25
-
-        /** Head-pose spin of the floating item: step per update (radians) and update cadence. */
-        const val SPIN_STEP = 0.08
-        const val SPIN_PERIOD_TICKS = 2L
-
-        /** 1.8 index of the player "displayed skin parts" byte. */
+        /** 1.8 index of the player "displayed skin parts" byte (and of an item's Slot metadata). */
         const val SKIN_PARTS_METADATA_INDEX = 10
+
+        /** 1.8 index of the dropped-item entity's Slot metadata. */
+        const val ITEM_METADATA_INDEX = 10
     }
 }

@@ -19,11 +19,6 @@ interface Hologram {
     fun remove()
 }
 
-/** A spawned floating item (above a hologram); only removal matters. */
-interface FloatingItem {
-    fun remove()
-}
-
 /** Maps legacy `&`/`§` colour and format codes to their MiniMessage tags. */
 private val AMPERSAND_CODES: Map<Char, String> = mapOf(
     '0' to "black",
@@ -127,11 +122,19 @@ interface ServerMobsPlatform {
     fun spawnHologram(world: World, location: Location, line: String): Hologram
 
     /**
-     * Spawns a floating item (the classic hologram topper) at [location]. [materialSpec] is a
-     * lenient Bukkit material name (`diamond_sword`, `DIAMOND`). Throws
-     * [IllegalArgumentException] for an unknown material so the caller can warn and skip.
+     * Sends [user] the packets of a client-side **dropped item** entity — the classic hologram
+     * topper. No server entity exists, so there is nothing to pick up, no gravity and no despawn
+     * to fight; the client renders any material as its real item sprite and animates bob + spin
+     * itself. One entity id per topper (allocated by the manager) is reused for every viewer.
+     *
+     * [materialSpec] is a lenient Bukkit material name (`diamond_sword`, `diamond`); anything
+     * unknown fails with [IllegalArgumentException] so the caller can warn and skip. The manager
+     * after the NPC spawn for every viewer, and the matching despawn for every removal.
      */
-    fun spawnFloatingItem(world: World, location: Location, materialSpec: String): FloatingItem
+    fun sendFloatingItemSpawn(user: User, entityId: Int, x: Double, y: Double, z: Double, materialSpec: String)
+
+    /** Removes a client-side topper previously sent by [sendFloatingItemSpawn]. */
+    fun sendFloatingItemDespawn(user: User, entityId: Int)
 
     /**
      * Material names suggested for `/npc edit <name> hologram item set <Tab>`: every material

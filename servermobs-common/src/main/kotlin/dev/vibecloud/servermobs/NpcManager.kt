@@ -124,6 +124,10 @@ class NpcManager(
         existing.spawnHolograms()
         sent.values.forEach { it.remove(updated.name.lowercase()) }
         tick()
+        // The despawn/respawn burst can shake a client out of its skin pipeline (the same issue
+        // the join re-delivery covers) — schedule one targeted re-delivery so skins recover
+        // instead of vanishing after an edit.
+        scheduleRedeliveryOf(updated.name)
     }
 
     /** Removes an NPC everywhere and deletes its definition. Returns false when it did not exist. */
@@ -220,13 +224,17 @@ class NpcManager(
         )
     }
 
-    /** Force-respawns every visible, already-delivered NPC for [player] (main thread only). */
-    private fun redeliverVisible(player: Player) {
+    /**
+     * Force-respawns visible, already-delivered NPCs for [player] (main thread only). With
+     * [onlyKey] set, only that NPC is re-delivered — the targeted one-tick burst an edit needs.
+     */
+    private fun redeliverVisible(player: Player, onlyKey: String? = null) {
         if (!player.isOnline) return
         val delivered = sent[player.uniqueId] ?: return
         val viewSq = config.viewDistance * config.viewDistance
         for (npc in npcs.values) {
             val key = npc.data.name.lowercase()
+            if (onlyKey != null && key != onlyKey) continue
             if (!delivered.contains(key)) continue
             val visible = npc.data.world == player.world.name &&
                     player.location.distanceSquared(npc.bukkitLocation(player.world)) <= viewSq
@@ -236,6 +244,23 @@ class NpcManager(
                 npc.spawnFor(player)
             }.onFailure { logger.warning("Could not re-deliver NPC '${npc.data.name}' to ${player.name}: ${it.message}") }
         }
+    }
+
+    /**
+     * Schedules one targeted re-delivery of [name] for every player currently seeing it: exactly
+     * the destroy + respawn burst that a manual reconnect replays, without touching other NPCs.
+     */
+    private fun scheduleRedeliveryOf(name: String) {
+        val key = name.lowercase()
+        Bukkit.getScheduler().runTaskLater(
+            plugin,
+            Runnable {
+                for (player in Bukkit.getOnlinePlayers()) {
+                    if (sent[player.uniqueId]?.contains(key) == true) redeliverVisible(player, key)
+                }
+            },
+            UPDATE_REDELIVERY_DELAY_TICKS,
+        )
     }
 
     /** Keeps each player's view of the NPCs in range in sync. Main thread only. */
@@ -295,10 +320,12 @@ class NpcManager(
         val entityId: Int = SpigotReflectionUtil.generateEntityId()
         val uuid: UUID = UUID.nameUUIDFromBytes(("ServerMobs:" + data.name).toByteArray(Charset.forName("UTF-8")))
 
+        /** Client-side entity id of this NPC's optional hologram topper (a dropped item). */
+        val floatingItemId: Int = SpigotReflectionUtil.generateEntityId()
+
         /** One scoreboard team per NPC (1.8 team names are capped at 16 chars). */
         val nametagTeam: String = "smh" + entityId
         private val holograms = ArrayList<Hologram>()
-        private val floatingItems = ArrayList<FloatingItem>()
 
         private val pendingTablistRemovals = HashMap<UUID, Any>()
 
@@ -334,12 +361,40 @@ class NpcManager(
             }
             // Hide the floating name via a scoreboard team (works on 1.8 and modern alike).
             if (!data.showNametag) platform.hideNametag(user, nametagTeam, data.name)
+            // The hologram topper rides along: a client-side dropped item for this viewer only.
+            val spec = data.floatingItem.trim()
+            if (spec.isNotEmpty()) {
+                try {
+                    platform.sendFloatingItemSpawn(
+                        user,
+                        floatingItemId,
+                        data.x,
+                        floatingItemY(),
+                        data.z,
+                        spec,
+                    )
+                } catch (failure: IllegalArgumentException) {
+                    logger.warning("Unknown floating item material '$spec' for NPC '${data.name}'; skipped.")
+                }
+            }
+        }
+
+        /** One line-slot gap above the topmost hologram line (a dropped item sits on its anchor). */
+        private fun floatingItemY(): Double {
+            val bottomLineY = data.y + config.hologramOffset + HOLOGRAM_BASELINE_LIFT
+            val topLineY = if (data.hologram.isEmpty()) {
+                bottomLineY
+            } else {
+                bottomLineY + (data.hologram.size - 1) * config.hologramLineSpacing
+            }
+            return topLineY + 2 * config.hologramLineSpacing
         }
 
         fun despawnFor(player: Player) {
             pendingTablistRemovals.remove(player.uniqueId)
             val user = PacketEvents.getAPI().playerManager.getUser(player) ?: return
             platform.sendNpcDespawn(user, entityId, uuid, data.name)
+            if (data.floatingItem.isNotBlank()) platform.sendFloatingItemDespawn(user, floatingItemId)
         }
 
         fun despawnAll() {
@@ -362,33 +417,9 @@ class NpcManager(
                         placeholderCache?.resolve(line) ?: line,
                     ))
                 }
-            spawnFloatingItem(world, bottomLineY)
-        }
-
-        /**
-         * Spawns the optional floating item with a clear gap above the topmost hologram line:
-         * one empty line slot between the top text and the item, so a dropped-item sprite
-         * (whose base sits at its anchor) never overlaps the text.
-         */
-        private fun spawnFloatingItem(world: World, bottomLineY: Double) {
-            val spec = data.floatingItem.trim()
-            if (spec.isEmpty()) return
-            val topLineY = if (data.hologram.isEmpty()) {
-                bottomLineY
-            } else {
-                bottomLineY + (data.hologram.size - 1) * config.hologramLineSpacing
-            }
-            try {
-                floatingItems.add(
-                    platform.spawnFloatingItem(
-                        world,
-                        Location(world, data.x, topLineY + 2 * config.hologramLineSpacing, data.z),
-                        spec,
-                    ),
-                )
-            } catch (failure: IllegalArgumentException) {
-                logger.warning("Unknown floating item material '$spec' for NPC '${data.name}'; skipped.")
-            }
+            // The floating topper is not spawned here: it is a client-side dropped item that
+            // rides the per-viewer spawn/despawn flow in spawnFor/despawnFor, using the same
+            // placement this class computes in floatingItemY().
         }
 
         fun updateHolograms() {
@@ -402,8 +433,6 @@ class NpcManager(
         fun removeHolograms() {
             holograms.forEach { hologram -> runCatching { hologram.remove() } }
             holograms.clear()
-            floatingItems.forEach { item -> runCatching { item.remove() } }
-            floatingItems.clear()
         }
 
         fun bukkitLocation(world: World): Location = Location(world, data.x, data.y, data.z)
@@ -440,6 +469,7 @@ class NpcManager(
         const val HOLOGRAM_BASELINE_LIFT = 0.5
         const val TABLIST_REMOVE_DELAY_TICKS = 2L
         const val JOIN_REDELIVERY_DELAY_TICKS = 60L
+        const val UPDATE_REDELIVERY_DELAY_TICKS = 40L
         const val INTERACTION_COOLDOWN_MS = 250L
         const val CLEANUP_THRESHOLD = 2048
         const val NPC_EYE_HEIGHT = 1.62
