@@ -63,6 +63,8 @@ data class NpcData(
     val pitch: Float,
     val skin: NpcSkin? = null,
     val hologram: List<String> = emptyList(),
+    /** Material spec (e.g. `diamond_sword`) of a floating item shown above the hologram; empty = none. */
+    val floatingItem: String = "",
     val actions: List<NpcAction> = emptyList(),
     val showNametag: Boolean = true,
     val turnToPlayer: Boolean = false,

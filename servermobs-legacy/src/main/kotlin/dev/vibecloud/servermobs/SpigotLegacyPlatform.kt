@@ -15,9 +15,11 @@ import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSp
 import net.kyori.adventure.text.minimessage.MiniMessage
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer
 import org.bukkit.Location
+import org.bukkit.Material
 import org.bukkit.World
 import org.bukkit.command.CommandSender
 import org.bukkit.entity.ArmorStand
+import org.bukkit.inventory.ItemStack
 import java.util.UUID
 
 /**
@@ -78,6 +80,23 @@ class SpigotLegacyPlatform : ServerMobsPlatform {
                 if (!stand.isDead) stand.customName = render(line.ifEmpty { " " })
             }
 
+            override fun remove() {
+                stand.remove()
+            }
+        }
+    }
+
+    override fun spawnFloatingItem(world: World, location: Location, materialSpec: String): FloatingItem {
+        val material = Material.matchMaterial(materialSpec.trim())
+                ?: throw IllegalArgumentException("Unknown material '$materialSpec'")
+        // The classic 1.8 hologram topper: an invisible armor stand wearing the item as its
+        // helmet so every version renders the 3D item without packets.
+        val stand = world.spawn(location, ArmorStand::class.java)
+        stand.isVisible = false
+        stand.setGravity(false)
+        stand.isSmall = true
+        stand.setHelmet(ItemStack(material, 1))
+        return object : FloatingItem {
             override fun remove() {
                 stand.remove()
             }

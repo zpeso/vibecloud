@@ -19,6 +19,11 @@ interface Hologram {
     fun remove()
 }
 
+/** A spawned floating item (above a hologram); only removal matters. */
+interface FloatingItem {
+    fun remove()
+}
+
 /** Maps legacy `&`/`§` colour and format codes to their MiniMessage tags. */
 private val AMPERSAND_CODES: Map<Char, String> = mapOf(
     '0' to "black",
@@ -120,6 +125,13 @@ interface ServerMobsPlatform {
 
     /** Spawns one hologram line at [location] and returns a handle to update/remove it. */
     fun spawnHologram(world: World, location: Location, line: String): Hologram
+
+    /**
+     * Spawns a floating item (the classic hologram topper) at [location]. [materialSpec] is a
+     * lenient Bukkit material name (`diamond_sword`, `DIAMOND`). Throws
+     * [IllegalArgumentException] for an unknown material so the caller can warn and skip.
+     */
+    fun spawnFloatingItem(world: World, location: Location, materialSpec: String): FloatingItem
 
     /**
      * Sends [user] the packets that make a fake player entity appear at (x,y,z). Modern servers

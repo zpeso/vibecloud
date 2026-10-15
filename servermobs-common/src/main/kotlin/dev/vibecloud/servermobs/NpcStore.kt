@@ -105,6 +105,9 @@ class NpcStore(
             )
         }
         document["hologram"] = data.hologram
+        if (data.floatingItem.isNotBlank()) {
+            document["floating-item"] = data.floatingItem
+        }
         document["actions"] = data.actions.map { action ->
             linkedMapOf<String, Any>("type" to action.type.id, "value" to action.value)
         }
@@ -140,6 +143,7 @@ class NpcStore(
             }
         }
         val hologram = (map["hologram"] as? List<*>).orEmpty().mapNotNull { it as? String }
+        val floatingItem = (map["floating-item"] as? String)?.trim().orEmpty()
         val actions = (map["actions"] as? List<*>).orEmpty().mapNotNull { raw ->
             val actionMap = raw as? Map<*, *> ?: return@mapNotNull null
             val type = NpcActionType.parse((actionMap["type"] as? String).orEmpty()) ?: return@mapNotNull null
@@ -149,7 +153,8 @@ class NpcStore(
         val showNametag = (map["show-nametag"] as? Boolean) ?: true
         val turnToPlayer = (map["turn-to-player"] as? Boolean) ?: false
         return NpcData(
-            name, group, world, x, y, z, yaw, pitch, skin, hologram, actions, showNametag, turnToPlayer,
+            name, group, world, x, y, z, yaw, pitch, skin, hologram, floatingItem, actions,
+            showNametag, turnToPlayer,
         )
     }
 

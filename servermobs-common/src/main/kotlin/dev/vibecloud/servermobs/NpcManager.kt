@@ -43,6 +43,7 @@ class NpcManager(
     private var task: BukkitTask? = null
     private var lookTask: BukkitTask? = null
     private var hologramTask: BukkitTask? = null
+    private var joinListener: org.bukkit.event.Listener? = null
 
     fun enable() {
         reload()
@@ -57,6 +58,7 @@ class NpcManager(
                 HOLOGRAM_REFRESH_PERIOD_TICKS,
             )
         }
+        registerJoinListener()
     }
 
     fun disable() {
@@ -66,6 +68,10 @@ class NpcManager(
         lookTask = null
         hologramTask?.cancel()
         hologramTask = null
+        joinListener?.let { listener ->
+            org.bukkit.event.HandlerList.unregisterAll(listener)
+        }
+        joinListener = null
         placeholderCache?.stop()
         npcs.values.forEach { npc ->
             npc.removeHolograms()
@@ -188,6 +194,50 @@ class NpcManager(
         npc.spawnHolograms()
     }
 
+    /**
+     * Re-delivers NPCs to freshly joined players a few seconds after their join.
+     *
+     * When a player joins, our tick can inject the spawn/player-info packets while the client is
+     * still streaming the world (or before its skin pipeline is ready); the client then fails to
+     * resolve the NPC skin and never retries on its own. Destroying and re-sending the packets
+     * once after a short delay forces the client to re-resolve, which is exactly what a manual
+     * reconnect used to fix. Best effort: only NPCs already delivered to that player are redone.
+     */
+    private fun registerJoinListener() {
+        joinListener = object : org.bukkit.event.Listener {}
+        Bukkit.getPluginManager().registerEvents(
+            object : org.bukkit.event.Listener {
+                @org.bukkit.event.EventHandler
+                fun onJoin(event: org.bukkit.event.player.PlayerJoinEvent) {
+                    Bukkit.getScheduler().runTaskLater(
+                        plugin,
+                        Runnable { redeliverVisible(event.player) },
+                        JOIN_REDELIVERY_DELAY_TICKS,
+                    )
+                }
+            },
+            plugin,
+        )
+    }
+
+    /** Force-respawns every visible, already-delivered NPC for [player] (main thread only). */
+    private fun redeliverVisible(player: Player) {
+        if (!player.isOnline) return
+        val delivered = sent[player.uniqueId] ?: return
+        val viewSq = config.viewDistance * config.viewDistance
+        for (npc in npcs.values) {
+            val key = npc.data.name.lowercase()
+            if (!delivered.contains(key)) continue
+            val visible = npc.data.world == player.world.name &&
+                    player.location.distanceSquared(npc.bukkitLocation(player.world)) <= viewSq
+            if (!visible) continue
+            runCatching {
+                npc.despawnFor(player)
+                npc.spawnFor(player)
+            }.onFailure { logger.warning("Could not re-deliver NPC '${npc.data.name}' to ${player.name}: ${it.message}") }
+        }
+    }
+
     /** Keeps each player's view of the NPCs in range in sync. Main thread only. */
     private fun tick() {
         val viewSq = config.viewDistance * config.viewDistance
@@ -248,6 +298,7 @@ class NpcManager(
         /** One scoreboard team per NPC (1.8 team names are capped at 16 chars). */
         val nametagTeam: String = "smh" + entityId
         private val holograms = ArrayList<Hologram>()
+        private val floatingItems = ArrayList<FloatingItem>()
 
         private val pendingTablistRemovals = HashMap<UUID, Any>()
 
@@ -296,12 +347,12 @@ class NpcManager(
         }
 
         fun spawnHolograms() {
-            if (data.hologram.isEmpty()) return
             val world = Bukkit.getWorld(data.world) ?: return
-            // List order is bottom-to-top, so the newest/appended line appears above the previous
-            // last line. Raise the bottom baseline to keep even a single line clear of the NPC.
-            val bottomLineY = data.y + config.hologramOffset + HOLOGRAM_BASELINE_LIFT +
-                    config.hologramLineSpacing
+            // List order is bottom-to-top, so index 0 renders below index 1 — the command layer
+            // appends new lines at index 0 so "hologram add" places them below the existing ones.
+            // The bottom line sits `offset + baseline` above the NPC's feet: high enough to clear
+            // the NPC's nametag row, and directly above its head rather than one extra line higher.
+            val bottomLineY = data.y + config.hologramOffset + HOLOGRAM_BASELINE_LIFT
             hologramLineHeights(bottomLineY, config.hologramLineSpacing, data.hologram.size)
                 .forEachIndexed { index, y ->
                     val line = data.hologram[index]
@@ -311,6 +362,29 @@ class NpcManager(
                         placeholderCache?.resolve(line) ?: line,
                     ))
                 }
+            spawnFloatingItem(world, bottomLineY)
+        }
+
+        /** Spawns the optional floating item one gap above the topmost hologram line. */
+        private fun spawnFloatingItem(world: World, bottomLineY: Double) {
+            val spec = data.floatingItem.trim()
+            if (spec.isEmpty()) return
+            val topLineY = if (data.hologram.isEmpty()) {
+                bottomLineY
+            } else {
+                bottomLineY + (data.hologram.size - 1) * config.hologramLineSpacing
+            }
+            try {
+                floatingItems.add(
+                    platform.spawnFloatingItem(
+                        world,
+                        Location(world, data.x, topLineY + config.hologramLineSpacing, data.z),
+                        spec,
+                    ),
+                )
+            } catch (failure: IllegalArgumentException) {
+                logger.warning("Unknown floating item material '$spec' for NPC '${data.name}'; skipped.")
+            }
         }
 
         fun updateHolograms() {
@@ -324,6 +398,8 @@ class NpcManager(
         fun removeHolograms() {
             holograms.forEach { hologram -> runCatching { hologram.remove() } }
             holograms.clear()
+            floatingItems.forEach { item -> runCatching { item.remove() } }
+            floatingItems.clear()
         }
 
         fun bukkitLocation(world: World): Location = Location(world, data.x, data.y, data.z)
@@ -359,6 +435,7 @@ class NpcManager(
         const val HOLOGRAM_REFRESH_PERIOD_TICKS = 20L
         const val HOLOGRAM_BASELINE_LIFT = 0.5
         const val TABLIST_REMOVE_DELAY_TICKS = 2L
+        const val JOIN_REDELIVERY_DELAY_TICKS = 60L
         const val INTERACTION_COOLDOWN_MS = 250L
         const val CLEANUP_THRESHOLD = 2048
         const val NPC_EYE_HEIGHT = 1.62

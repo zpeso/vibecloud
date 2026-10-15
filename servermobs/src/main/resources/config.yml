@@ -25,8 +25,10 @@ show-nametag: true
 # Range (in blocks) at which an NPC is sent to a player.
 view-distance: 48
 
-# Layout of hologram lines above the NPC. The bottom line starts at offset + 0.5 + line-spacing;
-# each later-added line stacks above the last. Increase offset if the first line is too low.
+# Layout of hologram lines above the NPC. The bottom line starts at offset + 0.5 above the
+# NPC's feet and later lines stack above it. `/npc edit <name> hologram add` always places a
+# new line BELOW the existing ones, and `hologram item set <material>` floats an item topper
+# above the topmost line.
 hologram:
   offset: 2.0
   line-spacing: 0.3

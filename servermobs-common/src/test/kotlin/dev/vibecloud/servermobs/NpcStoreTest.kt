@@ -63,6 +63,20 @@ class NpcStoreTest {
     }
 
     @Test
+    fun `round trips a floating item and omits it when unset`() {
+        val data = sample("topper", "lobby").copy(floatingItem = "DIAMOND_SWORD")
+        store.save(data)
+        assertEquals(data, assertNotNull(store.find("topper")))
+
+        store.save(sample("plain", "lobby"))
+        val loaded = assertNotNull(store.find("plain"))
+        assertEquals("", loaded.floatingItem)
+        // The key is omitted entirely when unset, keeping old definitions unchanged.
+        val raw = java.nio.file.Files.readString(directory.resolve("plain.yml"))
+        assertFalse(raw.contains("floating-item"))
+    }
+
+    @Test
     fun `lookup is case-insensitive and filters by group`() {
         store.save(sample("LobbyNpc", "lobby"))
         store.save(sample("CityNpc", "citybuild"))

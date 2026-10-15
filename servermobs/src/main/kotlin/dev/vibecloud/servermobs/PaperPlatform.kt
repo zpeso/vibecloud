@@ -17,10 +17,16 @@ import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPl
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSpawnEntity
 import net.kyori.adventure.text.minimessage.MiniMessage
 import org.bukkit.Location
+import org.bukkit.Material
 import org.bukkit.World
 import org.bukkit.command.CommandSender
 import org.bukkit.entity.Display
+import org.bukkit.entity.ItemDisplay
 import org.bukkit.entity.TextDisplay
+import org.bukkit.inventory.ItemStack
+import org.bukkit.util.Transformation
+import org.joml.Quaternionf
+import org.joml.Vector3f
 import java.util.EnumSet
 import java.util.UUID
 
@@ -57,6 +63,34 @@ class PaperPlatform : ServerMobsPlatform {
                 if (!display.isDead) display.text(mini.deserialize(colorize(line)))
             }
 
+            override fun remove() {
+                display.remove()
+            }
+        }
+    }
+
+    override fun spawnFloatingItem(world: World, location: Location, materialSpec: String): FloatingItem {
+        val material = Material.matchMaterial(materialSpec.trim())
+        ?: throw IllegalArgumentException("Unknown material '$materialSpec'")
+        // FIXED renders the item the way an item frame would (facing the player's default view);
+        // a slight downward tilt makes it read as an item, not a billboard.
+        val display = world.spawn(location, ItemDisplay::class.java) { entity ->
+            entity.setItemStack(ItemStack(material, 1))
+            entity.setBillboard(Display.Billboard.FIXED)
+            entity.setItemDisplayTransform(ItemDisplay.ItemDisplayTransform.FIXED)
+            entity.isPersistent = false
+            entity.isInvulnerable = true
+            val scale = 0.75f
+            entity.setTransformation(
+                Transformation(
+                    Vector3f(0f, 0f, 0f),
+                    Quaternionf(),
+                    Vector3f(scale, scale, scale),
+                    Quaternionf(),
+                ),
+            )
+        }
+        return object : FloatingItem {
             override fun remove() {
                 display.remove()
             }

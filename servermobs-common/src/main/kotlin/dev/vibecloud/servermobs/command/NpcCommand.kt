@@ -215,6 +215,13 @@ class NpcCommand(private val runtime: ServerMobsRuntime) : CommandExecutor, TabC
         }
     }
 
+    /**
+     * Hologram editing. Lines are stored bottom-to-top, but admins think top-to-bottom (what
+     * they see above the NPC), so:
+     *  - `add` inserts the new line at the BOTTOM (below every existing line — most users build
+     *    holograms top-down);
+     *  - `set`/`remove` use 1-based numbers counting from the TOP, like `/npc info` shows them.
+     */
     private fun editHologram(sender: CommandSender, data: NpcData, rest: List<String>) {
         when (rest.getOrNull(0)?.lowercase()) {
             "add" -> {
@@ -224,40 +231,74 @@ class NpcCommand(private val runtime: ServerMobsRuntime) : CommandExecutor, TabC
                     return
                 }
                 val line = rawLine.takeUnless { it.equals("{empty}", ignoreCase = true) }.orEmpty()
-                manager.update(data.copy(hologram = data.hologram + line))
-                reply(sender, "<green>Added holo line ${data.hologram.size + 1} to '<white>${data.name}</white>'.")
+                // Insert at the internal bottom (index 0) so the line appears BELOW the rest.
+                manager.update(data.copy(hologram = listOf(line) + data.hologram))
+                reply(sender, "<green>Added a new lowest holo line to '<white>${data.name}</white>' (now ${data.hologram.size + 1} lines; top is line 1).")
             }
 
             "set" -> {
-                val index = rest.getOrNull(1)?.toIntOrNull()
+                val number = rest.getOrNull(1)?.toIntOrNull()
                 val rawLine = rest.drop(2).joinToString(" ").trim()
-                if (index == null || index < 0 || index >= data.hologram.size || rawLine.isEmpty()) {
-                    reply(sender, "<red>Usage: /npc edit <name> hologram set <index> <text|{empty}>")
+                val internal = visualIndex(data.hologram.size, number)
+                if (internal < 0 || rawLine.isEmpty()) {
+                    reply(sender, "<red>Usage: /npc edit <name> hologram set <line 1-${data.hologram.size}> <text|{empty}> (1 = top line)")
                     return
                 }
                 val line = rawLine.takeUnless { it.equals("{empty}", ignoreCase = true) }.orEmpty()
-                val updated = data.hologram.toMutableList().apply { this[index] = line }
+                val updated = data.hologram.toMutableList().apply { this[internal] = line }
                 manager.update(data.copy(hologram = updated))
-                reply(sender, "<green>Updated holo line ${index + 1} of '<white>${data.name}</white>'.")
+                reply(sender, "<green>Updated holo line $number of '<white>${data.name}</white>'.")
             }
 
             "remove", "delete" -> {
-                val index = rest.getOrNull(1)?.toIntOrNull()
-                if (index == null || index < 0 || index >= data.hologram.size) {
-                    reply(sender, "<red>Usage: /npc edit <name> hologram remove <index>")
+                val number = rest.getOrNull(1)?.toIntOrNull()
+                val internal = visualIndex(data.hologram.size, number)
+                if (internal < 0) {
+                    reply(sender, "<red>Usage: /npc edit <name> hologram remove <line 1-${data.hologram.size}> (1 = top line)")
                     return
                 }
-                val updated = data.hologram.toMutableList().apply { removeAt(index) }
+                val updated = data.hologram.toMutableList().apply { removeAt(internal) }
                 manager.update(data.copy(hologram = updated))
-                reply(sender, "<green>Removed holo line ${index + 1} from '<white>${data.name}</white>'.")
+                reply(sender, "<green>Removed holo line $number from '<white>${data.name}</white>'.")
             }
+
+            "item" -> editFloatingItem(sender, data, rest.drop(1))
 
             "clear" -> {
                 manager.update(data.copy(hologram = emptyList()))
                 reply(sender, "<green>Cleared all holo lines of '<white>${data.name}</white>'.")
             }
 
-            else -> reply(sender, "<red>Usage: /npc edit <name> hologram <add|set|remove|clear> ...")
+            else -> reply(sender, "<red>Usage: /npc edit <name> hologram <add|set|remove|item|clear> ...")
+        }
+    }
+
+    /** Maps a 1-based top-to-bottom line number onto the internal bottom-to-top index. */
+    private fun visualIndex(lineCount: Int, number: Int?): Int {
+        if (number == null) return -1
+        val internal = lineCount - number
+        return if (number in 1..lineCount && internal in 0 until lineCount) internal else -1
+    }
+
+    /** `/npc edit <name> hologram item set <material>` / `item clear` — a floating item topper. */
+    private fun editFloatingItem(sender: CommandSender, data: NpcData, rest: List<String>) {
+        when (rest.getOrNull(0)?.lowercase()) {
+            "set" -> {
+                val spec = rest.drop(1).joinToString(" ").trim()
+                if (spec.isEmpty()) {
+                    reply(sender, "<red>Usage: /npc edit <name> hologram item set <material> (e.g. diamond, golden_apple)")
+                    return
+                }
+                manager.update(data.copy(floatingItem = spec.uppercase()))
+                reply(sender, "<green>Floating item set to '<white>${spec.uppercase()}</white>' above '<white>${data.name}</white>'.")
+            }
+
+            "clear", "none", "off" -> {
+                manager.update(data.copy(floatingItem = ""))
+                reply(sender, "<green>Floating item removed from '<white>${data.name}</white>'.")
+            }
+
+            else -> reply(sender, "<red>Usage: /npc edit <name> hologram item <set <material>|clear>")
         }
     }
 
@@ -339,8 +380,13 @@ class NpcCommand(private val runtime: ServerMobsRuntime) : CommandExecutor, TabC
         line(sender, " <dark_gray>skin: <white>${data.skin?.source?.ifBlank { "value" } ?: "none"}")
         line(sender, " <dark_gray>nametag: <white>${if (data.showNametag) "shown" else "hidden"}")
         line(sender, " <dark_gray>turn_to_player: <white>${data.turnToPlayer}")
-        data.hologram.forEachIndexed { index, holo ->
-            line(sender, " <dark_gray>holo[$index]: <white>$holo")
+        if (data.floatingItem.isNotBlank()) {
+            line(sender, " <dark_gray>floating item: <white>${data.floatingItem}")
+        }
+        // Visual order: line 1 is the TOP of the hologram (matches set/remove numbering).
+        for (internalIndex in data.hologram.indices.reversed()) {
+            val number = data.hologram.size - internalIndex
+            line(sender, " <dark_gray>holo[$number]: <white>${data.hologram[internalIndex]}")
         }
         data.actions.forEachIndexed { index, action ->
             line(sender, " <dark_gray>action[$index]: <white>${action.type.id} <gray>${action.value}")
@@ -376,7 +422,10 @@ class NpcCommand(private val runtime: ServerMobsRuntime) : CommandExecutor, TabC
         listOf(
             "$label create <name>",
             "$label edit <name> skin <player|url|value>",
-            "$label edit <name> hologram <add|set|remove|clear> ...",
+            "$label edit <name> hologram <add|set|remove|item|clear> ...",
+            "    <gray>add puts the new line BELOW the others; set/remove count from the top (1 = top)</gray>",
+            "$label edit <name> hologram item set <material>",
+            "    <gray>floating item topper above the hologram; 'item clear' removes it</gray>",
             "    <gray>Use {empty} for a blank line; &4, §4 and MiniMessage colours work</gray>",
             "$label edit <name> action add <transfer|message|console|player> <value>",
             "    <gray>player = run the command as the clicking player</gray>",
@@ -418,7 +467,7 @@ class NpcCommand(private val runtime: ServerMobsRuntime) : CommandExecutor, TabC
 
             4 -> if (args[0].equals("edit", true)) {
                 when (args[2].lowercase()) {
-                    "hologram", "holo" -> listOf("add", "set", "remove", "clear")
+                    "hologram", "holo" -> listOf("add", "set", "remove", "item", "clear")
                     "action" -> listOf("add", "remove", "clear")
                     "nametag", "name-tag", "nt", "turn_to_player", "turn-to-player", "look", "turn" ->
                         listOf("true", "false")
@@ -428,7 +477,30 @@ class NpcCommand(private val runtime: ServerMobsRuntime) : CommandExecutor, TabC
                 emptyList()
             }
 
-            5 -> if (args[0].equals("edit", true) && args[2].equals("action", true)) NpcActionType.NAMES else emptyList()
+            5 -> if (!args[0].equals("edit", true)) {
+                emptyList()
+            } else {
+                when (args[2].lowercase()) {
+                    "action" -> NpcActionType.NAMES
+                    "hologram", "holo" -> if (args[3].equals("item", true)) {
+                        listOf("set", "clear")
+                    } else {
+                        val size = manager.get(args[1])?.hologram?.size ?: 0
+                        (1..size).map(Int::toString)
+                    }
+
+                    else -> emptyList()
+                }
+            }
+
+            6 -> if (args[0].equals("edit", true) &&
+                args[2].equals("hologram", true) && args[3].equals("item", true)
+            ) {
+                MATERIAL_SUGGESTIONS
+            } else {
+                emptyList()
+            }
+
             else -> emptyList()
         }
         val prefix = args.lastOrNull().orEmpty()
@@ -447,5 +519,10 @@ class NpcCommand(private val runtime: ServerMobsRuntime) : CommandExecutor, TabC
 
     private companion object {
         const val PERMISSION = "servermobs.admin"
+
+        /** A few common topper materials for tab-completion; every Bukkit material is valid. */
+        private val MATERIAL_SUGGESTIONS = listOf(
+            "diamond", "diamond_sword", "emerald", "golden_apple", "nether_star", "totem_of_undying",
+        )
     }
 }
