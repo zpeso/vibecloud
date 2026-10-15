@@ -33,7 +33,7 @@ class ServerMobsPlugin : JavaPlugin(), ServerMobsRuntime {
 
     override fun onEnable() {
         saveDefaultConfig()
-        platform = PaperPlatform()
+        platform = PaperPlatform(this)
         serverMobsConfig = ServerMobsConfig.load(config, dataFolder, logger)
         npcStore = NpcStore(serverMobsConfig.npcDirectory, logger)
         npcStore.ensureDirectory()

@@ -496,7 +496,7 @@ class NpcCommand(private val runtime: ServerMobsRuntime) : CommandExecutor, TabC
             6 -> if (args[0].equals("edit", true) &&
                 args[2].equals("hologram", true) && args[3].equals("item", true)
             ) {
-                MATERIAL_SUGGESTIONS
+                runtime.platform.floatingItemSuggestions()
             } else {
                 emptyList()
             }
@@ -519,10 +519,5 @@ class NpcCommand(private val runtime: ServerMobsRuntime) : CommandExecutor, TabC
 
     private companion object {
         const val PERMISSION = "servermobs.admin"
-
-        /** A few common topper materials for tab-completion; every Bukkit material is valid. */
-        private val MATERIAL_SUGGESTIONS = listOf(
-            "diamond", "diamond_sword", "emerald", "golden_apple", "nether_star", "totem_of_undying",
-        )
     }
 }

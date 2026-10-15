@@ -134,6 +134,15 @@ interface ServerMobsPlatform {
     fun spawnFloatingItem(world: World, location: Location, materialSpec: String): FloatingItem
 
     /**
+     * Material names suggested for `/npc edit <name> hologram item set <Tab>`. The default list
+     * is 1.8-safe — platform builds may append newer materials (which then simply fail to match
+     * on older servers).
+     */
+    fun floatingItemSuggestions(): List<String> = listOf(
+        "diamond", "diamond_sword", "golden_apple", "nether_star", "ender_pearl", "blaze_rod",
+    )
+
+    /**
      * Sends [user] the packets that make a fake player entity appear at (x,y,z). Modern servers
      * use `PlayerInfoUpdate` + `SpawnEntity`; 1.8 uses legacy `PlayerInfo` + `SpawnPlayer` and
      * removes the tab-list entry after a short delay so the client can first read the skin profile.

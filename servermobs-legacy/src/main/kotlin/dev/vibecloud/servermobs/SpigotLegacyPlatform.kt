@@ -14,12 +14,16 @@ import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPl
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSpawnPlayer
 import net.kyori.adventure.text.minimessage.MiniMessage
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer
+import org.bukkit.Bukkit
 import org.bukkit.Location
 import org.bukkit.Material
 import org.bukkit.World
 import org.bukkit.command.CommandSender
 import org.bukkit.entity.ArmorStand
 import org.bukkit.inventory.ItemStack
+import org.bukkit.plugin.Plugin
+import org.bukkit.scheduler.BukkitTask
+import org.bukkit.util.EulerAngle
 import java.util.UUID
 
 /**
@@ -31,7 +35,7 @@ import java.util.UUID
  * dedicated `SpawnPlayer` packet — 1.8 has no `PlayerInfoUpdate` and does not render a `PLAYER`
  * spawned via the generic entity packet.
  */
-class SpigotLegacyPlatform : ServerMobsPlatform {
+class SpigotLegacyPlatform(private val plugin: Plugin) : ServerMobsPlatform {
     private val mini = MiniMessage.miniMessage()
     override val delayedTablistRemoval: Boolean = true
     private val legacy = LegacyComponentSerializer.legacySection()
@@ -90,14 +94,27 @@ class SpigotLegacyPlatform : ServerMobsPlatform {
         val material = Material.matchMaterial(materialSpec.trim())
                 ?: throw IllegalArgumentException("Unknown material '$materialSpec'")
         // The classic 1.8 hologram topper: an invisible armor stand wearing the item as its
-        // helmet so every version renders the 3D item without packets.
-        val stand = world.spawn(location, ArmorStand::class.java)
+        // helmet so every version renders the 3D item without packets. The stand is spawned
+        // lower so the HELMET lands at [location] and the callers' positions stay comparable
+        // with the other platform. A task spins the head pose so it reads like a dropped item.
+        val stand = world.spawn(location.clone().subtract(0.0, HELMET_LABEL_OFFSET, 0.0), ArmorStand::class.java)
         stand.isVisible = false
         stand.setGravity(false)
         stand.isSmall = true
         stand.setHelmet(ItemStack(material, 1))
+        var spin: BukkitTask? = Bukkit.getScheduler().runTaskTimer(
+            plugin,
+            Runnable {
+                if (stand.isDead || !stand.isValid) return@Runnable
+                runCatching { stand.setHeadPose(stand.headPose.add(0.0, SPIN_STEP, 0.0)) }
+            },
+            SPIN_PERIOD_TICKS,
+            SPIN_PERIOD_TICKS,
+        )
         return object : FloatingItem {
             override fun remove() {
+                spin?.cancel()
+                spin = null
                 stand.remove()
             }
         }
@@ -169,6 +186,13 @@ class SpigotLegacyPlatform : ServerMobsPlatform {
     private companion object {
         /** How far above a small 1.8 ArmorStand its custom name is drawn. */
         const val ARMORSTAND_LABEL_OFFSET = 1.5
+
+        /** How far above a small 1.8 ArmorStand its helmet slot is drawn. */
+        const val HELMET_LABEL_OFFSET = 1.25
+
+        /** Head-pose spin of the floating item: step per update (radians) and update cadence. */
+        const val SPIN_STEP = 0.08
+        const val SPIN_PERIOD_TICKS = 2L
 
         /** 1.8 index of the player "displayed skin parts" byte. */
         const val SKIN_PARTS_METADATA_INDEX = 10

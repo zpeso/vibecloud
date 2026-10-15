@@ -33,7 +33,7 @@ class ServerMobsPlugin : JavaPlugin(), ServerMobsRuntime {
 
     override fun onEnable() {
         saveDefaultConfig()
-        platform = SpigotLegacyPlatform()
+        platform = SpigotLegacyPlatform(this)
         serverMobsConfig = ServerMobsConfig.load(config, dataFolder, logger)
         npcStore = NpcStore(serverMobsConfig.npcDirectory, logger)
         npcStore.ensureDirectory()

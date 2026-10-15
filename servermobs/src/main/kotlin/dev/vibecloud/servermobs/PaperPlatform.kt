@@ -21,12 +21,10 @@ import org.bukkit.Material
 import org.bukkit.World
 import org.bukkit.command.CommandSender
 import org.bukkit.entity.Display
-import org.bukkit.entity.ItemDisplay
+import org.bukkit.entity.Item
 import org.bukkit.entity.TextDisplay
 import org.bukkit.inventory.ItemStack
-import org.bukkit.util.Transformation
-import org.joml.Quaternionf
-import org.joml.Vector3f
+import org.bukkit.plugin.Plugin
 import java.util.EnumSet
 import java.util.UUID
 
@@ -35,7 +33,7 @@ import java.util.UUID
  * components, holograms are `TextDisplay` entities, and fake players use the modern
  * `PlayerInfoUpdate` + `SpawnEntity` packets.
  */
-class PaperPlatform : ServerMobsPlatform {
+class PaperPlatform(private val plugin: Plugin) : ServerMobsPlatform {
     private val mini = MiniMessage.miniMessage()
 
     override val defaultTransferChannel: String = "bungeecord:main"
@@ -72,30 +70,28 @@ class PaperPlatform : ServerMobsPlatform {
     override fun spawnFloatingItem(world: World, location: Location, materialSpec: String): FloatingItem {
         val material = Material.matchMaterial(materialSpec.trim())
         ?: throw IllegalArgumentException("Unknown material '$materialSpec'")
-        // FIXED renders the item the way an item frame would (facing the player's default view);
-        // a slight downward tilt makes it read as an item, not a billboard.
-        val display = world.spawn(location, ItemDisplay::class.java) { entity ->
+        // A real, server-side dropped item: the client renders it exactly like an item on the
+        // ground and animates the classic bob + spin itself. NoGravity keeps it a hovering
+        // topper, the huge pickup delay makes it untouchable and unlimitedLifetime (Paper) stops
+        // the regular 5-minute item despawn.
+        val item = world.spawn(location, Item::class.java) { entity ->
             entity.setItemStack(ItemStack(material, 1))
-            entity.setBillboard(Display.Billboard.FIXED)
-            entity.setItemDisplayTransform(ItemDisplay.ItemDisplayTransform.FIXED)
             entity.isPersistent = false
             entity.isInvulnerable = true
-            val scale = 0.75f
-            entity.setTransformation(
-                Transformation(
-                    Vector3f(0f, 0f, 0f),
-                    Quaternionf(),
-                    Vector3f(scale, scale, scale),
-                    Quaternionf(),
-                ),
-            )
+            entity.setGravity(false)
+            entity.setPickupDelay(Int.MAX_VALUE)
+            runCatching { entity.setUnlimitedLifetime(true) }
         }
         return object : FloatingItem {
             override fun remove() {
-                display.remove()
+                item.remove()
             }
         }
     }
+
+    /** Modern servers can show newer topper materials as well. */
+    override fun floatingItemSuggestions(): List<String> =
+        super.floatingItemSuggestions() + listOf("totem_of_undying", "heart_of_the_sea")
 
     override fun sendNpcSpawn(
         user: User,
