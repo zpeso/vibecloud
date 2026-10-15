@@ -134,13 +134,12 @@ interface ServerMobsPlatform {
     fun spawnFloatingItem(world: World, location: Location, materialSpec: String): FloatingItem
 
     /**
-     * Material names suggested for `/npc edit <name> hologram item set <Tab>`. The default list
-     * is 1.8-safe — platform builds may append newer materials (which then simply fail to match
-     * on older servers).
+     * Material names suggested for `/npc edit <name> hologram item set <Tab>`: every material
+     * the running server accepts for a floating item (cached at first call), lower-case and
+     * sorted, so anything tab-completed always passes `Material.matchMaterial` on the same
+     * server. Fresh materials (stick, diamond_boots, ...) are included automatically.
      */
-    fun floatingItemSuggestions(): List<String> = listOf(
-        "diamond", "diamond_sword", "golden_apple", "nether_star", "ender_pearl", "blaze_rod",
-    )
+    fun floatingItemSuggestions(): List<String>
 
     /**
      * Sends [user] the packets that make a fake player entity appear at (x,y,z). Modern servers

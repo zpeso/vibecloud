@@ -365,7 +365,11 @@ class NpcManager(
             spawnFloatingItem(world, bottomLineY)
         }
 
-        /** Spawns the optional floating item one gap above the topmost hologram line. */
+        /**
+         * Spawns the optional floating item with a clear gap above the topmost hologram line:
+         * one empty line slot between the top text and the item, so a dropped-item sprite
+         * (whose base sits at its anchor) never overlaps the text.
+         */
         private fun spawnFloatingItem(world: World, bottomLineY: Double) {
             val spec = data.floatingItem.trim()
             if (spec.isEmpty()) return
@@ -378,7 +382,7 @@ class NpcManager(
                 floatingItems.add(
                     platform.spawnFloatingItem(
                         world,
-                        Location(world, data.x, topLineY + config.hologramLineSpacing, data.z),
+                        Location(world, data.x, topLineY + 2 * config.hologramLineSpacing, data.z),
                         spec,
                     ),
                 )

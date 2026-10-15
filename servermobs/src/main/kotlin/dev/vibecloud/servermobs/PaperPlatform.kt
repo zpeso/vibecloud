@@ -72,15 +72,17 @@ class PaperPlatform(private val plugin: Plugin) : ServerMobsPlatform {
         ?: throw IllegalArgumentException("Unknown material '$materialSpec'")
         // A real, server-side dropped item: the client renders it exactly like an item on the
         // ground and animates the classic bob + spin itself. NoGravity keeps it a hovering
-        // topper, the huge pickup delay makes it untouchable and unlimitedLifetime (Paper) stops
-        // the regular 5-minute item despawn.
+        // topper, the pickup delay makes it untouchable and unlimitedLifetime (Paper) stops the
+        // regular 5-minute item despawn. The delay is capped at Short.MAX_VALUE on purpose: the
+        // value is stored in a 16-bit field, so anything larger wraps to -1 (instantly pickable
+        // — the item would vanish on the first player walking by).
         val item = world.spawn(location, Item::class.java) { entity ->
             entity.setItemStack(ItemStack(material, 1))
             entity.isPersistent = false
             entity.isInvulnerable = true
             entity.setGravity(false)
-            entity.setPickupDelay(Int.MAX_VALUE)
-            runCatching { entity.setUnlimitedLifetime(true) }
+            entity.setPickupDelay(Short.MAX_VALUE.toInt())
+            entity.setUnlimitedLifetime(true)
         }
         return object : FloatingItem {
             override fun remove() {
@@ -89,9 +91,17 @@ class PaperPlatform(private val plugin: Plugin) : ServerMobsPlatform {
         }
     }
 
-    /** Modern servers can show newer topper materials as well. */
-    override fun floatingItemSuggestions(): List<String> =
-        super.floatingItemSuggestions() + listOf("totem_of_undying", "heart_of_the_sea")
+    /** Every item material this server knows (cached once); includes modern-only materials. */
+    override fun floatingItemSuggestions(): List<String> = floatingMaterialCache
+
+    private val floatingMaterialCache: List<String> by lazy {
+        // isItem drops technical/blocked entries (pistons, air, ...) — everything left can
+        // render as an item, so a tab-completed name always works here.
+        Material.entries
+            .filter { it.isItem && !it.isAir }
+            .map { it.name.lowercase() }
+            .sorted()
+    }
 
     override fun sendNpcSpawn(
         user: User,

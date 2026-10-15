@@ -120,6 +120,18 @@ class SpigotLegacyPlatform(private val plugin: Plugin) : ServerMobsPlatform {
         }
     }
 
+    /** Every material this 1.8 server knows (cached once), minus air — all render as items. */
+    override fun floatingItemSuggestions(): List<String> = floatingMaterialCache
+
+    /** Wrapped in a lazy so the (huge) 1.8 material list is only built when completion first needs it. */
+    private val floatingMaterialCache: List<String> by lazy {
+        Material.values()
+            .filterNot { it.name.equals("AIR", ignoreCase = true) }
+            .filterNot { it.name.endsWith("_SUPPRESSED") || it.name.endsWith("_BREAKING") }
+            .map { it.name.lowercase() }
+            .sorted()
+    }
+
     override fun sendNpcSpawn(
         user: User,
         entityId: Int,
