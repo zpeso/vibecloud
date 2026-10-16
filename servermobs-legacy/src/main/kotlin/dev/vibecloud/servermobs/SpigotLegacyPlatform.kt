@@ -139,11 +139,11 @@ class SpigotLegacyPlatform(private val plugin: Plugin) : ServerMobsPlatform {
 
     override fun sendFloatingItemAnchor(user: User, entityId: Int, x: Double, y: Double, z: Double) {
         // An absolute teleport pins the client-side item back at its configured spot every
-        // couple of ticks — the same correction the server would send for a real (gravity-less)
-        // entity. The velocity reset matters especially on 1.8: the teleport packet does NOT
-        // reset the client's motion, so without it the simulated fall keeps accumulating and
-        // the topper visibly sags further each anchor cycle. Cheap: two tiny packets per
-        // viewer of the topper.
+        // tick (the manager's anchor task) — the same correction the server would send for a
+        // real (gravity-less) entity. The velocity reset matters especially on 1.8: the
+        // teleport packet does NOT reset the client's motion, so without it the simulated fall
+        // keeps accumulating and the topper visibly sags further each anchor cycle. Cheap: two
+        // tiny packets per viewer of the topper.
         user.sendPacket(
             WrapperPlayServerEntityTeleport(
                 entityId,

@@ -110,9 +110,10 @@ class PaperPlatform(private val plugin: Plugin) : ServerMobsPlatform {
     /**
      * Pins the client-side topper back at its configured spot. Relying on the NoGravity
      * metadata alone turned out unreliable — clients keep simulating item physics for
-     * client-side entities even with the flag set. So every couple of ticks an absolute
-     * teleport plus a zeroed velocity is sent: one or two tiny packets per visible topper,
-     * and on 1.21.2+ PacketEvents serialises the teleport as the newer Position Sync packet.
+     * client-side entities even with the flag set. So every tick an absolute teleport plus a
+     * zeroed velocity is sent: the one-gravity-step sag between anchors is far below the
+     * item's own bob animation and reads as a steady hover, and on 1.21.2+ PacketEvents
+     * serialises the teleport as the newer Position Sync packet.
      */
     override fun sendFloatingItemAnchor(user: User, entityId: Int, x: Double, y: Double, z: Double) {
         user.sendPacket(

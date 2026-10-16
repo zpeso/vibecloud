@@ -62,7 +62,9 @@ class NpcManager(
         registerJoinListener()
         if (platform.floatingItemNeedsAnchor) {
             // Clients simulate item gravity on client-side items and the NoGravity flag is not
-            // reliably honoured; re-anchor the toppers periodically so they never drift to the floor.
+            // reliably honoured, so the toppers are re-anchored EVERY tick: between two anchors
+            // the client falls the item one gravity step (~0.04 blocks) — well below the item's
+            // own bob animation and visually a steady hover instead of a sag-and-snap stutter.
             anchorTask = Bukkit.getScheduler().runTaskTimer(
                 plugin,
                 Runnable(::anchorFloatingItems),
@@ -301,9 +303,10 @@ class NpcManager(
      * Pins every visible, already-delivered floating topper back at its configured position.
      * Scheduled on all platforms (`floatingItemNeedsAnchor` defaults to true): toppers are
      * client-side item entities and every client simulates item gravity for them; the shared
-     * NoGravity metadata flag is not reliably honoured by clients, so the periodic anchor is
-     * what actually keeps the topper hovering. Cheap: a teleport (+ zeroed velocity) per
-     * visible topper every couple of ticks.
+     * NoGravity metadata flag is not reliably honoured by clients, and periodic teleports can
+     * read as a sag-and-snap stutter. So the task runs EVERY tick: each anchor pins the item
+     * back as soon as one gravity step (~0.04 blocks) has played — well below the item's own
+     * bob animation — reading as a steady hover. Cheap: two tiny packets per visible topper.
      */
     private fun anchorFloatingItems() {
         for ((playerId, names) in sent) {
@@ -417,7 +420,12 @@ class NpcManager(
             }
         }
 
-        /** One line-slot gap above the topmost hologram line (a dropped item sits on its anchor). */
+        /**
+         * One line-slot gap above the topmost hologram line. The item entity's sprite is drawn
+         * ~0.5 blocks above its y position (plus the client bob), so this single gap already
+         * leaves clear air between the topmost hologram text and the topper without the float
+         * looking too detached from the NPC.
+         */
         internal fun floatingItemY(): Double {
             val bottomLineY = data.y + config.hologramOffset + HOLOGRAM_BASELINE_LIFT
             val topLineY = if (data.hologram.isEmpty()) {
@@ -425,7 +433,7 @@ class NpcManager(
             } else {
                 bottomLineY + (data.hologram.size - 1) * config.hologramLineSpacing
             }
-            return topLineY + 2 * config.hologramLineSpacing
+            return topLineY + config.hologramLineSpacing
         }
 
         fun despawnFor(player: Player) {
@@ -508,7 +516,7 @@ class NpcManager(
         const val TABLIST_REMOVE_DELAY_TICKS = 2L
         const val JOIN_REDELIVERY_DELAY_TICKS = 60L
         const val UPDATE_REDELIVERY_DELAY_TICKS = 40L
-        const val ANCHOR_PERIOD_TICKS = 2L
+        const val ANCHOR_PERIOD_TICKS = 1L
         const val INTERACTION_COOLDOWN_MS = 250L
         const val CLEANUP_THRESHOLD = 2048
         const val NPC_EYE_HEIGHT = 1.62
