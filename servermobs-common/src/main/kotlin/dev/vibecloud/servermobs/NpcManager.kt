@@ -61,8 +61,8 @@ class NpcManager(
         }
         registerJoinListener()
         if (platform.floatingItemNeedsAnchor) {
-            // 1.8 clients simulate item gravity on client-side items with no flag to stop it;
-            // re-anchor the toppers periodically so they never drift to the floor.
+            // Clients simulate item gravity on client-side items and the NoGravity flag is not
+            // reliably honoured; re-anchor the toppers periodically so they never drift to the floor.
             anchorTask = Bukkit.getScheduler().runTaskTimer(
                 plugin,
                 Runnable(::anchorFloatingItems),
@@ -299,9 +299,11 @@ class NpcManager(
 
     /**
      * Pins every visible, already-delivered floating topper back at its configured position.
-     * Only scheduled on platforms that need it (`floatingItemNeedsAnchor`, i.e. 1.8): the item
-     * entities are client-side, and the 1.8 client applies item gravity that no metadata flag
-     * can stop. Modern clients honour NoGravity and get no anchor traffic.
+     * Scheduled on all platforms (`floatingItemNeedsAnchor` defaults to true): toppers are
+     * client-side item entities and every client simulates item gravity for them; the shared
+     * NoGravity metadata flag is not reliably honoured by clients, so the periodic anchor is
+     * what actually keeps the topper hovering. Cheap: a teleport (+ zeroed velocity) per
+     * visible topper every couple of ticks.
      */
     private fun anchorFloatingItems() {
         for ((playerId, names) in sent) {

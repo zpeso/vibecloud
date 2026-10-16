@@ -6,10 +6,12 @@ import com.github.retrooper.packetevents.protocol.player.GameMode
 import com.github.retrooper.packetevents.protocol.player.TextureProperty
 import com.github.retrooper.packetevents.protocol.player.User
 import com.github.retrooper.packetevents.protocol.player.UserProfile
+import com.github.retrooper.packetevents.util.Vector3d
 import com.github.retrooper.packetevents.protocol.world.Location as PacketLocation
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerDestroyEntities
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityHeadLook
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityTeleport
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityVelocity
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfo
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfo.PlayerData
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSpawnPlayer
@@ -132,19 +134,25 @@ class SpigotLegacyPlatform(private val plugin: Plugin) : ServerMobsPlatform {
         user.sendPacket(WrapperPlayServerDestroyEntities(entityId))
     }
 
-    /** 1.8 clients simulate item gravity with no NoGravity flag to turn it off — anchor needed. */
+    /** Every client simulates item gravity — the shared NoGravity flag is not reliable. */
     override val floatingItemNeedsAnchor: Boolean = true
 
     override fun sendFloatingItemAnchor(user: User, entityId: Int, x: Double, y: Double, z: Double) {
         // An absolute teleport pins the client-side item back at its configured spot every
         // couple of ticks — the same correction the server would send for a real (gravity-less)
-        // entity. Cheap: a tiny packet per viewer of the topper.
+        // entity. The velocity reset matters especially on 1.8: the teleport packet does NOT
+        // reset the client's motion, so without it the simulated fall keeps accumulating and
+        // the topper visibly sags further each anchor cycle. Cheap: two tiny packets per
+        // viewer of the topper.
         user.sendPacket(
             WrapperPlayServerEntityTeleport(
                 entityId,
                 PacketLocation(x, y, z, 0f, 0f),
                 true,
             ),
+        )
+        user.sendPacket(
+            WrapperPlayServerEntityVelocity(entityId, Vector3d(0.0, 0.0, 0.0)),
         )
     }
 

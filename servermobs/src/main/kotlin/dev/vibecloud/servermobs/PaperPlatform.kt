@@ -7,9 +7,12 @@ import com.github.retrooper.packetevents.protocol.player.TextureProperty
 import com.github.retrooper.packetevents.protocol.player.User
 import com.github.retrooper.packetevents.protocol.player.UserProfile
 import com.github.retrooper.packetevents.protocol.world.Location as PacketLocation
+import com.github.retrooper.packetevents.util.Vector3d
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerDestroyEntities
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityHeadLook
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityMetadata
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityTeleport
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityVelocity
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfoRemove
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfoUpdate
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfoUpdate.Action
@@ -102,6 +105,26 @@ class PaperPlatform(private val plugin: Plugin) : ServerMobsPlatform {
 
     override fun sendFloatingItemDespawn(user: User, entityId: Int) {
         user.sendPacket(WrapperPlayServerDestroyEntities(entityId))
+    }
+
+    /**
+     * Pins the client-side topper back at its configured spot. Relying on the NoGravity
+     * metadata alone turned out unreliable — clients keep simulating item physics for
+     * client-side entities even with the flag set. So every couple of ticks an absolute
+     * teleport plus a zeroed velocity is sent: one or two tiny packets per visible topper,
+     * and on 1.21.2+ PacketEvents serialises the teleport as the newer Position Sync packet.
+     */
+    override fun sendFloatingItemAnchor(user: User, entityId: Int, x: Double, y: Double, z: Double) {
+        user.sendPacket(
+            WrapperPlayServerEntityTeleport(
+                entityId,
+                PacketLocation(x, y, z, 0f, 0f),
+                true,
+            ),
+        )
+        user.sendPacket(
+            WrapperPlayServerEntityVelocity(entityId, Vector3d(0.0, 0.0, 0.0)),
+        )
     }
 
     /** Every item material this server knows (cached once); includes modern-only materials. */

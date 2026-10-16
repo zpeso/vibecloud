@@ -137,15 +137,18 @@ interface ServerMobsPlatform {
     fun sendFloatingItemDespawn(user: User, entityId: Int)
 
     /**
-     * Whether toppers fall on the client despite being client-side: clients simulate item
-     * gravity, and the NoGravity metadata flag that stops that on 1.10+ does not exist on 1.8.
-     * When true, the manager periodically calls [sendFloatingItemAnchor] to pin toppers in place.
+     * Whether toppers fall on the client despite being client-side: every client simulates item
+     * gravity, and the NoGravity metadata flag that (on 1.10+) stops it is not reliable — client
+     * builds have been observed ignoring it for client-side items, so the shared anchor task
+     * stays enabled by default on ALL platforms. The anchor is cheap: one or two small packets
+     * per visible topper every couple of ticks.
      */
-    val floatingItemNeedsAnchor: Boolean get() = false
+    val floatingItemNeedsAnchor: Boolean get() = true
 
     /**
-     * Pins a topper at its configured position (an absolute entity teleport). Only called when
-     * [floatingItemNeedsAnchor] is true; [NpcManager][dev.vibecloud.servermobs.NpcManager]'s
+     * Pins a topper at its configured position (an absolute entity teleport, plus a zeroed
+     * client-side velocity so the simulated motion cannot accumulate between anchors). Called
+     * when [floatingItemNeedsAnchor] is true; [NpcManager][dev.vibecloud.servermobs.NpcManager]'s
      * anchor task re-sends it every couple of ticks for every viewer of the topper.
      */
     fun sendFloatingItemAnchor(user: User, entityId: Int, x: Double, y: Double, z: Double) = Unit
