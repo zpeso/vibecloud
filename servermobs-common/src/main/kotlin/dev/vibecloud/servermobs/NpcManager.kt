@@ -483,7 +483,14 @@ class NpcManager(
         fun removeHolograms() {
             holograms.forEach { hologram -> runCatching { hologram.remove() } }
             holograms.clear()
-            runCatching { floatingItem?.remove() }
+            // The topper may include a per-viewer packet entity (1.8), which only the client
+            // knows about: dropping the seat without telling every viewer would leave that item
+            // behind, falling to the ground. Destroy it for everyone before forgetting it.
+            val topper = floatingItem
+            if (topper != null) {
+                Bukkit.getOnlinePlayers().forEach { player -> runCatching { topper.hideFrom(player) } }
+                runCatching { topper.remove() }
+            }
             floatingItem = null
         }
 

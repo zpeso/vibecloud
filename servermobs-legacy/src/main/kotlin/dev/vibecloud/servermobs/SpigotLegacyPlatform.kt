@@ -1,7 +1,9 @@
 package dev.vibecloud.servermobs
 
+import com.github.retrooper.packetevents.PacketEvents
 import com.github.retrooper.packetevents.protocol.entity.data.EntityData
 import com.github.retrooper.packetevents.protocol.entity.data.EntityDataTypes
+import com.github.retrooper.packetevents.protocol.entity.type.EntityTypes
 import com.github.retrooper.packetevents.protocol.player.GameMode
 import com.github.retrooper.packetevents.protocol.player.TextureProperty
 import com.github.retrooper.packetevents.protocol.player.User
@@ -9,9 +11,14 @@ import com.github.retrooper.packetevents.protocol.player.UserProfile
 import com.github.retrooper.packetevents.protocol.world.Location as PacketLocation
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerDestroyEntities
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityHeadLook
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityMetadata
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfo
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfo.PlayerData
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSetPassengers
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSpawnEntity
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSpawnPlayer
+import io.github.retrooper.packetevents.util.SpigotConversionUtil
+import io.github.retrooper.packetevents.util.SpigotReflectionUtil
 import net.kyori.adventure.text.minimessage.MiniMessage
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer
 import org.bukkit.Bukkit
@@ -20,6 +27,7 @@ import org.bukkit.Material
 import org.bukkit.World
 import org.bukkit.command.CommandSender
 import org.bukkit.entity.ArmorStand
+import org.bukkit.entity.Player
 import org.bukkit.inventory.ItemStack
 import org.bukkit.plugin.Plugin
 import java.util.UUID
@@ -89,31 +97,78 @@ class SpigotLegacyPlatform(private val plugin: Plugin) : ServerMobsPlatform {
     }
 
     /**
-     * 1.8 has no display entities, and a dropped-item entity is animated by the client itself
-     * (the classic bob + spin) no matter which packets the server sends — that is the up-and-down
-     * stutter that teleport anchoring could never remove. Its only *static* item renderer is
-     * equipment on an invisible, gravity-less armor stand, which is what this spawns: the item is
-     * held in the hand, so every material keeps its real shape (unlike the old helmet-slot trick
-     * that turned iron boots into a helmet).
+     * A real 1.8 dropped item, pinned above the hologram.
+     *
+     * 1.8 has no display entities, and a loose client-side dropped item falls on its own: the
+     * client applies item gravity every tick, so the old "anchor" teleports fought it at 20 Hz —
+     * the stutter that was visible. A ridden entity does not simulate its own movement at all: the
+     * client zeroes its motion and copies its position from the vehicle every tick, so a dropped
+     * item riding a gravity-less marker armor stand stays exactly where it was put, while keeping
+     * the familiar dropped-item look (the client's own gentle bob + spin is part of that look).
      */
     override fun spawnFloatingItem(world: World, location: Location, materialSpec: String): FloatingItem? {
         val material = Material.matchMaterial(materialSpec.trim())
             ?: throw IllegalArgumentException("Unknown material '$materialSpec'")
-        // A small stand's hand sits a little above its own feet, so the stand is spawned low
-        // enough for the held item to land on the requested spot.
-        val stand = world.spawn(
-            location.clone().add(0.0, TOPPER_HAND_DROP, 0.0),
-            ArmorStand::class.java,
-        )
-        stand.setGravity(false)
-        stand.isVisible = false
-        stand.setSmall(true)
-        stand.setArms(true)
-        stand.setBasePlate(false)
-        stand.setItemInHand(ItemStack(material, 1))
+        val stack = SpigotConversionUtil.fromBukkitItemStack(ItemStack(material, 1))
+        val x = location.x
+        val y = location.y
+        val z = location.z
+        // A marker stand has no hitbox and a size of zero, which puts its rider exactly on the
+        // stand's own position (normal/small stands put it at height * 0.75 instead).
+        val seat = world.spawn(location, ArmorStand::class.java)
+        seat.setGravity(false)
+        seat.isVisible = false
+        seat.setMarker(true)
+        seat.setBasePlate(false)
+        val itemEntityId = SpigotReflectionUtil.generateEntityId()
         return object : FloatingItem {
+            override fun showTo(player: Player) {
+                val user = PacketEvents.getAPI().playerManager.getUser(player) ?: return
+                // Drop a stale copy first: a client that still has this id from an earlier view
+                // would otherwise ignore the new spawn and keep the detached (falling) one.
+                user.sendPacket(WrapperPlayServerDestroyEntities(itemEntityId))
+                user.sendPacket(
+                    WrapperPlayServerSpawnEntity(
+                        itemEntityId,
+                        UUID.nameUUIDFromBytes(("servermobs-topper-$itemEntityId").toByteArray()),
+                        EntityTypes.ITEM,
+                        PacketLocation(x, y, z, 0f, 0f),
+                        0f,
+                        0,
+                        null,
+                    ),
+                )
+                user.sendPacket(
+                    WrapperPlayServerEntityMetadata(
+                        itemEntityId,
+                        listOf(EntityData(ITEM_METADATA_INDEX, EntityDataTypes.ITEMSTACK, stack)),
+                    ),
+                )
+                // The client can only mount the item once it knows the seat entity, and that
+                // spawn is sent by the server's own entity tracker at whatever point it decides
+                // (a passenger packet for an unknown vehicle is silently dropped, which would
+                // leave the item falling). Re-sending the mount a few times is idempotent and
+                // covers a player who enters range at the same moment the NPC appears.
+                MOUNT_RETRY_TICKS.forEach { delay ->
+                    Bukkit.getScheduler().runTaskLater(
+                        plugin,
+                        Runnable {
+                            PacketEvents.getAPI().playerManager.getUser(player)?.sendPacket(
+                                WrapperPlayServerSetPassengers(seat.entityId, intArrayOf(itemEntityId)),
+                            )
+                        },
+                        delay,
+                    )
+                }
+            }
+
+            override fun hideFrom(player: Player) {
+                val user = PacketEvents.getAPI().playerManager.getUser(player) ?: return
+                user.sendPacket(WrapperPlayServerDestroyEntities(itemEntityId))
+            }
+
             override fun remove() {
-                stand.remove()
+                seat.remove()
             }
         }
     }
@@ -197,10 +252,13 @@ class SpigotLegacyPlatform(private val plugin: Plugin) : ServerMobsPlatform {
         /** How far above a small 1.8 ArmorStand its custom name is drawn. */
         const val ARMORSTAND_LABEL_OFFSET = 1.5
 
-        /** Where a small stand's hand sits relative to its spawn point, so the item lands on spot. */
-        const val TOPPER_HAND_DROP = -0.25
-
-        /** 1.8 index of the player "displayed skin parts" byte (and of an item's Slot metadata). */
+        /** 1.8 index of the player "displayed skin parts" byte. */
         const val SKIN_PARTS_METADATA_INDEX = 10
+
+        /** 1.8 index of a dropped item's Slot metadata (its ItemStack). */
+        const val ITEM_METADATA_INDEX = 10
+
+        /** Delays (ticks) at which the topper is (re-)mounted on its seat after being shown. */
+        val MOUNT_RETRY_TICKS = longArrayOf(1L, 5L, 20L)
     }
 }
