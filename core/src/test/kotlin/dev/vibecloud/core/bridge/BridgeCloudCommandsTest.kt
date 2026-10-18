@@ -65,8 +65,27 @@ class BridgeCloudCommandsTest {
             service("proxy-1", "proxy", ServerType.VELOCITY, ServiceState.RUNNING, 25565),
         )
         val lines = f.commands.execute(listOf("info"))
-        assertTrue(lines.first().contains("3 running"), lines.joinToString("\n"))
+        assertTrue(lines.any { it.contains("3 running") }, lines.joinToString("\n"))
         assertTrue(lines.any { it.contains("citybuild") && it.contains("1/1") })
+    }
+
+    @Test
+    fun `info and list views use concise chat-friendly rows instead of terminal tables`() {
+        val f = fixture(
+            running("lobby-1", "lobby"),
+            service("lobby-2", "lobby", ServerType.PAPER, ServiceState.STOPPED, 25568),
+        )
+
+        val info = f.commands.execute(listOf("info"))
+        val services = f.commands.execute(listOf("services"))
+        val groups = f.commands.execute(listOf("groups"))
+
+        assertTrue(info.first().contains("Cloud overview"), info.joinToString("\\n"))
+        assertTrue(services.first().contains("Services"), services.joinToString("\\n"))
+        assertTrue(services.any { it.contains("lobby-1") && it.contains("RUNNING") })
+        assertTrue(services.none { it.contains("NAME                 GROUP") }, services.joinToString("\\n"))
+        assertTrue(groups.any { it.contains("running") && it.contains("provisioned") })
+        assertTrue(groups.none { it.contains("GROUP             TYPE") }, groups.joinToString("\\n"))
     }
 
     @Test

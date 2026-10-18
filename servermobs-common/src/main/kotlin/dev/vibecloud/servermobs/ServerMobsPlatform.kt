@@ -10,12 +10,20 @@ import net.kyori.adventure.text.format.NamedTextColor
 import org.bukkit.Location
 import org.bukkit.World
 import org.bukkit.command.CommandSender
+import org.bukkit.entity.Player
 import org.bukkit.plugin.Plugin
 import java.util.UUID
 
 /** A single spawned hologram line; text can be refreshed without recreating the entity. */
 interface Hologram {
     fun update(line: String)
+    fun remove()
+}
+
+/** A server-side floating topper whose client rendering needs no per-tick correction. */
+interface FloatingItem {
+    fun showTo(player: Player)
+    fun hideFrom(player: Player)
     fun remove()
 }
 
@@ -122,14 +130,18 @@ interface ServerMobsPlatform {
     fun spawnHologram(world: World, location: Location, line: String): Hologram
 
     /**
-     * Sends [user] the packets of a client-side **dropped item** entity — the classic hologram
-     * topper. No server entity exists, so there is nothing to pick up, no gravity and no despawn
-     * to fight; the client renders any material as its real item sprite and animates bob + spin
-     * itself. One entity id per topper (allocated by the manager) is reused for every viewer.
+     * Spawns a stable, server-side floating item when the platform supports it. Returning null
+     * keeps the per-viewer packet implementation as a compatibility fallback.
+     */
+    fun spawnFloatingItem(world: World, location: Location, materialSpec: String): FloatingItem? = null
+
+    /**
+     * Sends [user] a client-side **dropped item** entity — the compatibility topper used where
+     * the platform cannot spawn a stable server-side display. Legacy clients may simulate gravity,
+     * so the manager anchors this packet entity while it is visible.
      *
      * [materialSpec] is a lenient Bukkit material name (`diamond_sword`, `diamond`); anything
-     * unknown fails with [IllegalArgumentException] so the caller can warn and skip. The manager
-     * after the NPC spawn for every viewer, and the matching despawn for every removal.
+     * unknown fails with [IllegalArgumentException] so the caller can warn and skip.
      */
     fun sendFloatingItemSpawn(user: User, entityId: Int, x: Double, y: Double, z: Double, materialSpec: String)
 
@@ -137,19 +149,15 @@ interface ServerMobsPlatform {
     fun sendFloatingItemDespawn(user: User, entityId: Int)
 
     /**
-     * Whether toppers fall on the client despite being client-side: every client simulates item
-     * gravity, and the NoGravity metadata flag that (on 1.10+) stops it is not reliable — client
-     * builds have been observed ignoring it for client-side items, so the shared anchor task
-     * stays enabled by default on ALL platforms. The anchor is cheap: one or two small packets
-     * per visible topper every tick.
+     * Whether this platform's packet-based topper needs periodic anchoring. Platforms that
+     * provide a server-side no-gravity display should return false; legacy protocols without a
+     * no-gravity item flag may need the compatibility correction.
      */
     val floatingItemNeedsAnchor: Boolean get() = true
 
     /**
-     * Pins a topper at its configured position (an absolute entity teleport, plus a zeroed
-     * client-side velocity so the simulated motion cannot accumulate between anchors). Called
-     * when [floatingItemNeedsAnchor] is true; [NpcManager][dev.vibecloud.servermobs.NpcManager]'s
-     * anchor task re-sends it every tick for every viewer of the topper.
+     * Pins a packet-based topper at its configured position for legacy protocols that cannot
+     * disable client-side item gravity. Called when [floatingItemNeedsAnchor] is true.
      */
     fun sendFloatingItemAnchor(user: User, entityId: Int, x: Double, y: Double, z: Double) = Unit
 

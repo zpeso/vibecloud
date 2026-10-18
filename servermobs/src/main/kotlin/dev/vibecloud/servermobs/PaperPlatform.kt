@@ -24,6 +24,7 @@ import org.bukkit.Material
 import org.bukkit.World
 import org.bukkit.command.CommandSender
 import org.bukkit.entity.Display
+import org.bukkit.entity.ItemDisplay
 import org.bukkit.entity.TextDisplay
 import org.bukkit.plugin.Plugin
 import java.util.EnumSet
@@ -60,6 +61,34 @@ class PaperPlatform(private val plugin: Plugin) : ServerMobsPlatform {
         return object : Hologram {
             override fun update(line: String) {
                 if (!display.isDead) display.text(mini.deserialize(colorize(line)))
+            }
+
+            override fun remove() {
+                display.remove()
+            }
+        }
+    }
+
+    override fun spawnFloatingItem(world: World, location: Location, materialSpec: String): FloatingItem? {
+        val material = Material.matchMaterial(materialSpec.trim())
+            ?: throw IllegalArgumentException("Unknown material '$materialSpec'")
+        val display = world.spawn(location, ItemDisplay::class.java) { entity ->
+            entity.setItemStack(org.bukkit.inventory.ItemStack(material, 1))
+            entity.setItemDisplayTransform(ItemDisplay.ItemDisplayTransform.GROUND)
+            entity.setBillboard(Display.Billboard.FIXED)
+            entity.setInterpolationDuration(0)
+            entity.setInterpolationDelay(0)
+            entity.setGravity(false)
+            entity.isPersistent = false
+            entity.isInvulnerable = true
+        }
+        return object : FloatingItem {
+            override fun showTo(player: org.bukkit.entity.Player) {
+                player.showEntity(plugin, display)
+            }
+
+            override fun hideFrom(player: org.bukkit.entity.Player) {
+                player.hideEntity(plugin, display)
             }
 
             override fun remove() {
@@ -107,14 +136,9 @@ class PaperPlatform(private val plugin: Plugin) : ServerMobsPlatform {
         user.sendPacket(WrapperPlayServerDestroyEntities(entityId))
     }
 
-    /**
-     * Pins the client-side topper back at its configured spot. Relying on the NoGravity
-     * metadata alone turned out unreliable — clients keep simulating item physics for
-     * client-side entities even with the flag set. So every tick an absolute teleport plus a
-     * zeroed velocity is sent: the one-gravity-step sag between anchors is far below the
-     * item's own bob animation and reads as a steady hover, and on 1.21.2+ PacketEvents
-     * serialises the teleport as the newer Position Sync packet.
-     */
+    /** Legacy packet-only fallback; modern toppers use no-gravity ItemDisplay entities. */
+    override val floatingItemNeedsAnchor: Boolean = false
+
     override fun sendFloatingItemAnchor(user: User, entityId: Int, x: Double, y: Double, z: Double) {
         user.sendPacket(
             WrapperPlayServerEntityTeleport(

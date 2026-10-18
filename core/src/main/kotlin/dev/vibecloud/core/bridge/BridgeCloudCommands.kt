@@ -118,18 +118,20 @@ class BridgeCloudCommands(
             .filter { it.state == ServiceState.RUNNING }
             .sumOf { tracker.playerCount(it.name) }
         buildList {
-            add(header("VibeCloud — $running running, $starting starting, $crashed crashed, $players player(s) online"))
+            add(header("VibeCloud  §8»  Cloud overview"))
+            add("  " + success("[+] $running running") + dim("  ·  ") + warning("[~] $starting starting") + dim("  ·  ") +
+                    error("[!] $crashed crashed"))
+            add("  " + accent("$players players online"))
+            if (groups.isNotEmpty()) add(dim("Groups"))
             groups.forEach { group ->
                 val groupServices = services.filter { it.groupName == group.name }
                 val groupRunning = groupServices.count {
                     it.state == ServiceState.RUNNING || it.state == ServiceState.STARTING
                 }
-                add(
-                    " ${accent(group.name)}" + dim(": ") + success("$groupRunning/${group.desiredRunningServices}") +
-                        dim(" desired · ${groupServices.size}/${group.maxServices} provisioned"),
-                )
+                add("  " + accent(group.name) + dim("  ") + success("$groupRunning/${group.desiredRunningServices} running") +
+                        dim("  ·  ${groupServices.size}/${group.maxServices} provisioned"))
             }
-            if (groups.isEmpty()) add(dim("  No groups configured."))
+            if (groups.isEmpty()) add(dim("No groups configured."))
         }
     }
 
@@ -138,15 +140,15 @@ class BridgeCloudCommands(
         if (groups.isEmpty()) return listOf(dim("No groups configured."))
         val services = runBlocking { services.all() }
         return buildList {
-            add(header("GROUP             TYPE       VERSION                      DESIRED  MAX  SERVICES"))
+            add(header("Groups  §8»  ${groups.size}"))
             groups.forEach { group ->
-                val count = services.count { it.groupName == group.name }
-                add(
-                    accent("%-17s".format(group.name)) + "%-10s ".format(group.type.name) +
-                        "%-28s ".format(group.version) +
-                        "%7d ".format(group.desiredRunningServices) + "%5d ".format(group.maxServices) +
-                        "%8d".format(count),
-                )
+                val groupServices = services.filter { it.groupName == group.name }
+                val running = groupServices.count {
+                    it.state == ServiceState.RUNNING || it.state == ServiceState.STARTING
+                }
+                add("  " + accent("${group.name}") + dim("  ·  ${group.type.name.lowercase()} ${group.version}"))
+                add("    " + success("$running/${group.desiredRunningServices} running") +
+                        dim("  ·  ${groupServices.size} provisioned / ${group.maxServices} max"))
             }
         }
     }
@@ -155,13 +157,11 @@ class BridgeCloudCommands(
         val services = runBlocking { services.all().sortedBy { it.name } }
         if (services.isEmpty()) return listOf(dim("No services provisioned."))
         return buildList {
-            add(header("NAME                 GROUP        STATE       TYPE        PORT"))
+            add(header("Services  §8»  ${services.size}"))
             services.forEach { service ->
-                add(
-                    "%-20s ".format(service.name) + "%-12s ".format(service.groupName) +
-                        stateText(service.state) + "%-11s ".format(service.type.name) +
-                        service.port,
-                )
+                add("  " + stateMarker(service.state) + " " + accent(service.name) +
+                        dim("  ·  ${service.state.name}"))
+                add("    " + dim("Group ") + "§f${service.groupName}" + dim("  ·  ${service.type.name.lowercase()}  ·  port ${service.port}"))
             }
         }
     }
@@ -173,9 +173,9 @@ class BridgeCloudCommands(
         return buildList {
             add(header("Service: ${service.name}"))
             add("  Group: ${service.groupName}")
-            add("  Type/version: ${service.type.name} ${service.version}")
-            add("  State: ${stateText(service.state)}")
-            add("  Port: ${service.port}")
+            add("  Type/version: §f${service.type.name.lowercase()} ${service.version}")
+            add("  State: ${stateMarker(service.state)} ${stateText(service.state)}")
+            add("  Port: §f${service.port}")
             service.lastExitCode?.let { add("  Last exit code: $it") }
             service.lastError?.let { add("  Last error: ${error(it)}") }
         }
@@ -383,15 +383,16 @@ class BridgeCloudCommands(
         val services = runBlocking { services.all().sortedBy { it.name } }
         var total = 0
         val lines = buildList {
-            add(header("Players online"))
+            add(header("Players  §8»  online"))
             services.forEach { service ->
                 val names = if (service.state == ServiceState.RUNNING) tracker.playerNames(service.name) else emptyList()
                 if (names.isNotEmpty()) {
                     total += names.size
-                    add(" ${accent(service.name)}" + dim(" (${names.size}): ") + names.joinToString(", "))
+                    add("  " + accent(service.name) + dim("  ·  ${names.size}: ") + names.joinToString(", "))
                 }
             }
-            if (total == 0) add(dim("  No players online."))
+            if (total == 0) add(dim("No players online."))
+            else add(1, dim("$total player(s) across the network"))
         }
         return lines
     }
@@ -478,16 +479,24 @@ class BridgeCloudCommands(
     private fun header(text: String) = "§e$text"
     private fun accent(text: String) = "§b$text"
     private fun success(text: String) = "§a$text"
+    private fun warning(text: String) = "§e$text"
     private fun error(text: String) = "§c$text"
     private fun dim(text: String) = "§7$text"
 
+    private fun stateMarker(state: ServiceState): String = when (state) {
+        ServiceState.RUNNING -> "§a[+]"
+        ServiceState.STARTING, ServiceState.STOPPING -> "§e[~]"
+        ServiceState.CRASHED -> "§c[!]"
+        else -> "§8[-]"
+    }
+
     private fun stateText(state: ServiceState): String = when (state) {
-        ServiceState.RUNNING -> "§aRUNNING    "
-        ServiceState.CRASHED -> "§cCRASHED    "
-        ServiceState.STARTING -> "§eSTARTING   "
-        ServiceState.STOPPING -> "§eSTOPPING   "
-        ServiceState.STOPPED -> "§7STOPPED    "
-        else -> "§7${state.name}       "
+        ServiceState.RUNNING -> "§aRunning"
+        ServiceState.CRASHED -> "§cCrashed"
+        ServiceState.STARTING -> "§eStarting"
+        ServiceState.STOPPING -> "§eStopping"
+        ServiceState.STOPPED -> "§7Stopped"
+        else -> "§7${state.name.lowercase().replaceFirstChar(Char::uppercase)}"
     }
 
     private companion object {
