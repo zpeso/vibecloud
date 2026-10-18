@@ -7,12 +7,9 @@ import com.github.retrooper.packetevents.protocol.player.TextureProperty
 import com.github.retrooper.packetevents.protocol.player.User
 import com.github.retrooper.packetevents.protocol.player.UserProfile
 import com.github.retrooper.packetevents.protocol.world.Location as PacketLocation
-import com.github.retrooper.packetevents.util.Vector3d
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerDestroyEntities
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityHeadLook
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityMetadata
-import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityTeleport
-import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityVelocity
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfoRemove
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfoUpdate
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfoUpdate.Action
@@ -39,7 +36,6 @@ class PaperPlatform(private val plugin: Plugin) : ServerMobsPlatform {
     private val mini = MiniMessage.miniMessage()
 
     override val defaultTransferChannel: String = "bungeecord:main"
-    override val supportsStableFloatingItem: Boolean = true
 
     override fun message(sender: CommandSender, raw: String) {
         sender.sendMessage(mini.deserialize(colorize(ServerMobsPlatform.PREFIX + raw)))
@@ -97,61 +93,6 @@ class PaperPlatform(private val plugin: Plugin) : ServerMobsPlatform {
                 display.remove()
             }
         }
-    }
-
-    override fun sendFloatingItemSpawn(user: User, entityId: Int, x: Double, y: Double, z: Double, materialSpec: String) {
-        val material = Material.matchMaterial(materialSpec.trim())
-            ?: throw IllegalArgumentException("Unknown material '$materialSpec'")
-        // A client-side dropped item: the client renders the real item sprite (whatever the
-        // material — boots stay boots, a stick stays a stick) and animates bob + spin itself.
-        // No server entity exists, so there is no gravity, no pickup and no 5-minute despawn.
-        val stack = io.github.retrooper.packetevents.util.SpigotConversionUtil
-            .fromBukkitItemStack(org.bukkit.inventory.ItemStack(material, 1))
-        if (stack == null || stack.isEmpty) {
-            throw IllegalArgumentException("Could not convert '$materialSpec' into a client item")
-        }
-        user.sendPacket(
-            WrapperPlayServerSpawnEntity(
-                entityId,
-                UUID.nameUUIDFromBytes(("servermobs-item-$entityId").toByteArray()),
-                EntityTypes.ITEM,
-                PacketLocation(x, y, z, 0f, 0f),
-                0f,
-                0,
-                null,
-            ),
-        )
-        user.sendPacket(
-            WrapperPlayServerEntityMetadata(
-                entityId,
-                listOf(
-                    // Clients simulate item gravity and would let the topper drop to the
-                    // floor — the shared NoGravity flag stops the client-side simulation.
-                    EntityData(NOGRAVITY_METADATA_INDEX, EntityDataTypes.BOOLEAN, true),
-                    EntityData(ITEM_METADATA_INDEX, EntityDataTypes.ITEMSTACK, stack),
-                ),
-            ),
-        )
-    }
-
-    override fun sendFloatingItemDespawn(user: User, entityId: Int) {
-        user.sendPacket(WrapperPlayServerDestroyEntities(entityId))
-    }
-
-    /** Legacy packet-only fallback; modern toppers use no-gravity ItemDisplay entities. */
-    override val floatingItemNeedsAnchor: Boolean = false
-
-    override fun sendFloatingItemAnchor(user: User, entityId: Int, x: Double, y: Double, z: Double) {
-        user.sendPacket(
-            WrapperPlayServerEntityTeleport(
-                entityId,
-                PacketLocation(x, y, z, 0f, 0f),
-                true,
-            ),
-        )
-        user.sendPacket(
-            WrapperPlayServerEntityVelocity(entityId, Vector3d(0.0, 0.0, 0.0)),
-        )
     }
 
     /** Every item material this server knows (cached once); includes modern-only materials. */
@@ -230,16 +171,5 @@ class PaperPlatform(private val plugin: Plugin) : ServerMobsPlatform {
          */
         const val SKIN_PARTS_METADATA_INDEX = 17
 
-        /**
-         * Entity-metadata index of the dropped-item stack for an ITEM entity on 1.21.4: the 8
-         * shared entity fields (0-7) are followed directly by the item stack.
-         */
-        const val ITEM_METADATA_INDEX = 8
-
-        /**
-         * Entity-metadata index of the shared NoGravity flag (a boolean in the base fields,
-         * index 5 since 1.10) — what keeps a client-side item hovering instead of falling.
-         */
-        const val NOGRAVITY_METADATA_INDEX = 5
     }
 }

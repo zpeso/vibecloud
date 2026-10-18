@@ -82,6 +82,8 @@ Permission: `servermobs.admin` (default: op). NPC names allow letters, digits, `
 | `/npc edit <name> hologram set <index> <text|{empty}>` | Replaces one line; `{empty}` makes it blank |
 | `/npc edit <name> hologram remove <index>` | Removes one line |
 | `/npc edit <name> hologram clear` | Removes all lines |
+| `/npc edit <name> hologram item set <material>` | Floats an item above the hologram (e.g. `diamond`, `golden_apple`) |
+| `/npc edit <name> hologram item clear` | Removes the floating item |
 | `/npc edit <name> action add <type> <value>` | Adds a click action (see below) |
 | `/npc edit <name> action remove <index>` | Removes one action |
 | `/npc edit <name> action clear` | Removes all actions |
@@ -173,6 +175,15 @@ NPC's feet. Player-count placeholders update in place every second from the cach
 The modern build uses the server's adventure API (Paper provides it) and `TextDisplay` holograms. The 1.8 build
 bundles its own adventure and falls back to invisible `ArmorStand` holograms, because 1.8 has neither. Behaviour,
 commands, persistence and the MiniMessage formatting are identical; only the shading and the hologram entity differ.
+
+A **floating item** (`hologram item set`) is always a real, gravity-less entity — an `ItemDisplay` on Paper, an
+invisible `ArmorStand` holding the item in its hand on 1.8 — so it stays perfectly still. A dropped-item entity is
+not used anywhere: its bob-and-spin is rendered by the client and cannot be stopped from the server.
+
+**Player collision:** a fake player has no server-side body, so the plugin supplies the hitbox itself. A background
+task checks every tick whether a player overlaps an NPC (0.7 blocks from its centre, up to 1.8 blocks above its
+feet) and pushes them out of the way, increasing the push the deeper the overlap. That covers walking into an NPC,
+being shoved into one and simply standing inside one — no movement needed.
 
 **Skin, nametag and tab list:** the head nametag is hidden with a scoreboard team whose name-tag visibility is
 `NEVER`, so `/npc edit <name> nametag false` works on both builds. The modern build removes the NPC from the tab

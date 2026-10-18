@@ -20,7 +20,11 @@ interface Hologram {
     fun remove()
 }
 
-/** A server-side floating topper whose client rendering needs no per-tick correction. */
+/**
+ * A server-side floating topper. It is always a real, gravity-less entity so the client renders it
+ * exactly where the server put it: client-side dropped items bob and spin on their own and cannot
+ * be pinned by teleport packets.
+ */
 interface FloatingItem {
     fun showTo(player: Player) = Unit
     fun hideFrom(player: Player) = Unit
@@ -129,40 +133,15 @@ interface ServerMobsPlatform {
     /** Spawns one hologram line at [location] and returns a handle to update/remove it. */
     fun spawnHologram(world: World, location: Location, line: String): Hologram
 
-    /** Whether this platform uses a stable server-side floating item instead of packet entities. */
-    val supportsStableFloatingItem: Boolean get() = false
-
     /**
-     * Spawns a stable, server-side floating item when the platform supports it. Returning null
-     * means the topper cannot be displayed; modern platforms must not fall back to a bobbing item.
-     */
-    fun spawnFloatingItem(world: World, location: Location, materialSpec: String): FloatingItem? = null
-
-    /**
-     * Sends [user] a client-side **dropped item** entity — the compatibility topper used where
-     * the platform cannot spawn a stable server-side display. Legacy clients may simulate gravity,
-     * so the manager anchors this packet entity while it is visible.
+     * Spawns a real, gravity-less entity that renders [materialSpec] at [location]. Returning null
+     * means the topper cannot be displayed (the caller warns instead of falling back to a
+     * client-side item, which would bob forever).
      *
      * [materialSpec] is a lenient Bukkit material name (`diamond_sword`, `diamond`); anything
      * unknown fails with [IllegalArgumentException] so the caller can warn and skip.
      */
-    fun sendFloatingItemSpawn(user: User, entityId: Int, x: Double, y: Double, z: Double, materialSpec: String)
-
-    /** Removes a client-side topper previously sent by [sendFloatingItemSpawn]. */
-    fun sendFloatingItemDespawn(user: User, entityId: Int)
-
-    /**
-     * Whether this platform's packet-based topper needs periodic anchoring. Platforms that
-     * provide a server-side no-gravity display should return false; legacy protocols without a
-     * no-gravity item flag may need the compatibility correction.
-     */
-    val floatingItemNeedsAnchor: Boolean get() = true
-
-    /**
-     * Pins a packet-based topper at its configured position for legacy protocols that cannot
-     * disable client-side item gravity. Called when [floatingItemNeedsAnchor] is true.
-     */
-    fun sendFloatingItemAnchor(user: User, entityId: Int, x: Double, y: Double, z: Double) = Unit
+    fun spawnFloatingItem(world: World, location: Location, materialSpec: String): FloatingItem?
 
     /**
      * Material names suggested for `/npc edit <name> hologram item set <Tab>`: every material

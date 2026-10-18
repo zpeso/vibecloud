@@ -43,9 +43,8 @@ class NpcManager(
     private var task: BukkitTask? = null
     private var lookTask: BukkitTask? = null
     private var hologramTask: BukkitTask? = null
-    private var anchorTask: BukkitTask? = null
+    private var collisionTask: BukkitTask? = null
     private var joinListener: org.bukkit.event.Listener? = null
-    private val collisionCooldowns = HashMap<UUID, Long>()
 
     fun enable() {
         reload()
@@ -61,16 +60,16 @@ class NpcManager(
             )
         }
         registerJoinListener()
-        if (platform.floatingItemNeedsAnchor) {
-            // Only legacy packet toppers need correction: modern platforms spawn a server-side
-            // no-gravity display and avoid all periodic teleport packets.
-            anchorTask = Bukkit.getScheduler().runTaskTimer(
-                plugin,
-                Runnable(::anchorFloatingItems),
-                ANCHOR_PERIOD_TICKS,
-                ANCHOR_PERIOD_TICKS,
-            )
-        }
+        // A fake player has no server-side body, so this task is the NPC's hitbox. It polls
+        // instead of reacting to PlayerMoveEvent: that event only fires when a packet arrives
+        // (walking, or just turning the camera), which is why standing still inside an NPC used
+        // to leave the player untouched until they moved the mouse.
+        collisionTask = Bukkit.getScheduler().runTaskTimer(
+            plugin,
+            Runnable(::pushPlayersOutOfNpcs),
+            COLLISION_PERIOD_TICKS,
+            COLLISION_PERIOD_TICKS,
+        )
     }
 
     fun disable() {
@@ -80,8 +79,8 @@ class NpcManager(
         lookTask = null
         hologramTask?.cancel()
         hologramTask = null
-        anchorTask?.cancel()
-        anchorTask = null
+        collisionTask?.cancel()
+        collisionTask = null
         joinListener?.let { listener ->
             org.bukkit.event.HandlerList.unregisterAll(listener)
         }
@@ -94,7 +93,6 @@ class NpcManager(
         npcs.clear()
         byEntityId.clear()
         sent.clear()
-        collisionCooldowns.clear()
     }
 
     /** (Re)loads the NPCs for this server's group, replacing anything currently spawned. */
@@ -106,7 +104,6 @@ class NpcManager(
         npcs.clear()
         byEntityId.clear()
         sent.clear()
-        collisionCooldowns.clear()
         if (config.group.isEmpty()) {
             logger.warning("No group configured; ServerMobs will not load any NPCs (set 'group' in config.yml).")
             return
@@ -233,48 +230,42 @@ class NpcManager(
                     JOIN_REDELIVERY_DELAY_TICKS,
                 )
             }
-
-            @org.bukkit.event.EventHandler(ignoreCancelled = true)
-            fun onMove(event: org.bukkit.event.player.PlayerMoveEvent) {
-                val destination = event.to
-                val player = event.player
-                val now = System.currentTimeMillis()
-                if ((collisionCooldowns[player.uniqueId] ?: 0L) + COLLISION_COOLDOWN_MS > now) return
-                val radiusSquared = NPC_COLLISION_RADIUS * NPC_COLLISION_RADIUS
-                val npc = npcs.values.firstOrNull { candidate ->
-                    val data = candidate.data
-                    if (data.world != destination.world.name || kotlin.math.abs(data.y - destination.y) > NPC_COLLISION_HEIGHT) {
-                        false
-                    } else {
-                        val dx = destination.x - data.x
-                        val dz = destination.z - data.z
-                        dx * dx + dz * dz < radiusSquared
-                    }
-                } ?: return
-
-                val dx = destination.x - npc.data.x
-                val dz = destination.z - npc.data.z
-                val length = kotlin.math.sqrt(dx * dx + dz * dz)
-                val (pushX, pushZ) = if (length > 0.0001) {
-                    dx / length to dz / length
-                } else {
-                    val yaw = Math.toRadians(npc.data.yaw.toDouble())
-                    -kotlin.math.sin(yaw) to kotlin.math.cos(yaw)
-                }
-                val velocity = player.velocity
-                player.velocity = org.bukkit.util.Vector(
-                    pushX * NPC_PUSH_STRENGTH,
-                    velocity.y.coerceAtLeast(NPC_PUSH_UPWARD_SPEED),
-                    pushZ * NPC_PUSH_STRENGTH,
-                )
-                collisionCooldowns[player.uniqueId] = now
-                if (collisionCooldowns.size > COLLISION_CLEANUP_THRESHOLD) {
-                    collisionCooldowns.entries.removeIf { now - it.value > COLLISION_COOLDOWN_MS * 4 }
-                }
-            }
         }
         joinListener = listener
         Bukkit.getPluginManager().registerEvents(listener, plugin)
+    }
+
+    /**
+     * Pushes every player who overlaps an NPC back out of it.
+     *
+     * Runs every tick (main thread) so the NPC behaves like a solid body: walking into one, being
+     * shoved into one, or simply standing inside one — no movement packets required — all get
+     * corrected. The push only overrides the player's horizontal velocity when it is stronger
+     * than the speed they are already leaving with, so walking away is never slowed down, and the
+     * vertical velocity is left untouched so there is no bouncing.
+     */
+    private fun pushPlayersOutOfNpcs() {
+        if (npcs.isEmpty()) return
+        for (player in Bukkit.getOnlinePlayers()) {
+            if (player.isDead || player.gameMode == org.bukkit.GameMode.SPECTATOR) continue
+            val location = player.location
+            val world = location.world.name
+            for (npc in npcs.values) {
+                val data = npc.data
+                if (data.world != world) continue
+                val push = NpcCollision.push(
+                    dx = location.x - data.x,
+                    dz = location.z - data.z,
+                    playerY = location.y,
+                    npcY = data.y,
+                    yaw = data.yaw,
+                ) ?: continue
+                val velocity = player.velocity
+                if (velocity.x * push.x + velocity.z * push.z >= push.speed) break
+                player.velocity = org.bukkit.util.Vector(push.x, velocity.y, push.z)
+                break
+            }
+        }
     }
 
     /**
@@ -338,27 +329,6 @@ class NpcManager(
     }
 
     /**
-     * Corrects legacy packet-based toppers for clients that simulate dropped-item gravity.
-     * Modern Paper displays are real no-gravity entities, so they never enter this task.
-     */
-    private fun anchorFloatingItems() {
-        for ((playerId, names) in sent) {
-            if (names.isEmpty()) continue
-            val player = Bukkit.getPlayer(playerId) ?: continue
-            val user = PacketEvents.getAPI().playerManager.getUser(player) ?: continue
-            val world = player.world
-            for (npc in npcs.values) {
-                if (npc.data.floatingItem.isBlank() || npc.hasServerFloatingItem()) continue
-                if (!names.contains(npc.data.name.lowercase())) continue
-                if (npc.data.world != world.name) continue
-                runCatching {
-                    platform.sendFloatingItemAnchor(user, npc.floatingItemId, npc.data.x, npc.floatingItemY(), npc.data.z)
-                }.onFailure { logger.warning("Could not anchor topper of '${npc.data.name}': ${it.message}") }
-            }
-        }
-    }
-
-    /**
      * Turns every `turn_to_player` NPC's body and head towards the players who can see it. Runs
      * more often than [tick] so the look tracks smoothly; cheap — only the small look packets are
      * sent.
@@ -393,9 +363,6 @@ class NpcManager(
     ) {
         val entityId: Int = SpigotReflectionUtil.generateEntityId()
         val uuid: UUID = UUID.nameUUIDFromBytes(("ServerMobs:" + data.name).toByteArray(Charset.forName("UTF-8")))
-
-        /** Packet entity id used only by the legacy client-side floating-item fallback. */
-        val floatingItemId: Int = SpigotReflectionUtil.generateEntityId()
 
         /** One scoreboard team per NPC (1.8 team names are capped at 16 chars). */
         val nametagTeam: String = "smh" + entityId
@@ -436,24 +403,10 @@ class NpcManager(
             }
             // Hide the floating name via a scoreboard team (works on 1.8 and modern alike).
             if (!data.showNametag) platform.hideNametag(user, nametagTeam, data.name)
-            // Modern platforms use a stable server-side no-gravity display; legacy versions
-            // keep the per-viewer packet entity fallback.
-            val spec = data.floatingItem.trim()
-            if (spec.isNotEmpty() && floatingItem != null) floatingItem?.showTo(player)
-            if (spec.isNotEmpty() && floatingItem == null && !platform.supportsStableFloatingItem) {
-                try {
-                    platform.sendFloatingItemSpawn(
-                        user,
-                        floatingItemId,
-                        data.x,
-                        floatingItemY(),
-                        data.z,
-                        spec,
-                    )
-                } catch (failure: IllegalArgumentException) {
-                    logger.warning("Unknown floating item material '$spec' for NPC '${data.name}'; skipped.")
-                }
-            }
+            // The topper is a real, gravity-less server entity (ItemDisplay on Paper, an
+            // invisible ArmorStand on 1.8), never a client-side dropped item: those are
+            // animated by the client forever and cannot be pinned in place.
+            if (data.floatingItem.isNotBlank()) floatingItem?.showTo(player)
         }
 
         /**
@@ -476,10 +429,7 @@ class NpcManager(
             pendingTablistRemovals.remove(player.uniqueId)
             val user = PacketEvents.getAPI().playerManager.getUser(player) ?: return
             platform.sendNpcDespawn(user, entityId, uuid, data.name)
-            if (data.floatingItem.isNotBlank()) {
-                if (floatingItem != null) floatingItem?.hideFrom(player)
-                else platform.sendFloatingItemDespawn(user, floatingItemId)
-            }
+            if (data.floatingItem.isNotBlank()) floatingItem?.hideFrom(player)
         }
 
         fun despawnAll() {
@@ -513,8 +463,8 @@ class NpcManager(
                         Bukkit.getOnlinePlayers()
                             .filter { it.world.name == data.world && sent[it.uniqueId]?.contains(data.name.lowercase()) == true }
                             .forEach { floatingItem?.showTo(it) }
-                    } else if (platform.supportsStableFloatingItem) {
-                        logger.warning("Could not create stable floating item for NPC '${data.name}'; packet fallback disabled to prevent bobbing.")
+                    } else {
+                        logger.warning("Could not create the floating item for NPC '${data.name}'.")
                     }
                 }.onFailure {
                     logger.warning("Could not spawn floating item '${data.floatingItem}' for NPC '${data.name}': ${it.message}")
@@ -536,8 +486,6 @@ class NpcManager(
             runCatching { floatingItem?.remove() }
             floatingItem = null
         }
-
-        internal fun hasServerFloatingItem(): Boolean = floatingItem != null
 
         fun bukkitLocation(world: World): Location = Location(world, data.x, data.y, data.z)
 
@@ -574,13 +522,7 @@ class NpcManager(
         const val TABLIST_REMOVE_DELAY_TICKS = 2L
         const val JOIN_REDELIVERY_DELAY_TICKS = 60L
         const val UPDATE_REDELIVERY_DELAY_TICKS = 40L
-        const val ANCHOR_PERIOD_TICKS = 1L
-        const val NPC_COLLISION_RADIUS = 2.0
-        const val NPC_COLLISION_HEIGHT = 2.2
-        const val NPC_PUSH_STRENGTH = 0.28
-        const val NPC_PUSH_UPWARD_SPEED = 0.08
-        const val COLLISION_COOLDOWN_MS = 350L
-        const val COLLISION_CLEANUP_THRESHOLD = 1024
+        const val COLLISION_PERIOD_TICKS = 1L
         const val INTERACTION_COOLDOWN_MS = 250L
         const val CLEANUP_THRESHOLD = 2048
         const val NPC_EYE_HEIGHT = 1.62

@@ -6,12 +6,9 @@ import com.github.retrooper.packetevents.protocol.player.GameMode
 import com.github.retrooper.packetevents.protocol.player.TextureProperty
 import com.github.retrooper.packetevents.protocol.player.User
 import com.github.retrooper.packetevents.protocol.player.UserProfile
-import com.github.retrooper.packetevents.util.Vector3d
 import com.github.retrooper.packetevents.protocol.world.Location as PacketLocation
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerDestroyEntities
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityHeadLook
-import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityTeleport
-import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityVelocity
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfo
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfo.PlayerData
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSpawnPlayer
@@ -91,69 +88,34 @@ class SpigotLegacyPlatform(private val plugin: Plugin) : ServerMobsPlatform {
         }
     }
 
-    override fun sendFloatingItemSpawn(user: User, entityId: Int, x: Double, y: Double, z: Double, materialSpec: String) {
+    /**
+     * 1.8 has no display entities, and a dropped-item entity is animated by the client itself
+     * (the classic bob + spin) no matter which packets the server sends — that is the up-and-down
+     * stutter that teleport anchoring could never remove. Its only *static* item renderer is
+     * equipment on an invisible, gravity-less armor stand, which is what this spawns: the item is
+     * held in the hand, so every material keeps its real shape (unlike the old helmet-slot trick
+     * that turned iron boots into a helmet).
+     */
+    override fun spawnFloatingItem(world: World, location: Location, materialSpec: String): FloatingItem? {
         val material = Material.matchMaterial(materialSpec.trim())
-                ?: throw IllegalArgumentException("Unknown material '$materialSpec'")
-        // A client-side dropped item rendered purely from packets: every material shows as its
-        // real item sprite (boots stay boots, sticks and potatoes work like everything else) and
-        // the client animates the bob + spin itself. No server entity exists, so there is no
-        // pickup, no gravity and no despawn to fight. Armor-stand helmet slots were replaced:
-        // they render every item through the head-slot armor model (iron_boots became an iron
-        // HELMET) and showed nothing for non-armor items at all.
-        val stack = io.github.retrooper.packetevents.util.SpigotConversionUtil
-            .fromBukkitItemStack(ItemStack(material, 1))
-                ?: throw IllegalArgumentException("Could not convert '$materialSpec' into a client item")
-        // 1.8's Spawn Object has no meaningful data field for items — the stack arrives through
-        // entity metadata (Slot at index 10), sent right after the spawn in the same burst.
-        user.sendPacket(
-            com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSpawnEntity(
-                entityId,
-                UUID.nameUUIDFromBytes(("servermobs-item-$entityId").toByteArray()),
-                com.github.retrooper.packetevents.protocol.entity.type.EntityTypes.ITEM,
-                PacketLocation(x, y, z, 0f, 0f),
-                0f,
-                0,
-                null,
-            ),
+            ?: throw IllegalArgumentException("Unknown material '$materialSpec'")
+        // A small stand's hand sits a little above its own feet, so the stand is spawned low
+        // enough for the held item to land on the requested spot.
+        val stand = world.spawn(
+            location.clone().add(0.0, TOPPER_HAND_DROP, 0.0),
+            ArmorStand::class.java,
         )
-        user.sendPacket(
-            com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityMetadata(
-                entityId,
-                listOf(
-                    com.github.retrooper.packetevents.protocol.entity.data.EntityData(
-                        ITEM_METADATA_INDEX,
-                        com.github.retrooper.packetevents.protocol.entity.data.EntityDataTypes.ITEMSTACK,
-                        stack,
-                    ),
-                ),
-            ),
-        )
-    }
-
-    override fun sendFloatingItemDespawn(user: User, entityId: Int) {
-        user.sendPacket(WrapperPlayServerDestroyEntities(entityId))
-    }
-
-    /** Every client simulates item gravity — the shared NoGravity flag is not reliable. */
-    override val floatingItemNeedsAnchor: Boolean = true
-
-    override fun sendFloatingItemAnchor(user: User, entityId: Int, x: Double, y: Double, z: Double) {
-        // An absolute teleport pins the client-side item back at its configured spot every
-        // tick (the manager's anchor task) — the same correction the server would send for a
-        // real (gravity-less) entity. The velocity reset matters especially on 1.8: the
-        // teleport packet does NOT reset the client's motion, so without it the simulated fall
-        // keeps accumulating and the topper visibly sags further each anchor cycle. Cheap: two
-        // tiny packets per viewer of the topper.
-        user.sendPacket(
-            WrapperPlayServerEntityTeleport(
-                entityId,
-                PacketLocation(x, y, z, 0f, 0f),
-                true,
-            ),
-        )
-        user.sendPacket(
-            WrapperPlayServerEntityVelocity(entityId, Vector3d(0.0, 0.0, 0.0)),
-        )
+        stand.setGravity(false)
+        stand.isVisible = false
+        stand.setSmall(true)
+        stand.setArms(true)
+        stand.setBasePlate(false)
+        stand.setItemInHand(ItemStack(material, 1))
+        return object : FloatingItem {
+            override fun remove() {
+                stand.remove()
+            }
+        }
     }
 
     /** Every material this 1.8 server knows (cached once), minus air — all render as items. */
@@ -235,10 +197,10 @@ class SpigotLegacyPlatform(private val plugin: Plugin) : ServerMobsPlatform {
         /** How far above a small 1.8 ArmorStand its custom name is drawn. */
         const val ARMORSTAND_LABEL_OFFSET = 1.5
 
+        /** Where a small stand's hand sits relative to its spawn point, so the item lands on spot. */
+        const val TOPPER_HAND_DROP = -0.25
+
         /** 1.8 index of the player "displayed skin parts" byte (and of an item's Slot metadata). */
         const val SKIN_PARTS_METADATA_INDEX = 10
-
-        /** 1.8 index of the dropped-item entity's Slot metadata. */
-        const val ITEM_METADATA_INDEX = 10
     }
 }
