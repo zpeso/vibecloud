@@ -364,6 +364,13 @@ class NpcManager(
         val entityId: Int = SpigotReflectionUtil.generateEntityId()
         val uuid: UUID = UUID.nameUUIDFromBytes(("ServerMobs:" + data.name).toByteArray(Charset.forName("UTF-8")))
 
+        /**
+         * The fake player's profile name. A real Minecraft name is at most 16 characters, and
+         * clients (1.8 especially) are built around that limit, so longer NPC ids are truncated
+         * for the profile only — the id, the file name and `/npc` keep the full name.
+         */
+        val profileName: String = data.name.take(PROFILE_NAME_LENGTH)
+
         /** One scoreboard team per NPC (1.8 team names are capped at 16 chars). */
         val nametagTeam: String = "smh" + entityId
         private val holograms = ArrayList<Hologram>()
@@ -377,7 +384,7 @@ class NpcManager(
                 user,
                 entityId,
                 uuid,
-                data.name,
+                profileName,
                 textureProperties(),
                 data.x,
                 data.y,
@@ -386,6 +393,8 @@ class NpcManager(
                 data.pitch,
                 config.removeFromTablist && !platform.delayedTablistRemoval,
             )
+            // Armour and held items, right after the entity exists for this client.
+            platform.sendEquipment(user, entityId, data.equipment)
             if (config.removeFromTablist && platform.delayedTablistRemoval) {
                 // 1.8 clients need the profile in their player-info cache when the spawn packet
                 // arrives to resolve the skin. Remove it two ticks later; the spawned entity keeps
@@ -398,11 +407,11 @@ class NpcManager(
                     pendingTablistRemovals.remove(player.uniqueId)
                     if (sent[player.uniqueId]?.contains(key) != true) return@Runnable
                     val currentUser = PacketEvents.getAPI().playerManager.getUser(player) ?: return@Runnable
-                    platform.hideNpcFromTablist(currentUser, uuid, data.name)
+                    platform.hideNpcFromTablist(currentUser, uuid, profileName)
                 }, TABLIST_REMOVE_DELAY_TICKS)
             }
             // Hide the floating name via a scoreboard team (works on 1.8 and modern alike).
-            if (!data.showNametag) platform.hideNametag(user, nametagTeam, data.name)
+            if (!data.showNametag) platform.hideNametag(user, nametagTeam, profileName)
             // The topper is a real, gravity-less server entity (ItemDisplay on Paper, an
             // invisible ArmorStand on 1.8), never a client-side dropped item: those are
             // animated by the client forever and cannot be pinned in place.
@@ -428,7 +437,7 @@ class NpcManager(
         fun despawnFor(player: Player) {
             pendingTablistRemovals.remove(player.uniqueId)
             val user = PacketEvents.getAPI().playerManager.getUser(player) ?: return
-            platform.sendNpcDespawn(user, entityId, uuid, data.name)
+            platform.sendNpcDespawn(user, entityId, uuid, profileName)
             if (data.floatingItem.isNotBlank()) floatingItem?.hideFrom(player)
         }
 
@@ -533,5 +542,8 @@ class NpcManager(
         const val INTERACTION_COOLDOWN_MS = 250L
         const val CLEANUP_THRESHOLD = 2048
         const val NPC_EYE_HEIGHT = 1.62
+
+        /** Longest name a Minecraft client accepts in a player profile. */
+        const val PROFILE_NAME_LENGTH = 16
     }
 }

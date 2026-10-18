@@ -3,6 +3,8 @@ package dev.vibecloud.servermobs
 import dev.vibecloud.servermobs.model.NpcAction
 import dev.vibecloud.servermobs.model.NpcActionType
 import dev.vibecloud.servermobs.model.NpcData
+import dev.vibecloud.servermobs.model.NpcEquipment
+import dev.vibecloud.servermobs.model.NpcEquipmentSlot
 import dev.vibecloud.servermobs.model.NpcSkin
 import org.yaml.snakeyaml.DumperOptions
 import org.yaml.snakeyaml.LoaderOptions
@@ -111,6 +113,13 @@ class NpcStore(
         document["actions"] = data.actions.map { action ->
             linkedMapOf<String, Any>("type" to action.type.id, "value" to action.value)
         }
+        // Only configured slots are written, so old definitions stay untouched and a cleared
+        // slot never lingers as an empty key.
+        val equipment = linkedMapOf<String, String>()
+        data.equipment.slots().forEach { (slot, spec) -> equipment[slot.key] = spec }
+        if (equipment.isNotEmpty()) {
+            document["equipment"] = equipment
+        }
         val target = file(data.name)
         val temporary = target.resolveSibling(target.fileName.toString() + ".tmp")
         Files.newBufferedWriter(temporary).use { writer -> dumper.dump(document, writer) }
@@ -152,10 +161,22 @@ class NpcStore(
         }
         val showNametag = (map["show-nametag"] as? Boolean) ?: true
         val turnToPlayer = (map["turn-to-player"] as? Boolean) ?: false
+        val equipment = parseEquipment(map["equipment"])
         return NpcData(
             name, group, world, x, y, z, yaw, pitch, skin, hologram, floatingItem, actions,
-            showNametag, turnToPlayer,
+            showNametag, turnToPlayer, equipment,
         )
+    }
+
+    /** Reads the optional `equipment:` map, ignoring unknown keys and blank values. */
+    private fun parseEquipment(raw: Any?): NpcEquipment {
+        val map = raw as? Map<*, *> ?: return NpcEquipment()
+        var equipment = NpcEquipment()
+        NpcEquipmentSlot.entries.forEach { slot ->
+            val spec = (map[slot.key] as? String)?.trim().orEmpty()
+            if (spec.isNotEmpty()) equipment = equipment.with(slot, spec.uppercase())
+        }
+        return equipment
     }
 
     companion object {

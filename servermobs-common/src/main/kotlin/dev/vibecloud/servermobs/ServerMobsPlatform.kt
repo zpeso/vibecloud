@@ -1,16 +1,24 @@
 package dev.vibecloud.servermobs
 
+import com.github.retrooper.packetevents.protocol.player.Equipment
+import com.github.retrooper.packetevents.protocol.player.EquipmentSlot
 import com.github.retrooper.packetevents.protocol.player.TextureProperty
 import com.github.retrooper.packetevents.protocol.player.User
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityEquipment
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityHeadLook
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityRotation
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerTeams
+import dev.vibecloud.servermobs.model.NpcEquipment
+import dev.vibecloud.servermobs.model.NpcEquipmentSlot
+import io.github.retrooper.packetevents.util.SpigotConversionUtil
 import net.kyori.adventure.text.Component
 import net.kyori.adventure.text.format.NamedTextColor
 import org.bukkit.Location
+import org.bukkit.Material
 import org.bukkit.World
 import org.bukkit.command.CommandSender
 import org.bukkit.entity.Player
+import org.bukkit.inventory.ItemStack
 import org.bukkit.plugin.Plugin
 import java.util.UUID
 
@@ -100,6 +108,16 @@ private fun isHex(value: String): Boolean = value.all {
 }
 
 /**
+ * The material name of [item] (`DIAMOND_HELMET`), or an empty string when the slot is empty.
+ * Only the material is kept: a full item cannot be carried between a 1.8 and a modern server.
+ */
+fun materialName(item: ItemStack?): String {
+    if (item == null) return ""
+    val type = item.type
+    return if (type == Material.AIR) "" else type.name.uppercase()
+}
+
+/**
  * The small surface that differs between the two ServerMobs builds:
  *
  *  - **modern** (Paper 1.21+): the server provides adventure, so text is rendered straight to
@@ -171,6 +189,47 @@ interface ServerMobsPlatform {
     )
 
     /**
+     * Sends [equipment] for the fake player [entityId] to [user] — armour and held items render as
+     * soon as the entity is spawned, so this is called right after [sendNpcSpawn].
+     *
+     * Only configured slots are sent; clearing a slot takes effect through the despawn/respawn an
+     * edit does anyway. Each slot is sent as its own packet: before 1.16 the equipment packet has
+     * room for a single slot, and the wrapper drops every entry after the first, so a list of six
+     * would otherwise equip only the helmet on a 1.8 server.
+     */
+    fun sendEquipment(user: User, entityId: Int, equipment: NpcEquipment) {
+        val entries = ArrayList<Equipment>(EQUIPMENT_SLOTS)
+        for ((slot, spec) in equipment.slots()) {
+            val material = Material.matchMaterial(spec.trim()) ?: continue
+            if (material == Material.AIR) continue
+            entries.add(
+                Equipment(
+                    when (slot) {
+                        NpcEquipmentSlot.HELMET -> EquipmentSlot.HELMET
+                        NpcEquipmentSlot.CHESTPLATE -> EquipmentSlot.CHEST_PLATE
+                        NpcEquipmentSlot.LEGGINGS -> EquipmentSlot.LEGGINGS
+                        NpcEquipmentSlot.BOOTS -> EquipmentSlot.BOOTS
+                        NpcEquipmentSlot.MAIN_HAND -> EquipmentSlot.MAIN_HAND
+                        NpcEquipmentSlot.OFF_HAND -> EquipmentSlot.OFF_HAND
+                    },
+                    SpigotConversionUtil.fromBukkitItemStack(ItemStack(material, 1)),
+                ),
+            )
+        }
+        entries.forEach { entry ->
+            user.sendPacket(WrapperPlayServerEntityEquipment(entityId, listOf(entry)))
+        }
+    }
+
+    /**
+     * What [player] currently wears and holds, as material specs — the source for
+     * `equip copy` and the bare `hand` keyword. Implemented per build because 1.8 has neither
+     * `getItemInMainHand()` nor an off-hand: the legacy build reads `getItemInHand()` instead and
+     * leaves the off-hand slot empty.
+     */
+    fun playerEquipment(player: Player): NpcEquipment
+
+    /**
      * Turns the NPC's whole body **and** head towards [yaw]/[pitch] for [user]. Sending only the
      * head-look packet (as this used to do) left the body facing its spawn direction, which looked
      * like the NPC was turning its neck instead of its body.
@@ -212,6 +271,9 @@ interface ServerMobsPlatform {
 
     companion object {
         const val PREFIX = "<#ed3030>ServerMobs <dark_gray>» <gray>"
+
+        /** Initial capacity for the equipment list: every slot an NPC can wear or hold. */
+        private const val EQUIPMENT_SLOTS = 6
 
         /**
          * The "displayed skin parts" bit mask with every layer enabled: cape (0x01), jacket

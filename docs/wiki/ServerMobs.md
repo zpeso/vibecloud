@@ -40,7 +40,7 @@ that holds `bridge.token`):
 ```
 
 Each file records the NPC **name**, the **group** it was created in, its **location** (world + x/y/z + yaw/pitch),
-its skin, its hologram lines, and its actions. A service of the same group respawns those NPCs on start.
+its skin, its hologram lines, its equipment, and its actions. A service of the same group respawns those NPCs on start.
 
 The default `data-directory` is `../../`. A cloud-managed service runs with `services/<name>/` as its working
 directory, so `../../` is the cloud home. Change it only if you run the server from a different layout.
@@ -84,6 +84,9 @@ Permission: `servermobs.admin` (default: op). NPC names allow letters, digits, `
 | `/npc edit <name> hologram clear` | Removes all lines |
 | `/npc edit <name> hologram item set <material>` | Floats an item above the hologram (e.g. `diamond`, `golden_apple`) |
 | `/npc edit <name> hologram item clear` | Removes the floating item |
+| `/npc edit <name> equip <slot> <material\|hand\|clear>` | Wears/holds an item; `hand` uses the item you are holding |
+| `/npc edit <name> equip copy` | Copies your own armour and held items onto the NPC |
+| `/npc edit <name> equip clear` | Removes every piece of equipment |
 | `/npc edit <name> action add <type> <value>` | Adds a click action (see below) |
 | `/npc edit <name> action remove <index>` | Removes one action |
 | `/npc edit <name> action clear` | Removes all actions |
@@ -98,6 +101,34 @@ Permission: `servermobs.admin` (default: op). NPC names allow letters, digits, `
 | `/npc reload` | Re-reads the definitions from disk |
 
 Tab completion covers subcommands, NPC names, settings and action types.
+
+## Equipment
+
+An NPC can wear armour and hold items in both hands. The slots are `helmet`, `chestplate`,
+`leggings`, `boots`, `mainhand` and `offhand` (aliases: `hat`, `chest`, `legs`, `feet`, `hand`, `shield`).
+
+```text
+/npc edit guard equip helmet diamond_helmet
+/npc edit guard equip chestplate iron_chestplate
+/npc edit guard equip mainhand diamond_sword
+/npc edit guard equip offhand shield
+
+# holding the item is quicker than typing it
+/npc edit guard equip boots hand
+
+# wear exactly what you are wearing right now
+/npc edit guard equip copy
+
+# remove one slot, or everything
+/npc edit guard equip mainhand clear
+/npc edit guard equip clear
+```
+
+Only the **item material** is saved (for example `DIAMOND_HELMET`), not the whole item: one definition
+file is read by both the 1.8 and the modern build, and a full 1.8 item dump (numeric ids, no item
+components) does not translate to a modern server. Enchantments and custom item names are therefore not
+carried over. `equip copy` on 1.8 cannot read an off-hand slot (1.8 has no off-hand inventory API), so
+that slot stays empty — set it explicitly with `equip offhand <material>`.
 
 ## Skins
 
@@ -164,7 +195,7 @@ Example — a "shop" NPC that teleports players to the citybuild server:
 
 | Path | Contents |
 |---|---|
-| `<data-directory>/servermobs/<npc>.yml` | One NPC definition (name, group, location, nametag, turn-to-player, skin, holograms, actions) |
+| `<data-directory>/servermobs/<npc>.yml` | One NPC definition (name, group, location, nametag, turn-to-player, skin, holograms, equipment, actions) |
 
 ## 1.8 vs modern
 

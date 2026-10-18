@@ -50,7 +50,7 @@ data class NpcSkin(val value: String, val signature: String?, val source: String
  * lives.
  *
  * [showNametag] controls the floating name above the NPC's head, [turnToPlayer] makes the NPC's
- * head follow the nearest player.
+ * head follow the nearest player, and [equipment] is the armour and the items it holds.
  */
 data class NpcData(
     val name: String,
@@ -68,6 +68,7 @@ data class NpcData(
     val actions: List<NpcAction> = emptyList(),
     val showNametag: Boolean = true,
     val turnToPlayer: Boolean = false,
+    val equipment: NpcEquipment = NpcEquipment(),
 ) {
     /** Keeps a previously configured skin when an edit submits an older skin-less copy. */
     fun preserveSkinFrom(existing: NpcData): NpcData =

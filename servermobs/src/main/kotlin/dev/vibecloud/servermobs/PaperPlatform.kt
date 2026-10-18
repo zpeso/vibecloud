@@ -15,6 +15,7 @@ import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPl
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfoUpdate.Action
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfoUpdate.PlayerInfo
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSpawnEntity
+import dev.vibecloud.servermobs.model.NpcEquipment
 import net.kyori.adventure.text.minimessage.MiniMessage
 import org.bukkit.Location
 import org.bukkit.Material
@@ -22,6 +23,7 @@ import org.bukkit.World
 import org.bukkit.command.CommandSender
 import org.bukkit.entity.Display
 import org.bukkit.entity.ItemDisplay
+import org.bukkit.entity.Player
 import org.bukkit.entity.TextDisplay
 import org.bukkit.plugin.Plugin
 import java.util.EnumSet
@@ -156,6 +158,19 @@ class PaperPlatform(private val plugin: Plugin) : ServerMobsPlatform {
                 WrapperPlayServerPlayerInfoUpdate(EnumSet.of(Action.UPDATE_LISTED), listOf(hidden)),
             )
         }
+    }
+
+    /** Reads the player's armour and both hands; Paper has the full main/off-hand API. */
+    override fun playerEquipment(player: Player): NpcEquipment {
+        val inventory = player.inventory
+        return NpcEquipment(
+            helmet = materialName(inventory.helmet),
+            chestplate = materialName(inventory.chestplate),
+            leggings = materialName(inventory.leggings),
+            boots = materialName(inventory.boots),
+            mainHand = materialName(inventory.itemInMainHand),
+            offHand = materialName(inventory.itemInOffHand),
+        )
     }
 
     override fun sendNpcDespawn(user: User, entityId: Int, uuid: UUID, name: String) {

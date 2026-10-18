@@ -5,7 +5,10 @@ import dev.vibecloud.servermobs.ServerMobsRuntime
 import dev.vibecloud.servermobs.model.NpcAction
 import dev.vibecloud.servermobs.model.NpcActionType
 import dev.vibecloud.servermobs.model.NpcData
+import dev.vibecloud.servermobs.model.NpcEquipment
+import dev.vibecloud.servermobs.model.NpcEquipmentSlot
 import org.bukkit.Location
+import org.bukkit.Material
 import org.bukkit.command.Command
 import org.bukkit.command.CommandExecutor
 import org.bukkit.command.CommandSender
@@ -19,6 +22,8 @@ import org.bukkit.entity.Player
  * /npc create <name>
  * /npc edit <name> skin <player|url|value[;signature]>
  * /npc edit <name> hologram <add <text>|set <index> <text>|remove <index>|clear>
+ * /npc edit <name> equip <helmet|chestplate|leggings|boots|mainhand|offhand> <material|hand|clear>
+ * /npc edit <name> equip <copy|clear>
  * /npc edit <name> action add <transfer|message|console|player> <value>
  * /npc edit <name> action <remove <index>|clear>
  * /npc edit <name> nametag <true|false>
@@ -105,7 +110,7 @@ class NpcCommand(private val runtime: ServerMobsRuntime) : CommandExecutor, TabC
     private fun edit(sender: CommandSender, args: Array<out String>) {
         val player = requirePlayer(sender) ?: return
         val name = args.getOrNull(1) ?: run {
-            reply(sender, "<red>Usage: /npc edit <name> <skin|hologram|action|move|group> ...")
+            reply(sender, "<red>Usage: /npc edit <name> <skin|hologram|equip|action|move|group> ...")
             return
         }
         val data = manager.get(name) ?: run {
@@ -116,6 +121,7 @@ class NpcCommand(private val runtime: ServerMobsRuntime) : CommandExecutor, TabC
         when (args.getOrNull(2)?.lowercase()) {
             "skin", "skins", "set-skin", "setskin" -> editSkin(sender, data, rest)
             "hologram", "holo" -> editHologram(sender, data, rest)
+            "equip", "equipment", "armor", "armour" -> editEquipment(sender, player, data, rest)
             "action" -> editAction(sender, data, rest)
             "move", "position", "pos" -> {
                 val location = player.location
@@ -139,7 +145,7 @@ class NpcCommand(private val runtime: ServerMobsRuntime) : CommandExecutor, TabC
 
             else -> reply(
                 sender,
-                "<red>Usage: /npc edit <name> <skin|hologram|action|move|group|nametag|turn_to_player> ...",
+                "<red>Usage: /npc edit <name> <skin|hologram|equip|action|move|group|nametag|turn_to_player> ...",
             )
         }
     }
@@ -280,6 +286,96 @@ class NpcCommand(private val runtime: ServerMobsRuntime) : CommandExecutor, TabC
         return if (number in 1..lineCount && internal in 0 until lineCount) internal else -1
     }
 
+    /**
+     * `/npc edit <name> equip <slot> <material|hand|clear>`, `equip copy`, `equip clear`.
+     *
+     * `hand` takes the material of the item the admin is holding, so holding a helmet and running
+     * `/npc edit shop equip helmet hand` is quicker than typing the material name. Only the
+     * material is stored (never the whole item): one definition file is read by both the 1.8 and
+     * the modern build, and a full 1.8 item dump does not translate to a modern server.
+     */
+    private fun editEquipment(sender: CommandSender, player: Player, data: NpcData, rest: List<String>) {
+        when (rest.getOrNull(0)?.lowercase()) {
+            null -> equipUsage(sender)
+
+            "clear", "reset", "none", "off" -> {
+                if (data.equipment.isEmpty()) {
+                    reply(sender, "<gray>NPC '<white>${data.name}</white>' is not wearing anything.")
+                    return
+                }
+                manager.update(data.copy(equipment = NpcEquipment()))
+                reply(sender, "<green>Removed all equipment from '<white>${data.name}</white>'.")
+            }
+
+            "copy" -> {
+                val equipment = runtime.platform.playerEquipment(player)
+                if (equipment.isEmpty()) {
+                    reply(sender, "<red>You are not wearing or holding anything to copy.")
+                    return
+                }
+                manager.update(data.copy(equipment = equipment))
+                reply(
+                    sender,
+                    "<green>Copied your equipment onto '<white>${data.name}</white>': <white>${equipment.summary()}</white>.",
+                )
+            }
+
+            else -> editEquipmentSlot(sender, player, data, rest)
+        }
+    }
+
+    private fun editEquipmentSlot(sender: CommandSender, player: Player, data: NpcData, rest: List<String>) {
+        val slot = NpcEquipmentSlot.parse(rest.getOrNull(0).orEmpty())
+        if (slot == null) {
+            equipUsage(sender)
+            return
+        }
+        val raw = rest.drop(1).joinToString(" ").trim()
+        if (raw.isEmpty()) {
+            reply(sender, "<red>Usage: /npc edit <name> equip ${slot.id} <material|hand|clear>")
+            return
+        }
+        val spec = when {
+            raw.equals("clear", true) || raw.equals("none", true) || raw.equals("off", true) -> ""
+
+            raw.equals("hand", true) || raw.equals("held", true) || raw.equals("helditem", true) -> {
+                val held = runtime.platform.playerEquipment(player).mainHand
+                if (held.isEmpty()) {
+                    reply(sender, "<red>You are not holding an item.")
+                    return
+                }
+                held
+            }
+
+            else -> {
+                val material = Material.matchMaterial(raw)
+                if (material == null || material == Material.AIR) {
+                    reply(
+                        sender,
+                        "<red>Unknown item '<white>$raw</white>'. Use a material name " +
+                                "(e.g. <white>diamond_helmet</white>) or hold the item and use <white>hand</white>.",
+                    )
+                    return
+                }
+                material.name.uppercase()
+            }
+        }
+        manager.update(data.copy(equipment = data.equipment.with(slot, spec)))
+        if (spec.isEmpty()) {
+            reply(sender, "<green>Removed the ${slot.label} from '<white>${data.name}</white>'.")
+        } else {
+            reply(sender, "<green>Set the ${slot.label} of '<white>${data.name}</white>' to '<white>$spec</white>'.")
+        }
+    }
+
+    private fun equipUsage(sender: CommandSender) {
+        reply(
+            sender,
+            "<red>Usage: /npc edit <name> equip <helmet|chestplate|leggings|boots|mainhand|offhand> <material|hand|clear>",
+        )
+        reply(sender, "<gray>       /npc edit <name> equip copy<gray> (copy your own armour) or <white>equip clear")
+    }
+
     /** `/npc edit <name> hologram item set <material>` / `item clear` — a floating item topper. */
     private fun editFloatingItem(sender: CommandSender, data: NpcData, rest: List<String>) {
         when (rest.getOrNull(0)?.lowercase()) {
@@ -383,6 +479,10 @@ class NpcCommand(private val runtime: ServerMobsRuntime) : CommandExecutor, TabC
         if (data.floatingItem.isNotBlank()) {
             line(sender, " <dark_gray>floating item: <white>${data.floatingItem}")
         }
+        NpcEquipmentSlot.entries.forEach { slot ->
+            val spec = data.equipment.item(slot)
+            if (spec.isNotBlank()) line(sender, " <dark_gray>equip[${slot.id}]: <white>$spec")
+        }
         // Visual order: line 1 is the TOP of the hologram (matches set/remove numbering).
         for (internalIndex in data.hologram.indices.reversed()) {
             val number = data.hologram.size - internalIndex
@@ -426,6 +526,9 @@ class NpcCommand(private val runtime: ServerMobsRuntime) : CommandExecutor, TabC
             "    <gray>add puts the new line BELOW the others; set/remove count from the top (1 = top)</gray>",
             "$label edit <name> hologram item set <material>",
             "    <gray>floating item topper above the hologram; 'item clear' removes it</gray>",
+            "$label edit <name> equip <helmet|chestplate|leggings|boots|mainhand|offhand> <material|hand|clear>",
+            "    <gray>armour and held items; 'hand' uses the item you are holding</gray>",
+            "$label edit <name> equip copy<gray> | <white>equip clear",
             "    <gray>Use {empty} for a blank line; &4, §4 and MiniMessage colours work</gray>",
             "$label edit <name> action add <transfer|message|console|player> <value>",
             "    <gray>player = run the command as the clicking player</gray>",
@@ -460,7 +563,7 @@ class NpcCommand(private val runtime: ServerMobsRuntime) : CommandExecutor, TabC
             1 -> listOf("create", "edit", "remove", "list", "info", "tp", "reload", "help")
             2 -> if (isNameArgument(args[0])) manager.all().map { it.name } else emptyList()
             3 -> if (args[0].equals("edit", true)) {
-                listOf("skin", "hologram", "action", "move", "group", "nametag", "turn_to_player")
+                listOf("skin", "hologram", "equip", "action", "move", "group", "nametag", "turn_to_player")
             } else {
                 emptyList()
             }
@@ -468,6 +571,8 @@ class NpcCommand(private val runtime: ServerMobsRuntime) : CommandExecutor, TabC
             4 -> if (args[0].equals("edit", true)) {
                 when (args[2].lowercase()) {
                     "hologram", "holo" -> listOf("add", "set", "remove", "item", "clear")
+                    "equip", "equipment", "armor", "armour" ->
+                        NpcEquipmentSlot.NAMES + listOf("copy", "clear")
                     "action" -> listOf("add", "remove", "clear")
                     "nametag", "name-tag", "nt", "turn_to_player", "turn-to-player", "look", "turn" ->
                         listOf("true", "false")
@@ -482,6 +587,13 @@ class NpcCommand(private val runtime: ServerMobsRuntime) : CommandExecutor, TabC
             } else {
                 when (args[2].lowercase()) {
                     "action" -> NpcActionType.NAMES
+                    "equip", "equipment", "armor", "armour" ->
+                        if (NpcEquipmentSlot.parse(args[3]) != null) {
+                            listOf("hand", "clear") + runtime.platform.floatingItemSuggestions()
+                        } else {
+                            emptyList()
+                        }
+
                     "hologram", "holo" -> if (args[3].equals("item", true)) {
                         listOf("set", "clear")
                     } else {

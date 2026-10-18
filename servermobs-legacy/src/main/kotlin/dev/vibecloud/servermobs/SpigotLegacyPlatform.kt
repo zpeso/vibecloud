@@ -17,6 +17,7 @@ import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPl
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSetPassengers
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSpawnEntity
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSpawnPlayer
+import dev.vibecloud.servermobs.model.NpcEquipment
 import io.github.retrooper.packetevents.util.SpigotConversionUtil
 import io.github.retrooper.packetevents.util.SpigotReflectionUtil
 import net.kyori.adventure.text.minimessage.MiniMessage
@@ -218,6 +219,24 @@ class SpigotLegacyPlatform(private val plugin: Plugin) : ServerMobsPlatform {
         user.sendPacket(WrapperPlayServerEntityHeadLook(entityId, yaw))
         // NPCManager sends REMOVE_PLAYER two ticks later. That brief delay allows the 1.8 client
         // to receive the profile and begin resolving the skin before the tab entry is removed.
+    }
+
+    /**
+     * Reads the player's armour and held item. 1.8 has no off-hand (`getItemInOffHand` and
+     * `getItemInMainHand` do not exist before 1.9), so the main hand comes from `getItemInHand`
+     * and the off-hand slot is left empty.
+     */
+    override fun playerEquipment(player: Player): NpcEquipment {
+        val inventory = player.inventory
+        val armor = inventory.armorContents
+        return NpcEquipment(
+            helmet = materialName(armor?.getOrNull(3)),
+            chestplate = materialName(armor?.getOrNull(2)),
+            leggings = materialName(armor?.getOrNull(1)),
+            boots = materialName(armor?.getOrNull(0)),
+            mainHand = materialName(inventory.itemInHand),
+            offHand = "",
+        )
     }
 
     override fun hideNpcFromTablist(user: User, uuid: UUID, name: String) {

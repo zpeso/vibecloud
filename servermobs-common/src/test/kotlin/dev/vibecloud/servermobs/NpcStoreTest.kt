@@ -3,6 +3,7 @@ package dev.vibecloud.servermobs
 import dev.vibecloud.servermobs.model.NpcAction
 import dev.vibecloud.servermobs.model.NpcActionType
 import dev.vibecloud.servermobs.model.NpcData
+import dev.vibecloud.servermobs.model.NpcEquipment
 import dev.vibecloud.servermobs.model.NpcSkin
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
@@ -74,6 +75,53 @@ class NpcStoreTest {
         // The key is omitted entirely when unset, keeping old definitions unchanged.
         val raw = java.nio.file.Files.readString(directory.resolve("plain.yml"))
         assertFalse(raw.contains("floating-item"))
+    }
+
+    @Test
+    fun `round trips equipment and omits the section when unset`() {
+        val equipped = sample("guard", "lobby").copy(
+            equipment = NpcEquipment(
+                helmet = "DIAMOND_HELMET",
+                chestplate = "IRON_CHESTPLATE",
+                leggings = "CHAINMAIL_LEGGINGS",
+                boots = "LEATHER_BOOTS",
+                mainHand = "IRON_SWORD",
+                offHand = "SHIELD",
+            ),
+        )
+        store.save(equipped)
+        assertEquals(equipped, assertNotNull(store.find("guard")))
+
+        store.save(sample("unequipped", "lobby"))
+        assertEquals(NpcEquipment(), assertNotNull(store.find("unequipped")).equipment)
+        // The key is omitted entirely when unset, keeping old definitions unchanged.
+        val raw = Files.readString(directory.resolve("unequipped.yml"))
+        assertFalse(raw.contains("equipment"))
+    }
+
+    @Test
+    fun `reads hand-written equipment and ignores unknown slots`() {
+        Files.createDirectories(directory)
+        Files.writeString(
+            directory.resolve("handwritten.yml"),
+            """
+            name: handwritten
+            group: lobby
+            world: world
+            x: 0
+            y: 64
+            z: 0
+            equipment:
+              helmet: diamond_helmet
+              main-hand: iron_sword
+              backpack: diamond
+            """.trimIndent(),
+        )
+
+        val loaded = assertNotNull(store.find("handwritten"))
+        assertEquals("DIAMOND_HELMET", loaded.equipment.helmet)
+        assertEquals("IRON_SWORD", loaded.equipment.mainHand)
+        assertEquals("", loaded.equipment.offHand)
     }
 
     @Test
