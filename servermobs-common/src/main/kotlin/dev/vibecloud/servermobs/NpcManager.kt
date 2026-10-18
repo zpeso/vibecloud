@@ -348,7 +348,7 @@ class NpcManager(
             val user = PacketEvents.getAPI().playerManager.getUser(player) ?: continue
             val world = player.world
             for (npc in npcs.values) {
-                if (npc.data.floatingItem.isBlank()) continue
+                if (npc.data.floatingItem.isBlank() || npc.hasServerFloatingItem()) continue
                 if (!names.contains(npc.data.name.lowercase())) continue
                 if (npc.data.world != world.name) continue
                 runCatching {
@@ -440,7 +440,7 @@ class NpcManager(
             // keep the per-viewer packet entity fallback.
             val spec = data.floatingItem.trim()
             if (spec.isNotEmpty() && floatingItem != null) floatingItem?.showTo(player)
-            if (spec.isNotEmpty() && floatingItem == null) {
+            if (spec.isNotEmpty() && floatingItem == null && !platform.supportsStableFloatingItem) {
                 try {
                     platform.sendFloatingItemSpawn(
                         user,
@@ -513,6 +513,8 @@ class NpcManager(
                         Bukkit.getOnlinePlayers()
                             .filter { it.world.name == data.world && sent[it.uniqueId]?.contains(data.name.lowercase()) == true }
                             .forEach { floatingItem?.showTo(it) }
+                    } else if (platform.supportsStableFloatingItem) {
+                        logger.warning("Could not create stable floating item for NPC '${data.name}'; packet fallback disabled to prevent bobbing.")
                     }
                 }.onFailure {
                     logger.warning("Could not spawn floating item '${data.floatingItem}' for NPC '${data.name}': ${it.message}")
@@ -534,6 +536,8 @@ class NpcManager(
             runCatching { floatingItem?.remove() }
             floatingItem = null
         }
+
+        internal fun hasServerFloatingItem(): Boolean = floatingItem != null
 
         fun bukkitLocation(world: World): Location = Location(world, data.x, data.y, data.z)
 
@@ -571,7 +575,7 @@ class NpcManager(
         const val JOIN_REDELIVERY_DELAY_TICKS = 60L
         const val UPDATE_REDELIVERY_DELAY_TICKS = 40L
         const val ANCHOR_PERIOD_TICKS = 1L
-        const val NPC_COLLISION_RADIUS = 0.72
+        const val NPC_COLLISION_RADIUS = 2.0
         const val NPC_COLLISION_HEIGHT = 2.2
         const val NPC_PUSH_STRENGTH = 0.28
         const val NPC_PUSH_UPWARD_SPEED = 0.08

@@ -39,6 +39,7 @@ class PaperPlatform(private val plugin: Plugin) : ServerMobsPlatform {
     private val mini = MiniMessage.miniMessage()
 
     override val defaultTransferChannel: String = "bungeecord:main"
+    override val supportsStableFloatingItem: Boolean = true
 
     override fun message(sender: CommandSender, raw: String) {
         sender.sendMessage(mini.deserialize(colorize(ServerMobsPlatform.PREFIX + raw)))
@@ -78,6 +79,7 @@ class PaperPlatform(private val plugin: Plugin) : ServerMobsPlatform {
             entity.setBillboard(Display.Billboard.FIXED)
             entity.setInterpolationDuration(0)
             entity.setInterpolationDelay(0)
+            entity.teleportDuration = 0
             entity.setGravity(false)
             entity.isPersistent = false
             entity.isInvulnerable = true

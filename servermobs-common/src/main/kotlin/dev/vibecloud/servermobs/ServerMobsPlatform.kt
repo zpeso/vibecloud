@@ -22,8 +22,8 @@ interface Hologram {
 
 /** A server-side floating topper whose client rendering needs no per-tick correction. */
 interface FloatingItem {
-    fun showTo(player: Player)
-    fun hideFrom(player: Player)
+    fun showTo(player: Player) = Unit
+    fun hideFrom(player: Player) = Unit
     fun remove()
 }
 
@@ -129,9 +129,12 @@ interface ServerMobsPlatform {
     /** Spawns one hologram line at [location] and returns a handle to update/remove it. */
     fun spawnHologram(world: World, location: Location, line: String): Hologram
 
+    /** Whether this platform uses a stable server-side floating item instead of packet entities. */
+    val supportsStableFloatingItem: Boolean get() = false
+
     /**
      * Spawns a stable, server-side floating item when the platform supports it. Returning null
-     * keeps the per-viewer packet implementation as a compatibility fallback.
+     * means the topper cannot be displayed; modern platforms must not fall back to a bobbing item.
      */
     fun spawnFloatingItem(world: World, location: Location, materialSpec: String): FloatingItem? = null
 
