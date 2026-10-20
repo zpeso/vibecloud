@@ -16,7 +16,8 @@ class PaperAdapter : ServerAdapter {
         configureProperties(
             directory.resolve("server.properties"),
             service.port,
-            disableOnlineMode = forwarding != null
+            disableOnlineMode = forwarding != null,
+            disableNativeTransport = ServerVersionProfiles.profile(service.version).requiresNativeTransportDisabled,
         )
         writeEula(directory.resolve("eula.txt"), eulaAccepted)
         configureSpigotBungeeForwarding(
@@ -48,7 +49,8 @@ class SpigotAdapter : ServerAdapter {
         configureProperties(
             directory.resolve("server.properties"),
             service.port,
-            disableOnlineMode = forwarding != null
+            disableOnlineMode = forwarding != null,
+            disableNativeTransport = ServerVersionProfiles.profile(service.version).requiresNativeTransportDisabled,
         )
         writeEula(directory.resolve("eula.txt"), eulaAccepted)
         configureSpigotBungeeForwarding(
@@ -161,34 +163,37 @@ private fun javaCommand(
     addAll(extraServerArgs)
 }
 
-private fun configureProperties(file: Path, port: Int, disableOnlineMode: Boolean) {
+private fun configureProperties(
+    file: Path,
+    port: Int,
+    disableOnlineMode: Boolean,
+    disableNativeTransport: Boolean = false,
+) {
+    // Legacy Paper (pre-1.12) cannot start with Netty's native epoll transport on current Linux hosts.
+    val managed = buildMap {
+        put("server-port", port.toString())
+        if (disableOnlineMode) put("online-mode", "false")
+        if (disableNativeTransport) put("use-native-transport", "false")
+    }
     if (!Files.exists(file)) {
-        val properties = "#Minecraft server properties\nserver-port=$port\n"
-        val withOnlineMode = if (disableOnlineMode) properties + "online-mode=false\n" else properties
-        Files.writeString(file, withOnlineMode, StandardCharsets.UTF_8)
+        Files.writeString(
+            file,
+            "#Minecraft server properties\n" + managed.entries.joinToString("\n") { "${it.key}=${it.value}" } + "\n",
+            StandardCharsets.UTF_8,
+        )
         return
     }
     val lines = Files.readAllLines(file, StandardCharsets.UTF_8).toMutableList()
-    var foundPort = false
-    var foundOnlineMode = false
-    val updated = lines.map { line ->
-        when {
-            line.startsWith("server-port=") -> {
-                foundPort = true
-                "server-port=$port"
-            }
-
-            line.startsWith("online-mode=") && disableOnlineMode -> {
-                foundOnlineMode = true
-                "online-mode=false"
-            }
-
-            else -> line
+    val seen = mutableSetOf<String>()
+    for (index in lines.indices) {
+        val key = lines[index].substringBefore('=', "").trim()
+        if (key in managed && '=' in lines[index]) {
+            seen += key
+            lines[index] = "$key=${managed[key]}"
         }
-    }.toMutableList()
-    if (!foundPort) updated += "server-port=$port"
-    if (disableOnlineMode && !foundOnlineMode) updated += "online-mode=false"
-    Files.write(file, updated, StandardCharsets.UTF_8)
+    }
+    managed.forEach { (key, value) -> if (key !in seen) lines += "$key=$value" }
+    Files.write(file, lines, StandardCharsets.UTF_8)
 }
 
 private fun writeEula(file: Path, accepted: Boolean) {

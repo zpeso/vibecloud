@@ -41,4 +41,5 @@ These shared folders are merged during provisioning and when a static service re
 services are re-provisioned from all applicable layers on each start. The cloud assigns a unique listen port in
 Paper/Spigot `server.properties`, Velocity `bind`, and the first Bungee-compatible `host` listener. Paper/Spigot
 templates may omit `server.properties`; one is created. Existing worlds and service files stay with the service, not
-the shared template.
+the shared template. Pre-1.12 builds (Paper/Spigot 1.8) always get `use-native-transport=false` written for them —
+their bundled Netty epoll transport cannot boot on current hosts — so no `every_server` override is needed.

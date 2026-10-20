@@ -12,6 +12,8 @@ import dev.vibecloud.api.service.Service
  * - Velocity modern forwarding only works on 1.13+; older releases only understand BungeeCord-style
  *   (legacy) IP forwarding.
  * - Releases before 1.17 usually need an older JVM, configurable via `runtime.legacy-java-command`.
+ * - Releases before 1.12 ship a Netty native transport (epoll) that Paper 1.8 cannot initialise on
+ *   modern Linux hosts, so `server.properties` must carry `use-native-transport=false`.
  */
 object ServerVersionProfiles {
     private val VERSION = Regex("""\d+\.\d+""")
@@ -19,6 +21,7 @@ object ServerVersionProfiles {
     private val MODERN_FORWARDING_MIN = McVersion(1, 13)
     private val MODERN_LAUNCH_ARGS_MIN = McVersion(1, 14)
     private val MODERN_JAVA_MIN = McVersion(1, 17)
+    private val NATIVE_TRANSPORT_MIN = McVersion(1, 12)
 
     /** Behavior switches derived from a server's Minecraft version. */
     data class Profile(
@@ -26,6 +29,7 @@ object ServerVersionProfiles {
         val supportsModernForwarding: Boolean,
         val legacyConsole: Boolean,
         val usesLegacyJava: Boolean,
+        val requiresNativeTransportDisabled: Boolean,
     ) {
         /** Console arguments understood by this release generation. */
         fun launchArgs(): List<String> = if (legacyConsole) listOf("--nojline") else listOf("--nogui")
@@ -38,6 +42,8 @@ object ServerVersionProfiles {
             supportsModernForwarding = parsed == null || parsed >= MODERN_FORWARDING_MIN,
             legacyConsole = parsed != null && parsed < MODERN_LAUNCH_ARGS_MIN,
             usesLegacyJava = parsed != null && parsed < MODERN_JAVA_MIN,
+            // Paper 1.8.8 crashes on boot with the bundled epoll transport; 1.12 made it optional-safe.
+            requiresNativeTransportDisabled = parsed != null && parsed < NATIVE_TRANSPORT_MIN,
         )
     }
 

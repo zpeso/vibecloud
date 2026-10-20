@@ -19,6 +19,7 @@ class ServerVersionProfilesTest {
         assertEquals(listOf("--nojline"), profile.launchArgs())
         assertTrue(!profile.supportsModernForwarding)
         assertTrue(profile.usesLegacyJava)
+        assertTrue(profile.requiresNativeTransportDisabled)
         assertEquals(ServerVersionProfiles.McVersion(1, 8), profile.minecraftVersion)
     }
 
@@ -28,6 +29,7 @@ class ServerVersionProfilesTest {
         assertEquals(listOf("--nogui"), profile.launchArgs())
         assertTrue(profile.supportsModernForwarding)
         assertTrue(!profile.usesLegacyJava)
+        assertTrue(!profile.requiresNativeTransportDisabled)
     }
 
     @Test
@@ -82,6 +84,51 @@ class ServerVersionProfilesTest {
     }
 
     @Test
+    fun `native transport is only disabled for pre-1-12 releases`() {
+        val root = Files.createTempDirectory("native-transport-test")
+        try {
+            fun configure(name: String, version: String): String {
+                val directory = root.resolve(name).also { Files.createDirectories(it) }
+                // Template-supplied properties may already pin use-native-transport=true.
+                Files.writeString(
+                    directory.resolve("server.properties"),
+                    "#Minecraft server properties\nserver-port=1\nuse-native-transport=true\nmax-players=20\n",
+                )
+                val service = Service(
+                    id = "id",
+                    name = name,
+                    groupName = "group",
+                    type = ServerType.PAPER,
+                    version = version,
+                    state = ServiceState.CREATED,
+                    port = 25569,
+                    directory = directory,
+                    createdAt = Instant.now(),
+                    updatedAt = Instant.now(),
+                )
+                PaperAdapter().configure(
+                    service,
+                    directory,
+                    eulaAccepted = true,
+                    forwarding = ProxyForwarding(ProxyForwarding.Mode.BUNGEECORD_LEGACY, "secret"),
+                )
+                return Files.readString(directory.resolve("server.properties"))
+            }
+
+            val legacy = configure("legacy-1", "paper-1.8.8-445")
+            assertTrue(legacy.contains("use-native-transport=false"))
+            assertTrue(!legacy.contains("use-native-transport=true"))
+            assertTrue(legacy.contains("max-players=20"), "unrelated properties are preserved")
+
+            // Modern releases are never rewritten: the key is left exactly as the operator set it.
+            val modern = configure("modern-1", "paper-26.2-129")
+            assertTrue(modern.contains("use-native-transport=true"))
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
     fun `legacy forwarding enables bungeecord setting in spigot config`() {
         val root = Files.createTempDirectory("legacy-forwarding-test")
         try {
@@ -112,6 +159,10 @@ class ServerVersionProfilesTest {
             )
             val properties = Files.readString(directory.resolve("server.properties"))
             assertTrue(properties.contains("online-mode=false"))
+            assertTrue(
+                properties.contains("use-native-transport=false"),
+                "Paper 1.8.8 cannot boot with Netty's native epoll transport"
+            )
             assertTrue(
                 !Files.exists(directory.resolve("config/paper-global.yml")),
                 "no modern forwarding file for legacy mode"

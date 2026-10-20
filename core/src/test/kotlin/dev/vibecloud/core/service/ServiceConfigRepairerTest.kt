@@ -33,12 +33,12 @@ class ServiceConfigRepairerTest {
         override fun log(level: LogLevel, message: String, cause: Throwable?) = Unit
     }
 
-    private fun paperService(directory: Path, port: Int = 25567) = Service(
+    private fun paperService(directory: Path, port: Int = 25567, version: String = "test") = Service(
         id = "id",
         name = "citybuild-1",
         groupName = "citybuild",
         type = ServerType.PAPER,
-        version = "test",
+        version = version,
         state = ServiceState.STOPPED,
         port = port,
         directory = directory,
@@ -124,6 +124,41 @@ class ServiceConfigRepairerTest {
             assertTrue(properties.contains("max-players=20"), "unrelated properties are preserved")
             assertTrue(Files.readString(serviceDirectory.resolve("eula.txt")).contains("eula=true"))
             assertTrue(Files.readString(serviceDirectory.resolve("config/paper-global.yml")).contains("enabled: true"))
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `legacy 1-8 backend gets native transport disabled but modern ones do not`() = runBlocking {
+        val root = Files.createTempDirectory("repair-native-transport-test")
+        try {
+            val legacy = root.resolve("services/legacy-1").also { Files.createDirectories(it) }
+            Files.writeString(
+                legacy.resolve("server.properties"),
+                "#Minecraft server properties\nserver-port=12345\nuse-native-transport=true\nmax-players=20\n",
+            )
+            val modern = root.resolve("services/citybuild-1").also { Files.createDirectories(it) }
+            Files.writeString(modern.resolve("server.properties"), "#Minecraft server properties\nserver-port=12346\n")
+            val repairer = ServiceConfigRepairer(
+                defaultServerAdapters(),
+                runtime,
+                SilentLogger(),
+            ) { ProxyForwarding(ProxyForwarding.Mode.VELOCITY_MODERN, "secret") }
+
+            repairer.repairAll(
+                listOf(
+                    paperService(legacy, port = 25568, version = "paper-1.8.8-445"),
+                    paperService(modern, port = 25567, version = "paper-1.20.4-499"),
+                ),
+            )
+
+            val legacyProperties = Files.readString(legacy.resolve("server.properties"))
+            assertTrue(legacyProperties.contains("use-native-transport=false"))
+            assertFalse(legacyProperties.contains("use-native-transport=true"))
+            assertTrue(legacyProperties.contains("max-players=20"), "unrelated properties are preserved")
+            val modernProperties = Files.readString(modern.resolve("server.properties"))
+            assertFalse(modernProperties.contains("use-native-transport"), "modern releases keep Netty native transport")
         } finally {
             root.toFile().deleteRecursively()
         }

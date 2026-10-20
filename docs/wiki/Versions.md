@@ -36,6 +36,8 @@ The controller picks launch behavior per server version automatically — you on
 | pre-1.17 (legacy) | 8 – 16 | `runtime.legacy-java-command` (falls back to `java-command` when unset) |
 
 - Pre-1.14 builds do not understand `--nogui`; the cloud launches them with `--nojline` automatically.
+- Pre-1.12 builds (Paper/Spigot 1.8) cannot initialise Netty's native transport on current hosts, so
+  `use-native-transport=false` is written to their `server.properties` automatically — no `every_server` override needed.
 - Run the controller itself on Java 25 regardless — legacy services get the configured legacy binary instead.
 
 ## Forwarding modes (Velocity)

@@ -6,6 +6,7 @@ import dev.vibecloud.common.logging.Logger
 import dev.vibecloud.core.proxy.VelocityConfigNormalizer
 import dev.vibecloud.core.server.ProxyForwarding
 import dev.vibecloud.core.server.ServerAdapterRegistry
+import dev.vibecloud.core.server.ServerVersionProfiles
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.nio.charset.StandardCharsets
@@ -42,7 +43,14 @@ internal class ServiceConfigRepairer(
             dev.vibecloud.api.server.ServerType.PAPER,
             dev.vibecloud.api.server.ServerType.SPIGOT,
                 -> {
-                configureProperties(directory.resolve("server.properties"), service.port, forwarding != null)
+                configureProperties(
+                    directory.resolve("server.properties"),
+                    service.port,
+                    proxyPresent = forwarding != null,
+                    // Paper 1.8.8 cannot boot with the bundled Netty epoll transport.
+                    disableNativeTransport =
+                        ServerVersionProfiles.profile(service.version).requiresNativeTransportDisabled,
+                )
                 writeEula(directory.resolve("eula.txt"), runtime.minecraftEulaAccepted)
                 if (forwarding != null) {
                     when (forwarding.mode) {
@@ -96,10 +104,16 @@ internal class ServiceConfigRepairer(
         )
     }
 
-    private fun configureProperties(file: Path, port: Int, proxyPresent: Boolean) {
+    private fun configureProperties(
+        file: Path,
+        port: Int,
+        proxyPresent: Boolean,
+        disableNativeTransport: Boolean = false,
+    ) {
         val desired = buildMap {
             put("server-port", port.toString())
             if (proxyPresent) put("online-mode", "false")
+            if (disableNativeTransport) put("use-native-transport", "false")
         }
         if (!Files.exists(file)) {
             Files.writeString(
