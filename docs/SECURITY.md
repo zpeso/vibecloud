@@ -1,173 +1,108 @@
 # VibeCloud security model
 
-This document describes how the bridge + dashboard authenticate, what is trusted, and how to
-deploy VibeCloud for **remote browser access over HTTPS**. It reflects the implementation as of
-0.5.2; anything that depends on your deployment is called out explicitly.
+This document describes what is trusted, how the Redis bridge authenticates, and how to deploy VibeCloud safely.
+Anything that depends on your deployment is called out explicitly.
 
 ## Architecture overview
 
 ```
-Team browser ──HTTPS/TLS──► Reverse proxy (Caddy / nginx / Traefik)
-                                │ HTTP, private network / localhost
-                                ▼
-                     VibeCloud bridge (127.0.0.1:25580 by default)
-                                ▲
-                     Minecraft agents (Bearer token, LAN only)
+              VibeCloud controller (localhost)
+                 │  ▲
+      commands,  │  │  heartbeats, answers
+      status     ▼  │
+            ┌────────────┐
+            │   Redis    │◀──── agent plugins inside the backend servers
+            └────────────┘
+                 ▲
+                 │  status document (vibecloud:status)
+             your plugins / scripts
 ```
 
-- The bridge binds to `127.0.0.1` by default. Remote access = TLS reverse proxy in front.
-- Binding `0.0.0.0` is supported (direct LAN access with bearer auth) but a reverse proxy is the
-  recommended production topology; do not expose the bridge port to the Internet directly.
+- Redis is a **trusted component** of the network: it carries the controller's commands and every agent's roster.
+- The default URL is `redis://127.0.0.1:6379`, and that is the recommended deployment: a loopback Redis that only
+  local processes can reach. If you already run Redis for other plugins, give VibeCloud its own database
+  (`redis://127.0.0.1:6379/3`) or namespace and protect it with `requirepass`.
+- There is **no HTTP server and no dashboard**. Browsers are not part of the trust model.
 
 ## Authentication
 
-Two credential types, both resolved server-side before any processing (`BridgeHttpServer.authorize`):
+One shared secret, `bridge.token`, generated at first start next to `config.yml` (32 bytes of `SecureRandom`, file
+mode `0600`, gitignored). It is written into every service's `plugins/VibeCloud/agent.properties` and embedded in
+every bridge message:
 
-1. **`Authorization: Bearer <token>`** — used by the Minecraft agents and API clients. The token is
-   generated at first start into `bridge.token` (32 bytes of `SecureRandom`, file mode `0600`,
-   never committed — see `.gitignore`).
-2. **Dashboard session cookie** (`vibecloud_session`) — browsers log in at
-   `POST /bridge/dashboard/login` by submitting the bridge token once; the server returns an
-   `HttpOnly; SameSite=Strict` cookie (plus `Secure` when the request arrived over forwarded
-   HTTPS). Sessions are random 256-bit ids, stored server-side **hashed (SHA-256)**, expire after
-   12 hours, and are revoked by `POST /bridge/dashboard/logout` or a cloud restart. The raw token
-   is never stored in the browser.
+- **Agent → controller** (`vibecloud:heartbeat`, `vibecloud:cloud` results): the controller validates the token
+  before touching any state; wrong or missing tokens are ignored.
+- **Controller/SDK → agents** (`vibecloud:actions`, `vibecloud:commands:<service>`): agents validate the token
+  before executing anything; a forged message without the token does nothing.
+- **Reading `vibecloud:status`** needs no token — anyone who can reach Redis can read the network state. Keep Redis
+  on loopback (or password-protected) and treat read access as access to player names, addresses and server state.
 
-The session cookie is a convenience wrapper around the one shared bridge token — it is **not** a
-per-user account. Everyone who can log in holds full administrative power (see below). Revoke
-exposure by rotating `bridge.token` (delete the file, restart the cloud, redistribute to agents).
-
-The old `?token=...` query-string fallback was **removed** (URLs leak into proxy/access logs).
-
-### CSRF
-
-Cookie-authenticated state-changing requests must send `X-Requested-With: XMLHttpRequest`;
-cross-site form posts cannot set custom headers, so this blocks CSRF. Bearer-token clients are
-CSRF-immune by construction (no ambient credential) and are not affected.
+The token is not a per-user account: every holder has full administrative power (start/stop services, run console
+commands, kick/transfer players). Rotate it by deleting `bridge.token`, restarting the controller, and restarting
+the backend services so they receive the new file.
 
 ## Authorization
 
-There is **one** administrative credential. It intentionally grants full control: cloud commands,
-service start/stop/restart, console commands, player kick/transfer. There are no roles; do not
-share the token with people who should only *see* the dashboard.
+There is **one** administrative credential, and it deliberately grants full control. There are no roles and no
+per-user audit trail. Do not share it with people who should only read state — for read-only access, create a
+separate Redis user (Redis 6+ ACLs) that is allowed `GET vibecloud:status` and nothing else.
 
 ## Command execution model (no shell)
 
-- All server processes launch via `ProcessBuilder(list)` with structured arguments — no `sh -c`,
-  no string concatenation into a shell anywhere in the codebase.
-- Console/cloud commands are written to the **stdin** of the target Minecraft process, which is
-  the intended administrative semantic — the Minecraft server parses them as commands, not as
-  shell input. There is no path for dashboard input to reach an OS shell.
-- Server-side caps: ≤32 cloud args × 200 chars, console command ≤256 chars, player name ≤16,
-  kick reason ≤200, request body ≤64 KiB, explicit action allowlists.
+- All server processes launch via `ProcessBuilder(list)` with structured arguments — no `sh -c`, no string
+  concatenation into a shell anywhere in the codebase.
+- Console/cloud commands are written to the **stdin** of the target Minecraft process, which is the intended
+  administrative semantic — the Minecraft server parses them as commands, not as shell input.
+- Server-side caps: ≤32 cloud args × 200 chars, console command ≤256 chars, player name ≤16, kick reason ≤200,
+  permission node ≤128.
+- Agents execute player actions on the Bukkit **main thread** only, and only for players who are online locally.
 
-## Endpoint inventory & protections
+## Redis exposure
 
-| Endpoint | Auth | Extra protections |
+| Setup | Risk | Recommendation |
 |---|---|---|
-| `GET /` | public | static shell, no data, CSP, no-store |
-| `GET /assets/app.css`, `/assets/app.js` | public | static same-origin assets, no data, CSP, no-store |
-| `POST /bridge/dashboard/login` | token check | rate limited (10/min/IP), constant-time compare |
-| `POST /bridge/dashboard/logout` | session | CSRF header required |
-| `GET /bridge/status`, `/bridge/services` | bearer or session | — |
-| `GET /bridge/metrics` | bearer or session | — |
-| `GET /bridge/host` | bearer or session | — |
-| `GET /bridge/activity` | bearer or session | — |
-| `GET /bridge/console?service=` | bearer or session | name length cap |
-| `POST /bridge/heartbeat` | bearer (agents) | body cap, unknown-service 404 |
-| `POST /bridge/players` | bearer or session | CSRF, rate limit, action allowlist, caps |
-| `POST /bridge/services/command` | bearer or session | CSRF, rate limit, action allowlist, caps |
-| `POST /bridge/cloud` | bearer or session | CSRF, rate limit, arg caps, validation before execution |
+| `redis://127.0.0.1:6379` (default) | Local processes only | Recommended |
+| `redis://:password@127.0.0.1:6379/2` | Local, password-protected | Good on shared machines |
+| `rediss://host:port` | Remote Redis, TLS | Use only on a private network with ACLs |
+| `redis://0.0.0.0:6379` without `requirepass` | Anyone can read player data and publish commands | Never |
 
-Every response carries: `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`,
-`X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, and a `Content-Security-Policy`
-(`default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline';
-img-src 'self' https://mc-heads.net; connect-src 'self'; frame-ancestors 'none';
-base-uri 'none'; form-action 'self'`). The dashboard ships as external same-origin assets, so
-scripts — the actual XSS vector — are locked to `'self'` with no `'unsafe-inline'`; styles keep it
-(the UI sets inline style attributes dynamically, and CSS cannot execute script in modern
-browsers). `Strict-Transport-Security` is emitted only when the request arrived with
-`X-Forwarded-Proto: https` (i.e. behind your TLS proxy).
+VibeCloud never listens on a socket itself. If Redis is remote, put it behind a private network, enable TLS
+(`rediss://`), and restrict which keys/clients can reach it. The status document is not secret in the sense of
+credentials, but it contains player names and /24-style addresses reported by the agents.
 
-In release builds the dashboard script (`app.js`) is minified and identifier-mangled with terser
-before packaging (development builds keep the readable source). This is lightweight obfuscation
-for code hygiene — **not** a security boundary: the script still runs client-side and anything it
-can do is governed by the session/token model above.
+Set Redis itself to reject remote access:
 
-Errors are generic (`400/401/403/404/429/500` JSON); unexpected exceptions are logged server-side
-and answered with a body-less-detail 500 — no stack traces, paths, or configuration leak.
-Unknown URL paths fall through to the public dashboard shell only.
+```conf
+# /etc/redis/redis.conf
+bind 127.0.0.1 -::1
+protected-mode yes
+requirepass <a long random password>
+```
 
-## Trusted proxy / forwarded headers
-
-The bridge reads `X-Forwarded-Proto` for two things only: emitting HSTS and the cookie `Secure`
-flag. It never derives authorization from headers. Both features activate only when the header
-says `https` — a client spoofing the header on plain HTTP gains nothing (it just gets HSTS/Secure
-flags, which its browser ignores over http). Do not let untrusted clients reach the bridge with
-spoofed `X-Forwarded-*` headers *and* terminate TLS for them; your proxy should overwrite these
-headers (Caddy and nginx do by default).
-
-## Rate limiting
-
-In-memory, per client IP, sliding window: 10 failed auths (bearer or login) per 60s → further
-logins/auth from that IP get `429`; state-changing command endpoints cap at 120/min/IP. Read-only
-dashboard polling is never limited. Limits reset on restart.
+and give VibeCloud the password in `config.yml`: `redis: { url: "redis://:password@127.0.0.1:6379/0" }`.
 
 ## Logging & secrets
 
-- Tokens are never logged. Bridge request logs contain no Authorization headers or query strings
-  with tokens (query tokens are rejected outright).
+- Tokens are never logged; agent heartbeats are processed without their token in any log line.
 - `bridge.token`, `forwarding.secret`, `config.yml` are gitignored.
-- Your **reverse proxy's** access logs are outside VibeCloud's control: configure them to not log
-  request bodies (they don't by default) — tokens only ever travel in headers or the login body.
+- Player inspection data (world, coordinates, address) travels through Redis and is visible to anyone with read
+  access to the instance.
 
-## Deployment: HTTPS for remote access
+## Failure behavior
 
-Caddy (simplest, automatic certificates):
-
-```
-vibecloud.example.com {
-    reverse_proxy 127.0.0.1:25580
-}
-```
-
-nginx (manual certificates):
-
-```nginx
-server {
-    listen 443 ssl;
-    server_name vibecloud.example.com;
-    ssl_certificate     /etc/letsencrypt/live/vibecloud.example.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/vibecloud.example.com/privkey.pem;
-    location / {
-        proxy_pass http://127.0.0.1:25580;
-        proxy_set_header X-Forwarded-Proto https;
-        proxy_set_header X-Forwarded-For $remote_addr;
-    }
-}
-```
-
-Checklist:
-
-1. Keep `bridge.bind-address: "127.0.0.1"` — the proxy talks to it over loopback.
-2. Open only TCP 443 publicly; keep 25580 off the firewall (`ufw deny 25580` or your cloud
-   provider's security group).
-3. The dashboard is then reachable at `https://vibecloud.example.com/` for every team member;
-   they each paste the shared token once at login (exchanged for a personal HttpOnly session).
-4. If you must access without a proxy, prefer an SSH tunnel (`ssh -L 25580:127.0.0.1:25580 host`)
-   rather than binding `0.0.0.0` over plain HTTP. If you do bind `0.0.0.0`, restrict 25580 to your
-   LAN with a firewall and remember the connection is **not encrypted** — bearer tokens over
-   plain HTTP across the Internet are trivially interceptable.
+- Redis unreachable at startup: the controller logs one clear error and keeps retrying; services still run, but no
+  roster/命令 traffic flows and SDK reads fail until Redis returns.
+- An agent whose heartbeat is older than `bridge.offline-timeout-seconds` is treated as offline and its roster is
+  cleared.
+- If the controller restarts, the in-memory command queue is empty — commands are delivered through Redis lists, so
+  nothing that was queued is lost.
 
 ## Known limitations / residual risks
 
-- **Single shared administrative credential.** No per-user accounts, no roles, no audit trail of
-  who did what (only IP-level rate limiting). Treat the token as a team password; rotate it when
-  a team member leaves.
-- Sessions are in-memory: a cloud restart logs dashboard users out (agents are unaffected).
-- CSP allows `img-src https://mc-heads.net` — the players page sends player names to that CDN to
-  render avatar heads. Remove that `img-src` entry and self-host heads if this is unacceptable.
-- No HTTP-level integration tests behind an actual TLS proxy; HSTS/`Secure` behavior is covered
-  by unit tests with synthetic `X-Forwarded-Proto` headers only.
-- Rate limits are per-IP and in-memory: distributed guessing or proxies that aggregate many users
-  behind one IP can trip the limit for everyone (fail closed, 429, retry in a minute).
+- **Single shared administrative credential.** No per-user accounts, no roles, no audit trail.
+- **Redis is trusted.** A compromised Redis can issue arbitrary console commands to every server that runs the
+  agent. Protect the instance as you would protect the controller's own process.
+- **No encryption on loopback.** Plain `redis://` on `127.0.0.1` is unencrypted; use `rediss://` when Redis is not
+  on the same host.
+- **No rate limiting at the transport level.** A plugin with the token can publish as fast as Redis accepts; the
+  controller and agents process messages in order.

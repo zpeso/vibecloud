@@ -10,9 +10,9 @@ import java.util.Properties
 
 /**
  * Installs the bridge agent into provisioned backend services:
- *  - copies the agent plugin jar into `plugins/` (kept up to date by size compare),
- *  - writes `plugins/VibeCloud/agent.properties` with cloud URL, service identity, token,
- *    the advertised host, and the ports of running services (for player transfers).
+ *  - copies the agent plugin jar into `plugins/` (kept up to date by content compare),
+ *  - writes `plugins/VibeCloud/agent.properties` with the Redis URL, service identity and the
+ *    shared bridge token.
  *
  * Proxies are skipped: they route players but do not host them. The agent jar is resolved from
  * `bridge.agent-jar` when set, otherwise from the distribution layout (`lib/` or `agent/` next to
@@ -21,8 +21,8 @@ import java.util.Properties
 class BridgeAgentInstaller(
     private val settings: BridgeSettings,
     private val tokenStore: BridgeTokenStore,
-    /** Resolves the URL agents should report to, or null when the bridge is unavailable. */
-    private val cloudUrl: () -> String?,
+    /** Resolves the Redis URL agents should report to, or null when the bridge is unavailable. */
+    private val redisUrl: () -> String?,
     private val agentJarResolver: () -> Path?,
     private val logger: Logger,
 ) {
@@ -37,8 +37,8 @@ class BridgeAgentInstaller(
     }
 
     private fun installInternal(service: Service) {
-        val url = cloudUrl() ?: run {
-            logger.debug("Bridge endpoint is unavailable; skipping agent installation for ${service.name}")
+        val url = redisUrl() ?: run {
+            logger.debug("The bridge is unavailable; skipping agent installation for ${service.name}")
             return
         }
         val agentJar = agentJarResolver()
@@ -66,7 +66,7 @@ class BridgeAgentInstaller(
         val configDirectory = pluginsDirectory.resolve("VibeCloud")
         Files.createDirectories(configDirectory)
         val properties = Properties().apply {
-            setProperty("cloud-url", url)
+            setProperty("redis-url", url)
             setProperty("service-id", service.id)
             setProperty("service-name", service.name)
             setProperty("group-name", service.groupName)

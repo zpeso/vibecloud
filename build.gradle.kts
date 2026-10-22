@@ -38,7 +38,7 @@ subprojects {
                     description.set(
                         when (project.name) {
                             "api" -> "Public models, manager interfaces and lifecycle events for embedding VibeCloud"
-                            "bridge" -> "VibeCloud SDK for Minecraft plugins: the VibeCloud facade and bridge HTTP client"
+                            "bridge" -> "VibeCloud SDK for Minecraft plugins: the VibeCloud facade and Redis bridge transport"
                             else -> "VibeCloud — a single-node Minecraft cloud controller"
                         },
                     )

@@ -1,12 +1,13 @@
 package dev.vibecloud.api.bridge
 
+import dev.vibecloud.transport.MiniJson
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-class VibeCloudClientParserTest {
+class CloudStatusParserTest {
     @Test
     fun `status document is parsed into totals and services`() {
         val json = """

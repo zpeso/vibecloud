@@ -29,7 +29,7 @@ class BridgeCloudCommandsTest {
     private class Fixture(
         val services: FakeServiceManager,
         val commands: BridgeCloudCommands,
-        val queue: BridgeCommandQueue,
+        val sink: RecordingCommandSink,
         val tracker: ServicePlayerTracker,
     )
 
@@ -39,19 +39,19 @@ class BridgeCloudCommandsTest {
     ): Fixture {
         val serviceManager = FakeServiceManager(*services)
         val tracker = ServicePlayerTracker()
-        val queue = BridgeCommandQueue()
+        val sink = RecordingCommandSink()
         val consoleWrites = mutableListOf<Pair<String, String>>()
         val commands = BridgeCloudCommands(
             services = serviceManager,
             groups = FakeGroupManager(*groups.toTypedArray()),
             tracker = tracker,
-            commandQueue = queue,
+            commands = sink,
             sendConsoleCommand = { name, command ->
                 consoleWrites += name to command
                 true
             },
         )
-        return Fixture(serviceManager, commands, queue, tracker)
+        return Fixture(serviceManager, commands, sink, tracker)
     }
 
     private fun running(name: String, group: String, type: ServerType = ServerType.PAPER, port: Int = 25566) =
@@ -143,7 +143,7 @@ class BridgeCloudCommandsTest {
 
         val lines = f.commands.execute(listOf("msg", "Steve", "hello", "world"))
         assertTrue(lines.single().contains("sent"), lines.joinToString())
-        val queued = f.queue.drain("id-lobby-1")
+        val queued = f.sink.drain("lobby-1")
         assertEquals(1, queued.size)
         assertEquals("message", queued.single().type)
         assertEquals("Steve", queued.single().playerName)
@@ -155,7 +155,7 @@ class BridgeCloudCommandsTest {
         val f = fixture(running("lobby-1", "lobby"))
         val lines = f.commands.execute(listOf("cmd", "lobby-1", "say", "hi"))
         assertTrue(lines.single().contains("Command sent"), lines.joinToString())
-        val queued = f.queue.drain("id-lobby-1")
+        val queued = f.sink.drain("lobby-1")
         assertEquals(1, queued.size)
         assertEquals("command", queued.single().type)
         assertEquals("say hi", queued.single().payload["command"])
@@ -297,7 +297,7 @@ class BridgeCloudCommandsTest {
             services = services,
             groups = FakeGroupManager(group("lobby")),
             tracker = ServicePlayerTracker(),
-            commandQueue = BridgeCommandQueue(),
+            commands = RecordingCommandSink(),
             sendConsoleCommand = { _, _ -> true },
         )
 

@@ -47,7 +47,7 @@ object Cli {
 
     fun screenPrompt(serviceName: String): String = paint(CYAN, "◇ ") + bold(CYAN, serviceName) + dim(" ❯ ")
 
-    /** Rounded info box in the dashboard's card style: violet → sky gradient header. */
+    /** Rounded info box with a violet → sky gradient header. */
     fun banner(version: String?): List<String> {
         val v = if (version.isNullOrBlank() || version == "0.0.0") "" else " $version"
         return listOf(

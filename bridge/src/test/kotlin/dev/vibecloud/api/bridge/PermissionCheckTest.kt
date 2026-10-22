@@ -1,133 +1,145 @@
 package dev.vibecloud.api.bridge
 
-import com.sun.net.httpserver.HttpExchange
-import com.sun.net.httpserver.HttpServer
+import dev.vibecloud.transport.BridgeProtocol
+import dev.vibecloud.transport.InMemoryRedisGateway
 import java.io.IOException
-import java.net.InetSocketAddress
-import java.nio.charset.StandardCharsets
-import java.util.concurrent.CopyOnWriteArrayList
+import java.time.Duration
 import java.util.concurrent.ExecutionException
-import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /**
- * Permission checks are a queued question: the cloud forwards the node to the player's server,
- * the agent answers on its next heartbeat, and the SDK polls for the result. The call itself must
- * return immediately (it is called from server main threads) and the answer must reach the
- * returned future.
+ * Permission checks are a question for the player's own server: the SDK publishes the node, the
+ * agent that hosts the player evaluates it on its main thread and pushes the answer, and the
+ * caller gets it back through a one-shot Redis list.
  */
 class PermissionCheckTest {
 
     @Test
-    fun `permission checks are queued and polled without blocking the caller`() {
-        val requests = CopyOnWriteArrayList<String>()
-        val polls = AtomicInteger()
-        val server = startBridge(
-            onPlayerAction = { exchange, form ->
-                requests.add(form)
-                respond(exchange, 202, """{"queued":true,"request-id":"req-1"}""")
-            },
-            onPermissionPoll = { exchange ->
-                // The first poll lands before the agent's heartbeat answered; the second one
-                // sees the evaluated result.
-                if (polls.incrementAndGet() == 1) {
-                    respond(exchange, 202, """{"state":"pending","player":"Steve","node":"group.moderator"}""")
-                } else {
-                    respond(exchange, 200, """{"state":"granted","player":"Steve","node":"group.moderator"}""")
-                }
-            },
-        )
+    fun `granted nodes answer true and carry the node to the agent`() {
+        val redis = InMemoryRedisGateway()
+        redis.publishStatus(statusJson())
+        val requests = mutableListOf<Pair<String, String>>()
+        startPermissionAgent(redis) { player, node ->
+            requests += player to node
+            BridgeProtocol.RESULT_GRANTED
+        }
         try {
-            val cloud = connect(server)
-            val player = CloudPlayer(cloud, "Steve", "lobby-1", "lobby", PlayerDetail(name = "Steve"))
-
-            val started = System.nanoTime()
-            val future = player.hasPermission("group.moderator")
-            val elapsedMs = (System.nanoTime() - started) / 1_000_000
-
-            assertTrue(elapsedMs < 1_000, "hasPermission() blocked for ${elapsedMs}ms")
-            assertEquals(true, future.get(5, TimeUnit.SECONDS))
-            assertEquals("player=Steve&action=permission&node=group.moderator", requests.single())
-            assertTrue(polls.get() >= 2, "the SDK must poll until the agent answered")
+            val cloud = testCloud(redis)
+            val player = cloud.players().findByName("Steve")!!
+            assertEquals(true, player.hasPermission("group.moderator"))
+            assertEquals(listOf("Steve" to "group.moderator"), requests)
         } finally {
-            server.stop(0)
+            redis.close()
         }
     }
 
     @Test
     fun `denied nodes answer false`() {
-        val server = startBridge(
-            onPlayerAction = { exchange, _ -> respond(exchange, 202, """{"queued":true,"request-id":"req-2"}""") },
-            onPermissionPoll = { exchange -> respond(exchange, 200, """{"state":"denied"}""") },
-        )
+        val redis = InMemoryRedisGateway()
+        redis.publishStatus(statusJson())
+        startPermissionAgent(redis) { _, _ -> BridgeProtocol.RESULT_DENIED }
         try {
-            val cloud = connect(server)
-            assertEquals(false, cloud.players().hasPermission("Steve", "group.admin").get(5, TimeUnit.SECONDS))
+            assertEquals(false, testCloud(redis).players().hasPermission("Steve", "group.admin"))
         } finally {
-            server.stop(0)
+            redis.close()
         }
     }
 
     @Test
-    fun `expired checks and invalid nodes fail loudly`() {
-        val server = startBridge(
-            onPlayerAction = { exchange, _ -> respond(exchange, 202, """{"queued":true,"request-id":"req-3"}""") },
-            onPermissionPoll = { exchange ->
-                respond(exchange, 404, """{"error":"unknown or expired permission request"}""")
-            },
-        )
+    fun `an agent that reports the player offline fails with CloudPlayerNotFoundException`() {
+        val redis = InMemoryRedisGateway()
+        redis.publishStatus(statusJson())
+        startPermissionAgent(redis) { _, _ -> BridgeProtocol.RESULT_OFFLINE }
         try {
-            val cloud = connect(server)
-            val player = CloudPlayer(cloud, "Steve", "lobby-1", "lobby")
-            val failure = assertFailsWith<ExecutionException> {
-                cloud.players().hasPermission(player, "group.moderator").get(5, TimeUnit.SECONDS)
+            assertFailsWith<CloudPlayerNotFoundException> {
+                testCloud(redis).players().hasPermission("Steve", "group.moderator")
             }
-            assertTrue(failure.cause is IOException, "expected an IOException, got ${failure.cause}")
-            assertTrue(failure.cause!!.message.orEmpty().contains("404"), failure.cause!!.message.orEmpty())
-
-            assertFailsWith<IllegalArgumentException> { player.hasPermission("  ") }
         } finally {
-            server.stop(0)
+            redis.close()
         }
     }
 
-    private fun startBridge(
-        onPlayerAction: (HttpExchange, String) -> Unit,
-        onPermissionPoll: (HttpExchange) -> Unit,
-    ): HttpServer {
-        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
-        server.executor = Executors.newFixedThreadPool(2) { runnable ->
-            Thread(runnable, "test-bridge").apply { isDaemon = true }
+    @Test
+    fun `evaluation errors surface as IOException`() {
+        val redis = InMemoryRedisGateway()
+        redis.publishStatus(statusJson())
+        startPermissionAgent(redis) { _, _ -> BridgeProtocol.RESULT_ERROR_PREFIX + "provider exploded" }
+        try {
+            val failure = assertFailsWith<IOException> {
+                testCloud(redis).players().hasPermission("Steve", "group.moderator")
+            }
+            assertTrue(failure.message.orEmpty().contains("provider exploded"), failure.message.orEmpty())
+        } finally {
+            redis.close()
         }
-        server.createContext("/bridge/status") { exchange ->
-            exchange.sendResponseHeaders(204, -1)
-            exchange.close()
-        }
-        server.createContext("/bridge/players/permission") { exchange ->
-            onPermissionPoll(exchange)
-            exchange.close()
-        }
-        server.createContext("/bridge/players") { exchange ->
-            onPlayerAction(exchange, exchange.requestBody.readBytes().toString(StandardCharsets.UTF_8))
-            exchange.close()
-        }
-        server.start()
-        return server
     }
 
-    private fun connect(server: HttpServer): VibeCloud = VibeCloud.connect { builder ->
-        builder.baseUrl("http://127.0.0.1:${server.address.port}").token("test-token")
+    @Test
+    fun `a missing player fails fast instead of waiting for an answer`() {
+        val redis = InMemoryRedisGateway()
+        redis.publishStatus(statusJson())
+        try {
+            val started = System.nanoTime()
+            assertFailsWith<CloudPlayerNotFoundException> {
+                testCloud(redis, timeout = Duration.ofSeconds(10)).players().hasPermission("Ghost", "group.admin")
+            }
+            val elapsedMs = (System.nanoTime() - started) / 1_000_000
+            assertTrue(elapsedMs < 2_000, "offline players must not wait for the timeout (waited ${elapsedMs}ms)")
+        } finally {
+            redis.close()
+        }
     }
 
-    private fun respond(exchange: HttpExchange, status: Int, body: String) {
-        val bytes = body.toByteArray(StandardCharsets.UTF_8)
-        exchange.responseHeaders.add("Content-Type", "application/json")
-        exchange.sendResponseHeaders(status, bytes.size.toLong())
-        exchange.responseBody.use { it.write(bytes) }
+    @Test
+    fun `an unanswered check times out with a diagnostic`() {
+        val redis = InMemoryRedisGateway()
+        redis.publishStatus(statusJson())
+        try {
+            val failure = assertFailsWith<IOException> {
+                testCloud(redis, timeout = Duration.ofSeconds(1)).players().hasPermission("Steve", "group.admin")
+            }
+            assertTrue(failure.message.orEmpty().contains("Timed out"), failure.message.orEmpty())
+        } finally {
+            redis.close()
+        }
+    }
+
+    @Test
+    fun `the async variant never blocks the caller`() {
+        val redis = InMemoryRedisGateway()
+        redis.publishStatus(statusJson())
+        startPermissionAgent(redis, delayMillis = 400) { _, _ -> BridgeProtocol.RESULT_GRANTED }
+        try {
+            val cloud = testCloud(redis, timeout = Duration.ofSeconds(5))
+            val player = cloud.players().findByName("Steve")!!
+            val started = System.nanoTime()
+            val future = player.hasPermissionAsync("group.moderator")
+            val elapsedMs = (System.nanoTime() - started) / 1_000_000
+
+            assertTrue(elapsedMs < 200, "hasPermissionAsync() blocked for ${elapsedMs}ms")
+            assertEquals(true, future.get(5, TimeUnit.SECONDS))
+        } finally {
+            redis.close()
+        }
+    }
+
+    @Test
+    fun `invalid nodes are rejected before touching Redis`() {
+        val redis = InMemoryRedisGateway()
+        redis.publishStatus(statusJson())
+        try {
+            val cloud = testCloud(redis)
+            assertFailsWith<IllegalArgumentException> { cloud.players().hasPermission("Steve", "  ") }
+            val wrapped = assertFailsWith<ExecutionException> {
+                cloud.players().hasPermissionAsync("Steve", "x".repeat(200)).get(2, TimeUnit.SECONDS)
+            }
+            assertTrue(wrapped.cause is IllegalArgumentException, "expected a rejected node, got ${wrapped.cause}")
+        } finally {
+            redis.close()
+        }
     }
 }

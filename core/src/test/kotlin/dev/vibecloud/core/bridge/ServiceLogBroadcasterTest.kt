@@ -38,9 +38,9 @@ class ServiceLogBroadcasterTest {
 
     @Test
     fun `broadcast fans lifecycle events out to every running backend service`() {
-        val queue = BridgeCommandQueue()
+        val sink = RecordingCommandSink()
         val broadcaster = ServiceLogBroadcaster(
-            commandQueue = { queue },
+            commandSink = { sink },
             messages = { ServiceLogMessages() },
             services = {
                 listOf(
@@ -56,7 +56,7 @@ class ServiceLogBroadcasterTest {
 
         // Proxies are skipped (no agent drains there); the starting backend is skipped too.
         assertEquals(1, fanned)
-        val drained = queue.drain("lobby-1-id")
+        val drained = sink.drain("lobby-1")
         assertEquals(1, drained.size)
         val command = drained.single()
         assertEquals("log", command.type)
@@ -65,13 +65,13 @@ class ServiceLogBroadcasterTest {
             ServiceLogMessages.DEFAULT_PREFIX + "citybuild-3 is now running",
             command.payload["lines"],
         )
-        assertTrue(queue.drain("citybuild-1-id").isEmpty())
+        assertTrue(sink.drain("citybuild-1").isEmpty())
     }
 
     @Test
     fun `broadcast has nothing to deliver when the queue is not up yet or nothing runs`() {
         val broadcaster = ServiceLogBroadcaster(
-            commandQueue = { null },
+            commandSink = { null },
             messages = { ServiceLogMessages() },
             services = { listOf(service("lobby-1", ServerType.PAPER, ServiceState.RUNNING)) },
         )
@@ -82,9 +82,9 @@ class ServiceLogBroadcasterTest {
 
     @Test
     fun `stopping and crashed observations broadcast nothing`() {
-        val queue = BridgeCommandQueue()
+        val sink = RecordingCommandSink()
         val broadcaster = ServiceLogBroadcaster(
-            commandQueue = { queue },
+            commandSink = { sink },
             messages = { ServiceLogMessages() },
             services = { listOf(service("lobby-1", ServerType.PAPER, ServiceState.RUNNING)) },
         )
@@ -96,39 +96,39 @@ class ServiceLogBroadcasterTest {
         // to relay the notice, and the cloud log carries the reason.
         assertEquals(0, broadcaster.broadcast(ServiceCrashedEvent(service("lobby-2", ServerType.PAPER, ServiceState.CRASHED), 1, "OutOfMemoryError")))
         // Nothing was enqueued for either.
-        assertTrue(queue.drain("lobby-1-id").isEmpty())
+        assertTrue(sink.drain("lobby-1").isEmpty())
     }
 
     @Test
     fun `each observed state produces exactly its own message`() {
-        val queue = BridgeCommandQueue()
+        val sink = RecordingCommandSink()
         val broadcaster = ServiceLogBroadcaster(
-            commandQueue = { queue },
+            commandSink = { sink },
             messages = { ServiceLogMessages() },
             services = { listOf(service("lobby-1", ServerType.PAPER, ServiceState.RUNNING)) },
         )
 
         assertEquals(1, broadcaster.broadcast(ServiceStartingEvent(service("citybuild-4", ServerType.PAPER, ServiceState.STARTING))))
-        assertEquals(ServiceLogMessages.DEFAULT_PREFIX + "citybuild-4 is starting...", queue.drain("lobby-1-id").single().payload["lines"])
+        assertEquals(ServiceLogMessages.DEFAULT_PREFIX + "citybuild-4 is starting...", sink.drain("lobby-1").single().payload["lines"])
 
         assertEquals(1, broadcaster.broadcast(ServiceStartedEvent(service("citybuild-4", ServerType.PAPER, ServiceState.RUNNING))))
-        assertEquals(ServiceLogMessages.DEFAULT_PREFIX + "citybuild-4 is now running", queue.drain("lobby-1-id").single().payload["lines"])
+        assertEquals(ServiceLogMessages.DEFAULT_PREFIX + "citybuild-4 is now running", sink.drain("lobby-1").single().payload["lines"])
 
         assertEquals(1, broadcaster.broadcast(ServiceStoppedEvent(service("citybuild-4", ServerType.PAPER, ServiceState.STOPPED))))
-        assertEquals(ServiceLogMessages.DEFAULT_PREFIX + "citybuild-4 is now stopped", queue.drain("lobby-1-id").single().payload["lines"])
+        assertEquals(ServiceLogMessages.DEFAULT_PREFIX + "citybuild-4 is now stopped", sink.drain("lobby-1").single().payload["lines"])
 
         assertFalse(broadcaster.broadcast(ServiceStoppingEvent(service("citybuild-4", ServerType.PAPER, ServiceState.STOPPING))) > 0)
     }
 
     @Test
     fun `custom prefix and templates replace both placeholders`() {
-        val queue = BridgeCommandQueue()
+        val sink = RecordingCommandSink()
         val messages = ServiceLogMessages(
             prefix = "§6Cloud §8| ",
             started = "[ %service% ] started",
         )
         val broadcaster = ServiceLogBroadcaster(
-            commandQueue = { queue },
+            commandSink = { sink },
             messages = { messages },
             services = { listOf(service("lobby-1", ServerType.PAPER, ServiceState.RUNNING)) },
         )
@@ -136,13 +136,13 @@ class ServiceLogBroadcasterTest {
         broadcaster.broadcast(ServiceStartedEvent(service("citybuild-2", ServerType.PAPER, ServiceState.RUNNING)))
         assertEquals(
             "§6Cloud §8| [ citybuild-2 ] started",
-            queue.drain("lobby-1-id").single().payload["lines"],
+            sink.drain("lobby-1").single().payload["lines"],
         )
 
         broadcaster.broadcast(ServiceStoppedEvent(service("citybuild-2", ServerType.PAPER, ServiceState.STOPPED)))
         assertEquals(
             "§6Cloud §8| citybuild-2 is now stopped",
-            queue.drain("lobby-1-id").single().payload["lines"],
+            sink.drain("lobby-1").single().payload["lines"],
         )
     }
 }

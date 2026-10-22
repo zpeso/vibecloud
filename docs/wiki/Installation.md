@@ -1,4 +1,4 @@
-[🏠 Home](Home.md) · **🚀 Installation** · [⌨️ Commands](Commands.md) · [🖥️ Dashboard](Dashboard.md) · [🧩 Bridge API](Bridge-API.md) · [📦 Versions](Versions.md) · [🧑 ServerMobs](ServerMobs.md)
+[🏠 Home](Home.md) · **🚀 Installation** · [⌨️ Commands](Commands.md) · [🧩 Bridge API](Bridge-API.md) · [📦 Versions](Versions.md) · [🧑 ServerMobs](ServerMobs.md)
 
 # 🚀 Installation
 
@@ -8,6 +8,7 @@
 |---|---|
 | Operating system | Linux (recommended), Windows, or macOS |
 | Controller JVM | **Java 25** — the `java` command must be on `PATH` |
+| Redis | A running Redis server (Redis 6+ or Memurai on Windows); `redis://127.0.0.1:6379` by default |
 | RAM for the controller | 512 MiB is plenty; Minecraft servers need their own (see [Versions](Versions.md)) |
 | Disk | ~150 MiB for the install + whatever your servers and templates need |
 | Network | Outbound HTTPS to papermc.io / spigotmc.org for the version catalog and downloads |
@@ -37,7 +38,7 @@ vibecloud\bin\vibecloud.bat
 
 On first start the cloud creates everything it needs next to `config.yml`:
 
-- `bridge.token` — the shared access token for the dashboard and API (**treat it like a password**)
+- `bridge.token` — the shared agent/API token for the Redis bridge (**treat it like a password**)
 - `forwarding.secret` — the shared proxy forwarding secret for your network
 - `templates/` and `services/` directories, plus `templates/every_server/`, `templates/every_proxy/`, and per-group overlay folders
 - An **empty** `config.yml` — a fresh install starts with zero groups and zero services
@@ -60,12 +61,7 @@ service create proxy && service proxy-1 start
 - Prefer no prompts? Use flags: `group create lobby --type PAPER --version 26.2 --build 129 --min-services 1 --max-services 3`
 - The cloud wires the proxy automatically: shared forwarding secret, `online-mode`, backend table, forwarding mode.
 
-## 4. Open the dashboard
-
-Browse to `http://<your-host>:25580/` (the `bridge.port` default, bound to `127.0.0.1`) and sign in with the contents
-of `bridge.token`. Everything the CLI can do is in the dashboard too — see the [Dashboard tab](Dashboard.md).
-
-## 5. Accept the EULA (or not)
+## 4. Accept the EULA (or not)
 
 `runtime.eula-accepted: true` is the default and is written to every Paper/Spigot service's `eula.txt`.
 Read the [Minecraft EULA](https://www.minecraft.net/eula) and set it to `false` in `config.yml` if you do not agree.
@@ -94,10 +90,11 @@ runtime:
 reconciliation:
   interval-seconds: 5           # desired-state check cycle
 
+redis:
+  url: "redis://127.0.0.1:6379"  # credentials and a DB are supported: redis://:pass@host:6379/2
+
 bridge:
   enabled: true
-  port: 25580
-  bind-address: "127.0.0.1"     # keep localhost; expose via TLS reverse proxy only
   heartbeat-interval-seconds: 5
   offline-timeout-seconds: 20
 
@@ -129,7 +126,7 @@ pinned build. Never delete `bridge.token` while services run — agents re-read 
 | `templates/every_proxy/` | Shared files copied to all proxies, not backend servers |
 | `templates/groups/<group>/` | Per-group overlay copied last, on top of the shared scope |
 | `services/<name>/` | One provisioned service (worlds, plugins, configs live here) |
-| `bridge.token` | Dashboard/API access token |
+| `bridge.token` | Agent/API token for the Redis bridge |
 | `forwarding.secret` | Network-wide Velocity forwarding secret |
 | `servermobs/` | NPC definitions, written by the ServerMobs plugin (see [ServerMobs](ServerMobs.md)) |
 

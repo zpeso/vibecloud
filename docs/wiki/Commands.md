@@ -1,4 +1,4 @@
-[🏠 Home](Home.md) · [🚀 Installation](Installation.md) · **⌨️ Commands** · [🖥️ Dashboard](Dashboard.md) · [🧩 Bridge API](Bridge-API.md) · [📦 Versions](Versions.md) · [🧑 ServerMobs](ServerMobs.md)
+[🏠 Home](Home.md) · [🚀 Installation](Installation.md) · **⌨️ Commands** · [🧩 Bridge API](Bridge-API.md) · [📦 Versions](Versions.md) · [🧑 ServerMobs](ServerMobs.md)
 
 # ⌨️ Commands
 
@@ -94,7 +94,7 @@ cloud's, relayed verbatim — so lifecycle actions work from anywhere in the net
 ```
 
 Tab completion is resolved by the cloud: subcommands, live service names, and online players. Your own plugins can run
-the same surface programmatically — see the [Bridge API tab](Bridge-API.md#run-cloud-commands-from-code).
+the same surface programmatically — see the [Bridge API tab](Bridge-API.md#what-you-can-do).
 
 ## Desired-state behavior in one paragraph
 
@@ -105,4 +105,4 @@ and reuses stopped ones to keep at least that many running — but it never stop
 
 ---
 
-**Next:** [🖥️ Dashboard](Dashboard.md) — the built-in web panel.
+**Next:** [🧩 Bridge API](Bridge-API.md) — use the cloud from your own plugins.

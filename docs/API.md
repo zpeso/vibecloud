@@ -74,15 +74,17 @@ subscription needed for state — poll it, or derive it from events (below).
 ### "How many players are connected?"
 
 The controller supervises **processes**; players are reported by the **bridge** (see the next section): the agent
-plugin inside each backend server POSTs the live player roster to the cloud, and the cloud exposes it together with
-service state. From an embedded `Cloud` you can read the tracked values directly:
+plugin inside each backend server publishes the live player roster to Redis, and the controller exposes it together
+with service state in the status document. From an embedded `Cloud` you can read capacity and states directly;
+live player counts come from the bridge:
 
 ```kotlin
-val online = cloud.services.all().filter { it.state == ServiceState.RUNNING }
-// bridgeTracker is owned by the cloud internals; plugins should use the HTTP bridge instead (next section).
+val running = cloud.services.all().filter { it.state == ServiceState.RUNNING }
+val status = VibeCloud.instance().status()          // players, per-service details, groups
 ```
 
-What the `ServiceManager` alone gives you is capacity (ports, states); live player counts always come from the bridge.
+What the `ServiceManager` alone gives you is capacity (ports, states); live player counts always come from the
+bridge's status document.
 
 ## Controlling services from code
 
@@ -142,61 +144,50 @@ Notes:
 ## Using the API from inside a Minecraft plugin (the bridge)
 
 A plugin on a Paper or Velocity server runs in that **server's** JVM, while the `Cloud` object lives in the separate
-controller process. VibeCloud ships a ready-made transport for this: the **bridge**.
+controller process. VibeCloud ships a ready-made transport for this: the **bridge**, carried by Redis.
 
 ### How it works
 
-1. The cloud runs a local HTTP endpoint (`bridge.bind-address:bridge.port`, default `127.0.0.1:25580`) protected by a
-   shared token stored in `bridge.token` next to `config.yml`.
+1. The controller and the agents connect to the Redis server at `redis.url` (default `redis://127.0.0.1:6379`). The
+   shared token lives in `bridge.token` next to `config.yml`.
 2. On every backend service start the cloud injects the bundled agent plugin (`VibeCloud-Agent.jar`) and its
-   `agent.properties` into the service. The agent reports the exact online player roster every few seconds.
-3. Your plugins read the status over HTTP using the SDK from the `bridge` module (package
-   `dev.vibecloud.api.bridge`, published as `dev.vibecloud:bridge`). The agent jar itself also contains these SDK
-   classes, so the classes are already on every backend server.
+   `agent.properties` into the service. The agent publishes the exact online player roster every few seconds and
+   consumes console commands from its own Redis list.
+3. The controller publishes the cloud status document to `vibecloud:status` (on every reconcile pass and on every
+   heartbeat), so the SDK reads players, services and groups with one local `GET`.
+4. Your plugins use the SDK from the `bridge` module (package `dev.vibecloud.api.bridge`, published as
+   `dev.vibecloud:bridge`). The agent jar also contains these SDK classes, so they are already on every backend
+   server.
 
-### Reading player counts in a lobby plugin
+### Reading the roster in a lobby plugin
 
 ```kotlin
-import dev.vibecloud.api.bridge.VibeCloudClient
-import java.nio.file.Files
-import java.nio.file.Path
+import dev.vibecloud.api.bridge.VibeCloud
 
 class LobbyScoreboard(plugin: JavaPlugin) {
-    private val client = VibeCloudClient.builder()
-        .baseUrl("http://127.0.0.1:25580")
-        // The cloud copies bridge.token next to config.yml; read it however you distribute secrets.
-        .token(Files.readString(Path.of("/opt/vibecloud/bridge.token")).trim())
-        .timeout(java.time.Duration.ofSeconds(2))
-        .build()
+    private val cloud = VibeCloud.forService()   // reads plugins/VibeCloud/agent.properties
 
-    /** Call on your own scheduler thread (never the main thread). */
-    fun networkPlayerCount(): Int = client.status().totalPlayersOnline
-
+    fun networkPlayerCount(): Int = cloud.players().playerCount()          // cached, never blocks
     fun citybuildPlayers(): List<String> =
-        client.status().services.filter { it.group == "citybuild" }.flatMap { it.players }
+        cloud.services().findByGroup("citybuild").flatMap { it.players }   // one local Redis read
 }
 ```
 
 Notes:
 
-- Call the client from an async thread (`Bukkit.getScheduler().runTaskTimerAsynchronously(...)`); every call is a
-  blocking HTTP request with a 2-3 second timeout.
-- For frequently read state, use `VibeCloud.forService()` + `cloud.temporary()`. It exposes cached player/service/group
-  snapshots refreshed asynchronously every five seconds by default; `temporary().players().findByName(name)?.group`
-  is an in-memory lookup safe to poll on the main thread. `cloud.players().playerCount()` shares the same cache.
-  Configure the cadence with the `temporaryRefreshInterval` builder option.
-- The agent reports every 5 seconds by default (`bridge.heartbeat-interval-seconds`), so counts are near-real-time.
+- Roster/lookup reads are synchronous Redis reads (local, sub-millisecond); use `cloud.temporary()` for scoreboards
+  that poll every tick — it reads an in-memory snapshot refreshed in the background every five seconds.
+- The agent reports every 5 seconds by default (`bridge.heartbeat-interval-seconds`), which is also how often the
+  status document's player lists are refreshed.
 - `agentOnline` tells you whether the report comes from the authoritative agent or the console-line fallback.
-- The status JSON also carries `totals.online`, per-service `state`/`port`/`players`, and the group definitions.
+- The status document also carries `totals.online`, per-service `state`/`port`/`players`, and the group definitions.
 - `status().services` entries expose `playerDetails` (`PlayerDetail`: `name`, `uuid`, `pingMs`, `world`,
   `gamemode`) when the agent reports enriched metadata; `players` always carries the plain names.
-- Inside a cloud-managed service you can skip the manual setup entirely: `VibeCloudClient.forService()` reads the
-  cloud URL and token from the service's `plugins/VibeCloud/agent.properties`.
 
 ### Dependency setup for your plugin
 
-Both `api` and `bridge` publish Maven artifacts. For local development, install them into your local Maven
-repository and depend on them from the plugin project:
+The `api`, `bridge` and `transport` modules publish Maven artifacts. For local development, install them into your
+local Maven repository and depend on them from the plugin project:
 
 ```bash
 ./gradlew publishToMavenLocal
@@ -212,21 +203,16 @@ dependencies {
 }
 ```
 
-For GitHub-based consumption without running a repository, tag a release and let **JitPack** build it on demand. JitPack publishes this repo's tags under the plain `X.Y.Z` version — depend on `1.0.7`, not `v1.0.6`:
+For GitHub-based consumption without running a repository, tag a release and let **JitPack** build it on demand.
+JitPack publishes this repo's tags under the plain `X.Y.Z` version:
 
 ```kotlin
 repositories { maven("https://jitpack.io") }
-dependencies { compileOnly("com.github.zpeso.vibecloud:bridge:1.0.7") }
+dependencies { compileOnly("com.github.zpeso.vibecloud:bridge:<version>") }
 ```
 
-(The zero-dependency alternative: the agent jar already shades the `dev.vibecloud.api.bridge` SDK classes, so the
-classes are present on every cloud-managed server once the agent is installed.)
-
-### Authentication
-
-Every request needs `Authorization: Bearer <token>` where the token is the contents of `bridge.token`. Treat that
-file like a password: it grants read access to the whole cloud status. The endpoint binds to `127.0.0.1` by default;
-only expose it through an authenticated TLS reverse proxy.
+(The zero-dependency alternative: the agent jar already shades the `dev.vibecloud.api.bridge` SDK classes and the
+Redis client, so the classes are present on every cloud-managed server once the agent is installed.)
 
 ### The VibeCloud facade (recommended entry point)
 
@@ -235,14 +221,12 @@ plugin startup (reads the agent config the cloud installs), then use `VibeCloud.
 
 ```kotlin
 import dev.vibecloud.api.bridge.VibeCloud
-import dev.vibecloud.api.bridge.CloudPlayerNotFoundException
 
 class NetworkMessenger : Listener {
     private val cloud get() = VibeCloud.instance
 
     fun broadcastExcept(sender: String, message: String) {
-        // Roster reads are HTTP requests: call them from an async thread (or use cloud.temporary()).
-        // The actions below never block - they dispatch in the background.
+        // Reads are one local Redis round trip; actions publish one message and return immediately.
         cloud.players().all()
             .filter { it.name != sender }
             .forEach { it.sendMessage("§b[Network] §f$message") }
@@ -251,7 +235,7 @@ class NetworkMessenger : Listener {
     fun sendToLobby(playerName: String) {
         val player = cloud.players().findByName(playerName) ?: return
         val lobby = cloud.services().findByGroup("lobby").firstOrNull() ?: return
-        player.connect(lobby)
+        player.connect(lobby)   // blocks briefly: the controller writes it to the proxy console
     }
 
     fun kickCheater(name: String) {
@@ -262,7 +246,7 @@ class NetworkMessenger : Listener {
     fun requireStaff(name: String) {
         // Evaluated by the player's own server (LuckPerms or another provider installed there).
         val player = cloud.players().findByName(name) ?: return
-        player.hasPermission("group.moderator").thenAccept { granted ->
+        player.hasPermissionAsync("group.moderator").thenAccept { granted ->
             if (!granted) player.kick("§cStaff only")
         }
     }
@@ -279,20 +263,24 @@ dashes in any case and falls back to an exact name match, so name-based callers 
 
 `hasPermission(player, node)` asks the server the player is on, so the backend's permission system answers —
 LuckPerms installed on the backends (a shared MongoDB store keeps them in sync) supplies the effective value. The
-check is a heartbeat round trip: the SDK queues it, the agent evaluates the node on its main thread, and the future
-completes with the answer, or fails with an `IOException` when the player left, the node could not be evaluated, or
-it timed out after ten seconds.
+request is published to every agent; the one hosting the player evaluates it on its main thread and pushes the
+answer. The call returns a `Boolean` and throws an `IOException` when the player left, the node could not be
+evaluated, or no answer arrived within the configured timeout. `hasPermissionAsync` is the non-blocking variant for
+a server's main thread.
 
-Actions run through the cloud: message/kick are queued for the target service's agent and executed on that server's
-main thread within one heartbeat interval (default 5s). `player.connect(...)` is dispatched through the proxy's
-console (`send <player> <server>`), so it works with every client version and needs no configuration - it just
-requires a running proxy service.
+Which calls block:
 
-Every action is asynchronous: `sendMessage`, `kick`, `connect` and `CloudService.executeCommand` return at once
-(never blocking the caller's thread) and hand back a `CompletableFuture` that completes when the cloud accepted
-the action, or fails with an `IOException` (bridge unreachable, rejected token, no running proxy, unknown target).
-A transfer does not wait for the agent's heartbeat - the cloud writes it to the proxy console immediately, so the
-only delay is the proxy's own `send`.
+| Call | Blocks? |
+|---|---|
+| roster/service/group reads, `status()` | yes, one local Redis read (milliseconds) |
+| `sendMessage`, `kick`, `executeCommand` | no — one message is published |
+| `hasPermission` | yes, until the player's server answers |
+| `connect` (transfer), `executeCloudCommand` | yes, until the controller answers |
+
+Every blocking call has an `…Async` variant that runs on a background thread and returns a `CompletableFuture`.
+Messages and kicks are delivered by the agent that hosts the player, which removes the old routing race: a player who
+just changed servers still gets the message. A transfer is written to the proxy console immediately and works with
+every client version.
 
 ### The /cloud command (in-game console)
 
@@ -321,84 +309,24 @@ Tab completion is resolved by the cloud too (subcommands, service names, online 
 match the live state. Plugins can run the same surface programmatically:
 
 ```kotlin
-val lines = VibeCloud.instance.executeCloudCommand("services")   // full response text
+val lines = VibeCloud.instance.executeCloudCommand("services")            // full response text
 val subs = VibeCloud.instance.completeCloudCommand(listOf("start", ""))  // tab-completion suggestions
+val later = VibeCloud.instance.executeCloudCommandAsync(listOf("info"))   // non-blocking
 ```
 
-HTTP surface: `POST /bridge/cloud` with repeated `arg` fields, optional `player` (caller, for logs) and
-`mode=execute` (default) or `mode=complete`; responds `{"lines":[...]}` or `{"suggestions":[...]}`.
+The controller executes the command and pushes the answer to a one-shot Redis list, so the call blocks at most for
+the configured timeout.
 
-### The web dashboard
+### Raw Redis access
 
-The bridge serves a built-in dashboard at its root: `http://<cloud-host>:<bridge-port>/` (default
-`http://127.0.0.1:25580/`). No extra service, no build step — the page, stylesheet and script ship
-inside the controller (served from the core jar as classpath resources).
+The status document is a single string, so scripts can read it without the SDK:
 
-- **Login**: paste the bridge token (the contents of `bridge.token` next to `config.yml`). It is
-  exchanged for an HttpOnly session cookie — the token itself never touches JavaScript or browser
-  storage. Cookie-authenticated state-changing requests carry a CSRF header automatically.
-- **Local + remote**: the bridge binds to `127.0.0.1` by default (open the dashboard locally or
-  through an SSH tunnel). Set `bridge.bind-address: 0.0.0.0` in `config.yml` to reach it remotely —
-  every data endpoint requires the token, and without it only the empty login page is served.
-- **Live data**: totals, per-service TPS, heap and **CPU usage** (reported by the agent every
-  heartbeat), players, groups, rolling charts (players / TPS / memory / running services) sampled
-  once per reconciliation cycle, and the recent console output of any running service.
-- **Pages**: the sidebar switches between Overview (stat cards, network activity chart, group
-  distribution, crash alert banner), Players (skin heads, current server, one-click transfer via
-  dropdown, kick), Services (state tabs with counts, CPU/TPS/memory meters, start/restart/stop),
-  Groups (per-group cards with capacity bars plus the table, backend/proxy tabs, `Start another`),
-  Console (per-service output with auto-refresh and command input), **Host & Health** (host CPU
-  load chart, system memory chart, uptime, JVM heap, OS/Java details, per-process CPU), and
-  **Activity** (recent service lifecycle events, newest first).
-- **Actions**: start/stop/restart per service, `group start <name>`, `group <name> restart`, player transfers and kicks,
-  and the full cloud command surface (with Tab completion) in the top command bar — the same
-  authority as the interactive console.
-- **Security hardening**: the shell, stylesheet and script are separate same-origin assets, so the
-  Content-Security-Policy locks scripts to `'self'` — no more `'unsafe-inline'` scripts (styles keep
-  inline attributes, which cannot execute script).
-
-Bridge endpoints (all data endpoints require the token or a session):
-
-```text
-GET /                   → the dashboard HTML (public; no data)
-GET /assets/app.css     → the dashboard stylesheet (public)
-GET /assets/app.js      → the dashboard script (public)
-GET /bridge/metrics     → {"history":{"points":[{t,players,running,services,tps,ram,cpu,sysram,jvmheap},...]},"services":[{name,tps,ram_usage,heap_used_mb,heap_max_mb,cpu}]}
-GET /bridge/host        → host system metrics: {cpu, process-cpu, cores, memory-total-mb, memory-used-mb, swap-total-mb, swap-used-mb, jvm-used-mb, jvm-max-mb, uptime-seconds, load-average, os-name, os-version, os-arch, java-version, version, started-at, processes:{"<service>":cpu}}
-GET /bridge/activity    → {"events":[{t,kind,message},...]} newest first (service lifecycle)
-GET /bridge/console?service=<name> → {"lines":[...]}  (last 200 console lines)
-POST /bridge/players  action=transfer&target=<service|group#> → write `send <player> <server>` to the proxy console (202 {"transferred":true}, dispatched off the request thread)
-POST /bridge/players  action=message|kick|inventory|permission → queue for the player's agent (202 {"queued":true,"request-id":...}); permission also needs node=
-GET /bridge/players/inventory?service=&player= → last snapshot {service,player,captured-at,items:[{slot,material,count,durability,name,lore[],enchantments[]}]}
-GET /bridge/players/permission?request-id= → 202 {"state":"pending"} | 200 {"state":"granted"|"denied",player,node} | 422 evaluation failed | 404 unknown/expired
+```bash
+redis-cli GET vibecloud:status | jq '.totals'
 ```
 
-Player inspection wire notes: `slot` is `helmet`, `chestplate`, `leggings`, `boots`, `offhand` or a
-1–36 storage index (1–9 hotbar, 10–36 main). Inspection records in the heartbeat's `inspections`
-field are `request-id\u0002payload` joined by `\u001e` (agents ≥0.9.0; older agents joined by
-`\u0001`, which limited a snapshot to its first item — the cloud accepts both). The roster's
-`player-meta` field order is append-only; 0.9.0 appended saturation, allowed-flight, sneaking,
-sprinting, gliding, sleeping and in-vehicle after `flying` (index 16).
-
-Agent heartbeats additionally carry `tps`, `heap-used-mb`, `heap-max-mb` and `process-cpu`; `GET
-/bridge/status` includes the same values per service plus `agent-version`, `restarts`, `last-error`
-and `totals.agents-online`.
-
-`/bridge/host` values come from the controller JVM's `com.sun.management.OperatingSystemMXBean`:
-`cpu` is the whole-host CPU load (0..1) — the number to watch for the root server's CPU — while
-`process-cpu` is the controller process's own share. Per-service CPU lives in `processes` and in
-each service's `cpu` field in status/metrics, reported by the agents themselves.
-
-### The raw client (still available)
-
-`VibeCloudClient` stays as the low-level transport. `VibeCloudClient.forService()` is deprecated in favor of
-`VibeCloud.forService()`; the facade also exposes `status()` for the full document.
-
-### Authentication
-
-Every request needs `Authorization: Bearer <token>` where the token is the contents of `bridge.token`. Treat that
-file like a password: it grants read access to the whole cloud status (and command dispatch on the write endpoints).
-The endpoint binds to `127.0.0.1` by default; only expose it through an authenticated TLS reverse proxy.
+Publishing an action or a controller request requires the shared token in the message's `token` field. The exact key
+layout and message shapes are documented in [docs/wiki/Bridge-API.md](wiki/Bridge-API.md#3-raw-redis-scripts-bots-tools).
 
 ## What the API does not do (yet)
 

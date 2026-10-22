@@ -10,7 +10,8 @@ import java.util.Properties
  * `plugins/VibeCloud/agent.properties` on every backend service.
  */
 data class AgentConfig(
-    val cloudUrl: String,
+    /** `redis://[user:password@]host:port[/db]` of the bridge. */
+    val redisUrl: String,
     val serviceId: String,
     val serviceName: String,
     val groupName: String,
@@ -27,7 +28,7 @@ data class AgentConfig(
     /**
      * The config directory inside a server's `plugins/` folder that the cloud manages. The
      * Bukkit data folder must match this name (plugin.yml `name: VibeCloud`) so the agent and
-     * `VibeCloudClient.forService()` read the same file the cloud writes.
+     * `VibeCloud.forService()` read the same file the cloud writes.
      */
     companion object {
         const val CONFIG_DIRECTORY = "VibeCloud"
@@ -47,7 +48,7 @@ data class AgentConfig(
                 throw IOException("Could not read agent configuration $file: ${failure.message}", failure)
             }
             return AgentConfig(
-                cloudUrl = required(properties, "cloud-url"),
+                redisUrl = required(properties, "redis-url"),
                 serviceId = required(properties, "service-id"),
                 serviceName = required(properties, "service-name"),
                 groupName = properties.getProperty("group-name", "").trim(),

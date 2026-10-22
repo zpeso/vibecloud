@@ -4,6 +4,13 @@ package dev.vibecloud.servermobs
 internal fun hologramLineHeights(bottomY: Double, spacing: Double, count: Int): List<Double> =
     (0 until count).map { index -> bottomY + index * spacing }
 
+/**
+ * Parses the cloud status document. The controller writes JSON, which is also valid YAML flow
+ * syntax, so one parser covers it and no JSON dependency is needed inside the plugin.
+ */
+internal fun parseStatusDocument(body: String): Map<String, Any?>? =
+    runCatching { org.yaml.snakeyaml.Yaml().load<Any?>(body) as? Map<String, Any?> }.getOrNull()
+
 /** Replaces group/service online player-count tokens using the latest cached status document. */
 internal fun resolvePlayerCountPlaceholders(input: String, status: Map<String, Any?>): String {
     if (input.indexOf("{playercount:", ignoreCase = true) < 0) return input

@@ -3,29 +3,33 @@ package dev.vibecloud.bridge.agent
 import dev.vibecloud.api.bridge.AgentConfig
 import dev.vibecloud.api.bridge.ServiceIdentity
 import dev.vibecloud.api.bridge.VibeCloud
+import dev.vibecloud.transport.BridgeJson
+import dev.vibecloud.transport.BridgeProtocol
+import dev.vibecloud.transport.JedisRedisGateway
+import dev.vibecloud.transport.RedisGateway
+import dev.vibecloud.transport.RedisSubscription
+import dev.vibecloud.transport.text
 import org.bukkit.Bukkit
 import org.bukkit.entity.Player
 import org.bukkit.plugin.java.JavaPlugin
-import java.net.URI
-import java.net.URLEncoder
-import java.net.http.HttpClient
-import java.net.http.HttpRequest
-import java.net.http.HttpResponse
-import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
-import java.time.Duration
+import java.security.MessageDigest
 import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 /**
- * The VibeCloud agent that runs inside every backend server. Periodically POSTs the online player
- * roster to the cloud's bridge endpoint and receives queued cloud commands (player
- * message/kick/transfer and console commands) in the response, which it executes on the server's
- * main thread.
+ * The VibeCloud agent that runs inside every backend server. It publishes the online player
+ * roster to the cloud's Redis bridge every heartbeat, immediately consumes console commands
+ * queued for this service, and answers player actions (message, kick, service-log notices,
+ * permission checks) broadcast by the cloud.
+ *
+ * Everything game-related runs on the server's main thread; the Redis work runs on two daemon
+ * threads (heartbeat + blocking reads), so a server tick never waits on Redis.
  *
  * The cloud installs this plugin and its `agent.properties` automatically on service start; if
  * the file is missing (server started outside the cloud), the plugin disables itself quietly.
@@ -35,28 +39,20 @@ class VibeCloudAgentPlugin : JavaPlugin() {
 
     /** Internal access for the command class without colliding with JavaPlugin.getConfig(). */
     internal val agent: AgentConfig? get() = config
+    private var redis: RedisGateway? = null
     private var executor: ScheduledExecutorService? = null
     private var heartbeatTask: ScheduledFuture<*>? = null
-    private var lastCommandId: Long = 0
-
-    /** Inspect requests waiting for their next main-thread tick (request-id → player name). */
-    private val pendingInspections = java.util.concurrent.ConcurrentLinkedQueue<Pair<String, String>>()
-
-    /** Finished inspect payloads (request-id → encoded snapshot) flushed on the next heartbeat. */
-    private val completedInspections = java.util.concurrent.ConcurrentLinkedQueue<Pair<String, String>>()
-
-    /** Finished permission checks (request-id → `true`/`false`/`offline`/`error…`) for the next beat. */
-    private val completedPermissions = java.util.concurrent.ConcurrentLinkedQueue<Pair<String, String>>()
-    private val http: HttpClient = HttpClient.newBuilder()
-        .connectTimeout(Duration.ofSeconds(3))
-        .build()
+    private val subscription = AtomicReference<RedisSubscription?>(null)
+    private var commandThread: Thread? = null
+    @Volatile
+    private var running = false
 
     override fun onEnable() {
         val configFile: Path = dataFolder.toPath().resolve("agent.properties")
         if (!Files.isRegularFile(configFile)) {
             getLogger().warning(
                 "VibeCloud agent disabled: agent.properties is missing. " +
-                        "The cloud installs it automatically on the next service start.",
+                    "The cloud installs it automatically on the next service start.",
             )
             return
         }
@@ -67,18 +63,25 @@ class VibeCloudAgentPlugin : JavaPlugin() {
             return
         }
         config = loaded
+        val gateway = JedisRedisGateway(loaded.redisUrl)
+        redis = gateway
+        if (!gateway.ping()) {
+            getLogger().warning(
+                "VibeCloud agent cannot reach Redis at ${loaded.redisUrl}; heartbeats and commands " +
+                    "stay offline until it is back (the agent keeps retrying).",
+            )
+        }
         // Publish the facade singleton so this command and third-party plugins on this server
-        // can talk to the cloud without re-reading the agent config. The local service identity
-        // is passed in too, so plugins can ask for their own service name via
-        // `VibeCloud.currentServiceName()`.
+        // can talk to the cloud without re-reading the agent config.
         runCatching {
             VibeCloud.connect { builder ->
-                builder.baseUrl(loaded.cloudUrl)
+                builder.redisUrl(loaded.redisUrl)
                     .token(loaded.token)
                     .currentService(ServiceIdentity(loaded.serviceId, loaded.serviceName, loaded.groupName))
             }
+        }.onFailure { failure ->
+            getLogger().warning("Could not initialize the VibeCloud API facade: ${failure.message}")
         }
-            .onFailure { failure -> getLogger().warning("Could not initialize the VibeCloud API facade: ${failure.message}") }
 
         // In-game /cloud command (permission minetropia.cloud) executed server-side.
         getCommand("cloud")?.let { cloudCommand ->
@@ -87,6 +90,7 @@ class VibeCloudAgentPlugin : JavaPlugin() {
             cloudCommand.setTabCompleter(inGameCommand)
         }
 
+        running = true
         val scheduler = Executors.newSingleThreadScheduledExecutor { runnable ->
             Thread(runnable, "VibeCloud-Agent-Heartbeat").apply { isDaemon = true }
         }
@@ -98,11 +102,13 @@ class VibeCloudAgentPlugin : JavaPlugin() {
             interval,
             TimeUnit.SECONDS,
         )
-        // Keep the roster snapshot (vitals for the dashboard) fresh on the main thread.
+        subscribeToActions(loaded)
+        startCommandConsumer(loaded)
+        // Keep the roster snapshot (vitals for the cloud status) fresh on the main thread.
         Bukkit.getScheduler().runTaskTimer(this, Runnable(::refreshRosterSnapshot), 40L, 40L)
         getLogger().info(
             "VibeCloud agent enabled for service ${loaded.serviceName} " +
-                    "(reporting to ${loaded.cloudUrl} every ${interval}s)",
+                "(reporting to ${loaded.redisUrl} every ${interval}s)",
         )
     }
 
@@ -110,6 +116,11 @@ class VibeCloudAgentPlugin : JavaPlugin() {
         // Announce the stop while players are still connected: plugins disable before the server
         // kicks everyone, so holders of `cloud.logs` see why the server is going down.
         announceServiceStopped()
+        running = false
+        subscription.getAndSet(null)?.close()
+        commandThread?.interrupt()
+        runCatching { commandThread?.join(1_000) }
+        commandThread = null
         heartbeatTask?.cancel(false)
         executor?.let { scheduler ->
             scheduler.shutdown()
@@ -123,6 +134,8 @@ class VibeCloudAgentPlugin : JavaPlugin() {
         }
         executor = null
         heartbeatTask = null
+        runCatching { redis?.close() }
+        redis = null
         config = null
         getLogger().info("VibeCloud agent disabled")
     }
@@ -164,89 +177,119 @@ class VibeCloudAgentPlugin : JavaPlugin() {
         }.getOrDefault(emptyList())
     }
 
+    // -- heartbeat -----------------------------------------------------------
+
     private fun sendHeartbeat() {
         val current = this.config ?: return
+        val gateway = this.redis ?: return
         try {
             val names = server.onlinePlayers.map { it.name }
-            // Rich per-player metadata for the dashboard's player view. Entries are built on
-            // this (heartbeat) thread from a main-thread snapshot taken by the scheduled
-            // collector, so game state reads stay off the main thread. Each entry is
-            // URL-encoded individually so names containing the `|`/`,` separators survive.
-            val playerMeta = rosterSnapshot.joinToString(",") { entry ->
-                URLEncoder.encode(entry, StandardCharsets.UTF_8)
-            }
-            // Inspect snapshots collected on the main thread since the last beat are flushed
-            // here; the cloud correlates them with the dashboard's inventory request.
-            val inspectionField = buildList {
-                var inspection = completedInspections.poll()
-                while (inspection != null) {
-                    add(inspection.first + "\u0002" + inspection.second)
-                    inspection = completedInspections.poll()
-                }
-            }.joinToString(PlayerInspector.RECORD)
-            // Permission checks answered on the main thread since the last beat.
-            val permissionField = buildList {
-                var permission = completedPermissions.poll()
-                while (permission != null) {
-                    add(permission.first + "\u0002" + permission.second)
-                    permission = completedPermissions.poll()
-                }
-            }.joinToString(PlayerInspector.RECORD)
-            val tpsField = runCatching { Bukkit.getTPS()[0] }.getOrNull()
+            val tps = runCatching { Bukkit.getTPS()[0] }.getOrNull()
             val memory = Runtime.getRuntime()
             val heapUsedMb = (memory.totalMemory() - memory.freeMemory()) / BYTES_PER_MB
             val heapMaxMb = memory.maxMemory() / BYTES_PER_MB
             // This JVM's own CPU usage (0..1 of all cores combined) — the cloud cannot read a
-            // child process's CPU from outside, so the agent reports it. Null when the OS
-            // has not computed a value yet (Java returns -1 in that case).
+            // child process's CPU from outside, so the agent reports it. Null when the OS has not
+            // computed a value yet (Java returns -1 in that case).
             val processCpu = runCatching {
                 (java.lang.management.ManagementFactory.getPlatformMXBean(
                     com.sun.management.OperatingSystemMXBean::class.java,
                 )?.processCpuLoad ?: -1.0).takeIf { it >= 0.0 }
             }.getOrNull()
-            val form = formEncode(
-                "service-id" to current.serviceId,
-                "service-name" to current.serviceName,
-                "players" to names.joinToString(","),
-                "player-meta" to playerMeta,
-                "inspections" to inspectionField,
-                "permission-results" to permissionField,
-                "max-players" to server.maxPlayers.toString(),
-                "agent-version" to description.version,
-                "tps" to (tpsField?.let { String.format(Locale.US, "%.2f", it) } ?: ""),
-                "heap-used-mb" to heapUsedMb.toString(),
-                "heap-max-mb" to heapMaxMb.toString(),
-                "process-cpu" to (processCpu?.let { String.format(Locale.US, "%.4f", it) } ?: ""),
+            val message = BridgeJson.obj(
+                "token" to BridgeJson.str(current.token),
+                "service-id" to BridgeJson.str(current.serviceId),
+                "service-name" to BridgeJson.str(current.serviceName),
+                "group" to BridgeJson.str(current.groupName),
+                "agent-version" to BridgeJson.str(description.version),
+                "players" to BridgeJson.strArray(names),
+                // Rich per-player metadata for the cloud status. Field order is the wire contract
+                // with CloudStatusDocument.parsePlayerMeta — append only, never reorder.
+                "player-details" to BridgeJson.strArray(rosterSnapshot),
+                "max-players" to BridgeJson.num(server.maxPlayers),
+                "tps" to (tps?.let { BridgeJson.num(String.format(Locale.US, "%.2f", it).toDouble()) } ?: "null"),
+                "heap-used-mb" to BridgeJson.num(heapUsedMb),
+                "heap-max-mb" to BridgeJson.num(heapMaxMb),
+                "process-cpu" to (processCpu?.let { BridgeJson.num(String.format(Locale.US, "%.4f", it).toDouble()) } ?: "null"),
             )
-            val request = HttpRequest.newBuilder()
-                .uri(URI.create("${current.cloudUrl}/bridge/heartbeat"))
-                .timeout(Duration.ofSeconds(3))
-                .header("Authorization", "Bearer ${current.token}")
-                .header("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
-                .POST(HttpRequest.BodyPublishers.ofString(form))
-                .build()
-            val response = http.send(request, HttpResponse.BodyHandlers.ofString())
-            if (response.statusCode() == 200) {
-                executeCommands(CloudCommandParser.parse(response.body()))
-            }
+            gateway.publish(BridgeProtocol.HEARTBEAT_CHANNEL, message)
         } catch (failure: Exception) {
             getLogger().warning("Heartbeat failed: ${failure.message}")
         }
     }
 
-    // -- command execution (always on the Bukkit main thread) -----------------
+    // -- inbound traffic -----------------------------------------------------
 
-    private fun executeCommands(commands: List<CloudCommand>) {
-        val fresh = commands.filter { it.id > lastCommandId }
-        if (fresh.isEmpty()) return
-        Bukkit.getScheduler().runTask(this, Runnable { fresh.forEach(::executeCommand) })
+    /**
+     * Subscribes to broadcast player actions. The transport owns the connection and reconnects on
+     * its own when Redis restarts, so the agent only registers its listener.
+     */
+    private fun subscribeToActions(loaded: AgentConfig) {
+        try {
+            val handle = redis?.subscribe(BridgeProtocol.ACTIONS_CHANNEL) { message ->
+                runCatching { onAction(message, loaded) }
+                    .onFailure { getLogger().fine("Ignored an action: ${it.message}") }
+            }
+            subscription.set(handle)
+        } catch (failure: Exception) {
+            getLogger().warning("Could not subscribe to cloud actions: ${failure.message}")
+        }
     }
 
-    private fun executeCommand(command: CloudCommand) {
-        if (command.id <= lastCommandId) return
-        lastCommandId = command.id
+    /**
+     * Consumes this service's console command list. `BLPOP` returns as soon as the controller
+     * pushes a command, so there is no heartbeat latency for `/cloud cmd`.
+     */
+    private fun startCommandConsumer(loaded: AgentConfig) {
+        val key = BridgeProtocol.commandsKey(loaded.serviceName)
+        val thread = Thread({
+            while (running) {
+                val message = try {
+                    redis?.blpop(COMMAND_POLL_SECONDS, key)
+                } catch (failure: Exception) {
+                    if (running) {
+                        getLogger().warning("Command queue unavailable (${failure.message}); retrying in 2s")
+                        sleepQuietly(2_000)
+                    }
+                    null
+                } ?: continue
+                runCatching { onAction(message, loaded) }
+                    .onFailure { getLogger().fine("Ignored a command: ${it.message}") }
+            }
+        }, "VibeCloud-Agent-Commands").apply { isDaemon = true }
+        commandThread = thread
+        thread.start()
+    }
+
+    private fun onAction(json: String, loaded: AgentConfig) {
+        val token = BridgeJson.parseObject(json)?.text("token")
+        if (token == null || !tokenMatches(token, loaded.token)) return
+        val command = CloudCommandParser.parse(json) ?: return
         when (command.type) {
-            "message" -> {
+            BridgeProtocol.ACTION_MESSAGE,
+            BridgeProtocol.ACTION_KICK,
+            BridgeProtocol.ACTION_LOG,
+            BridgeProtocol.ACTION_PERMISSION,
+            BridgeProtocol.COMMAND_CONSOLE,
+            -> executeOnMainThread(command)
+
+            else -> getLogger().fine("Ignoring unknown bridge command '${command.type}'")
+        }
+    }
+
+    private fun executeOnMainThread(command: CloudCommand) {
+        val plugin = this
+        Bukkit.getScheduler().runTask(plugin, Runnable { execute(command) })
+    }
+
+    /**
+     * Executes one command on the Bukkit main thread. Player actions are broadcast to every
+     * backend, so a message/kick/permission check for a player who is not on THIS server is
+     * silently skipped — the agent that hosts them handles it.
+     */
+    private fun execute(command: CloudCommand) {
+        when (command.type) {
+            BridgeProtocol.ACTION_MESSAGE -> {
                 val lines = command.payload["lines"].orEmpty()
                 val player = command.playerName?.let(::findPlayer)
                 if (player != null && lines.isNotEmpty()) {
@@ -254,101 +297,88 @@ class VibeCloudAgentPlugin : JavaPlugin() {
                 }
             }
 
-            "kick" -> {
+            BridgeProtocol.ACTION_KICK -> {
                 val player = command.playerName?.let(::findPlayer)
                 if (player != null) {
-                    player.kickPlayer(command.payload["reason"]?.takeIf { it.isNotEmpty() } ?: "Kicked by the cloud")
+                    player.kickPlayer(
+                        command.payload["reason"]?.takeIf { it.isNotEmpty() } ?: "Kicked by the cloud",
+                    )
                 }
             }
 
-            "transfer" -> {
-                // Player transfers run through the proxy's console (cloud-side `send` command);
-                // this agent never handles them directly.
-                getLogger().fine("Ignoring transfer command ${command.id} (handled by the proxy)")
-            }
-
-            "log" -> {
-                // Cloud service-log broadcast: lifecycle notices (started/stopped/crashed)
-                // relaying what the cloud's activity feed records. Employees hold `cloud.logs`.
+            BridgeProtocol.ACTION_LOG -> {
+                // Cloud service-log broadcast: lifecycle notices relaying what the cloud recorded.
+                // Everyone holding `cloud.logs` sees them, on every backend.
                 val lines = command.payload["lines"].orEmpty()
                 if (lines.isNotEmpty()) deliverServiceLog(lines)
             }
 
-            "command" -> {
+            BridgeProtocol.COMMAND_CONSOLE -> {
                 val line = command.payload["command"].orEmpty()
                 if (line.isNotEmpty()) {
                     Bukkit.dispatchCommand(Bukkit.getConsoleSender(), line)
                 }
             }
 
-            "inventory" -> {
-                val requestId = command.payload["request-id"].orEmpty()
-                val playerName = command.playerName.orEmpty()
-                if (requestId.isNotEmpty() && playerName.isNotEmpty()) {
-                    pendingInspections.add(requestId to playerName)
-                    Bukkit.getScheduler().runTask(this, Runnable(::drainPendingInspections))
-                }
-            }
-
-            "permission" -> {
-                // Evaluated here, on the player's own server, so the backend's permission system
-                // (LuckPerms or any other provider) answers with the effective value. Already on
-                // the main thread: executeCommand runs from the Bukkit scheduler.
-                val requestId = command.payload["request-id"].orEmpty()
-                val node = command.payload["node"].orEmpty()
-                val playerName = command.playerName.orEmpty()
-                if (requestId.isNotEmpty() && node.isNotEmpty() && playerName.isNotEmpty()) {
-                    val player = findPlayer(playerName)
-                    val value = if (player == null) {
-                        "offline"
-                    } else {
-                        runCatching { player.hasPermission(node) }.fold(
-                            onSuccess = { granted -> granted.toString() },
-                            onFailure = { failure ->
-                                "error\u0002" + (failure.message ?: failure::class.simpleName ?: "permission check failed")
-                            },
-                        )
-                    }
-                    completedPermissions.add(requestId to value)
-                }
-            }
+            BridgeProtocol.ACTION_PERMISSION -> answerPermission(command)
+            else -> Unit
         }
     }
 
-    /** Main-thread: collects every queued inspect request and stages the encoded snapshots. */
-    private fun drainPendingInspections() {
-        var inspection = pendingInspections.poll()
-        while (inspection != null) {
-            val (requestId, playerName) = inspection
-            val player = findPlayer(playerName)
-            val payload = if (player != null) {
-                runCatching { PlayerInspector.encodeInventory(PlayerInspector.collect(player)) }
-                    .getOrElse { failure -> "error\u0002" + (failure.message ?: failure::class.simpleName ?: "collect failed") }
-            } else {
-                "offline"
-            }
-            completedInspections.add(requestId to payload)
-            inspection = pendingInspections.poll()
-        }
+    /**
+     * Evaluates a permission node for the player and pushes the answer to their request. Only the
+     * agent that hosts the player answers, so the backend's permission system (LuckPerms or any
+     * other provider) supplies the effective value.
+     */
+    private fun answerPermission(command: CloudCommand) {
+        val requestId = command.payload["request-id"].orEmpty()
+        val node = command.payload["node"].orEmpty()
+        val playerName = command.playerName.orEmpty()
+        if (requestId.isEmpty() || node.isEmpty() || playerName.isEmpty()) return
+        // Not our player: another backend hosts them and will answer.
+        val player = findPlayer(playerName) ?: return
+        val value = runCatching { player.hasPermission(node) }.fold(
+            onSuccess = { granted -> if (granted) BridgeProtocol.RESULT_GRANTED else BridgeProtocol.RESULT_DENIED },
+            onFailure = { failure ->
+                BridgeProtocol.RESULT_ERROR_PREFIX + (failure.message ?: failure::class.simpleName ?: "permission check failed")
+            },
+        )
+        pushResult(requestId, value)
+    }
+
+    private fun pushResult(requestId: String, value: String) {
+        val gateway = redis ?: return
+        runCatching {
+            val key = BridgeProtocol.resultKey(requestId)
+            gateway.rpush(key, value)
+            gateway.expire(key, BridgeProtocol.RESULT_TTL_SECONDS)
+        }.onFailure { getLogger().warning("Could not publish a bridge answer: ${it.message}") }
     }
 
     private fun findPlayer(name: String): Player? =
         Bukkit.getPlayerExact(name)
             ?: Bukkit.getOnlinePlayers().firstOrNull { it.name.equals(name, ignoreCase = true) }
 
-    private fun formEncode(vararg fields: Pair<String, String>): String =
-        fields.joinToString("&") { (key, value) ->
-            URLEncoder.encode(key, StandardCharsets.UTF_8) + "=" + URLEncoder.encode(value, StandardCharsets.UTF_8)
+    private fun tokenMatches(candidate: String, expected: String): Boolean = MessageDigest.isEqual(
+        expected.toByteArray(Charsets.UTF_8),
+        candidate.toByteArray(Charsets.UTF_8),
+    )
+
+    private fun sleepQuietly(millis: Long) {
+        try {
+            Thread.sleep(millis)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
         }
+    }
 
     internal companion object {
         const val HEARTBEAT_DELAY_SECONDS = 2L
         const val BYTES_PER_MB = 1024L * 1024L
 
-        /**
-         * Branded prefix for agent messages (cloud red, small-caps name, separator) — used for
-         * the service-stop broadcast and the in-game `/cloud` command output alike.
-         */
+        /** `BLPOP` timeout: long enough to idle, short enough to notice a shutdown quickly. */
+        const val COMMAND_POLL_SECONDS = 2
+
         /**
          * Fallback prefix when `agent.properties` carries no `log-prefix` (hand-staged config);
          * equals the cloud's `bridge.service-log.prefix` default.

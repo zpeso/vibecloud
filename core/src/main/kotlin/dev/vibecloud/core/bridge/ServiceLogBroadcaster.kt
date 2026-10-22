@@ -21,14 +21,13 @@ import dev.vibecloud.common.config.ServiceLogMessages
  * broadcasts nothing (the affected service is dead — nobody there can relay, and an agentless
  * end needs no chat notice).
  *
- * This is the in-game mirror of the dashboard's activity feed — notices become visible
- * everywhere, not only on the affected service itself. Proxies are skipped (they host no
- * agent, so a queued command there would never drain), and so is every non-running service —
- * an offline service has nobody to tell.
+ * Notices become visible everywhere, not only on the affected service itself. Proxies are
+ * skipped (they host no agent, so a queued command there would never drain), and so is every
+ * non-running service — an offline service has nobody to tell.
  */
 class ServiceLogBroadcaster(
-    /** Resolved lazily: the bridge server (and with it the command queue) comes up later. */
-    private val commandQueue: () -> BridgeCommandQueue?,
+    /** Resolved lazily: the bridge (and with it the command sink) comes up later. */
+    private val commandSink: () -> BridgeCommandSink?,
     /** Live service view; invoked per broadcast so stopped services are not enqueued. */
     private val services: () -> Collection<Service>,
     /** User-customizable prefix and message templates from config.yml (`bridge.service-log`). */
@@ -38,15 +37,15 @@ class ServiceLogBroadcaster(
     fun broadcast(event: CloudEvent): Int {
         val line = messageFor(event)
         if (line == null) return 0
-        val queue = commandQueue() ?: return 0
+        val sink = commandSink() ?: return 0
         val targets = services().filter {
             it.state == ServiceState.RUNNING && !it.type.isProxy
         }
         targets.forEach { service ->
-            queue.enqueue(
-                service.id,
+            sink.enqueue(
+                service.name,
                 BridgeCommand(
-                    id = queue.nextId(),
+                    id = sink.nextId(),
                     type = "log",
                     playerName = null,
                     payload = mapOf("lines" to line),

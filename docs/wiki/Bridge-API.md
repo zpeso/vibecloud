@@ -1,4 +1,4 @@
-[🏠 Home](Home.md) · [🚀 Installation](Installation.md) · [⌨️ Commands](Commands.md) · [🖥️ Dashboard](Dashboard.md) · **🧩 Bridge API** · [📦 Versions](Versions.md) · [🧑 ServerMobs](ServerMobs.md)
+[🏠 Home](Home.md) · [🚀 Installation](Installation.md) · [⌨️ Commands](Commands.md) · **🧩 Bridge API** · [📦 Versions](Versions.md) · [🧑 ServerMobs](ServerMobs.md)
 
 # 🧩 Bridge API (Development)
 
@@ -8,7 +8,11 @@ There are three ways to build on VibeCloud, depending on where your code runs:
 |---|---|---|
 | Inside a Minecraft server (a plugin) | **`VibeCloud` facade** — network-wide players, services, groups, commands | `bridge` |
 | In your own application/JVM | **Embed the controller** — the full `Cloud` object with events | `api` + `core` |
-| Anywhere (scripts, bots, tools) | **Raw HTTP** against the bridge | any |
+| Anywhere (scripts, bots, tools) | **Redis** — read `vibecloud:status`, publish actions with the token | any |
+
+The bridge is carried by **Redis**, not HTTP. The controller, the agent plugins and the SDK all speak the same small
+key layout, so a status read is one local Redis round trip (well under a millisecond) and a player action is one
+published message. There is no HTTP endpoint and no dashboard.
 
 ## 1. The `VibeCloud` facade (plugins)
 
@@ -17,13 +21,13 @@ There are three ways to build on VibeCloud, depending on where your code runs:
 ```kotlin
 repositories { maven("https://jitpack.io") }
 dependencies {
-    compileOnly("com.github.zpeso.vibecloud:bridge:1.0.7")  // dev.vibecloud.api.bridge.*
+    compileOnly("com.github.zpeso.vibecloud:bridge:2.0.0")  // dev.vibecloud.api.bridge.*
 }
 ```
 
 Alternatives: `./gradlew publishToMavenLocal` + `mavenLocal()`, or nothing at all — the agent jar that the cloud
-injects into every backend server already contains these SDK classes, so on cloud-managed servers the classes are
-simply present.
+injects into every backend server already contains these SDK classes (and the Redis client they need), so on
+cloud-managed servers the classes are simply present.
 
 ### Connect once at startup
 
@@ -41,16 +45,19 @@ Outside a managed service, connect manually:
 
 ```kotlin
 VibeCloud.connect { builder ->
-    builder.baseUrl("http://127.0.0.1:25580")
+    builder.redisUrl("redis://127.0.0.1:6379")
            .token(Files.readString(Path.of("/opt/vibecloud/bridge.token")).trim())
+           .timeout(java.time.Duration.ofSeconds(5))
 }
 val cloud = VibeCloud.instance()
 ```
 
+The URL accepts credentials and a database (`redis://:password@host:6379/2`) and `rediss://` enables TLS.
+
 ### Ask "which service am I on?"
 
 Inside a cloud-managed server, the facade knows the local service identity — it comes from the agent config,
-no HTTP round trip, never throws:
+no round trip, never throws:
 
 ```kotlin
 val me = VibeCloud.currentServiceName()        // "citybuild-2", or null outside the cloud
@@ -62,8 +69,8 @@ myPlugin.onThisService("citybuild-2", ::registerEvents)  // e.g. only run game l
 
 ### What you can do
 
-Every call is a snapshot + an HTTP round-trip to the cloud — call from an **async thread**
-(`Bukkit.getScheduler().runTaskTimerAsynchronously(...)`), never the main thread.
+Roster/lookup reads are synchronous Redis reads; message/kick/console commands publish one message and return
+immediately. Only calls that need an answer block:
 
 ```kotlin
 val cloud = VibeCloud.instance()
@@ -72,69 +79,81 @@ val cloud = VibeCloud.instance()
 val players: List<CloudPlayer> = cloud.players().all()
 val notch = cloud.players().findByName("Notch")
 val byId = cloud.players().findByUniqueId("d0f7d4b1-0e3f-4a4b-9f0e-2f2b5a1c3d4e")  // dashed or plain
-notch?.let {
-    cloud.players().sendMessage(it, "§aWelcome to the network!")
-    cloud.players().kick(it, "§cBye.")                       // optional reason
-    it.hasPermission("group.moderator")                       // async, never blocks
-}
-val lobby = cloud.services().findByGroup("lobby").firstOrNull()
-if (notch != null && lobby != null) cloud.players().connect(notch, lobby)  // via the proxy
 
-// services — console commands from code
+notch?.let {
+    cloud.players().sendMessage(it, "§aWelcome to the network!")   // returns immediately
+    cloud.players().kick(it, "§cBye.")                             // returns immediately
+}
+
+val lobby = cloud.services().findByGroup("lobby").firstOrNull()
+if (notch != null && lobby != null) cloud.players().connect(notch, lobby)  // waits for the controller
+
 cloud.services().findByGroup("citybuild").forEach { service ->
-    service.executeCommand("say Restarting in 10s")
+    service.executeCommand("say Restarting in 10s")                 // returns immediately
 }
 
 // groups — what is configured
 cloud.groups().all().forEach { group -> println("${group.name}: ${group.version}") }
 
-// the same command surface as /cloud, resolved server-side
+// the same command surface as /cloud, resolved by the controller
 val lines = cloud.executeCloudCommand(listOf("services"))
 val suggestions = cloud.completeCloudCommand(listOf("group", ""))
 ```
 
+| Call | Blocks? | Why |
+|---|---|---|
+| `status()`, `players().all()`, `findByName`, `services()`, `groups()` | yes, milliseconds | one local `GET` |
+| `sendMessage`, `kick`, `CloudService.executeCommand` | no | one `PUBLISH`/`RPUSH` |
+| `hasPermission(...)` | yes, until the player's server answers (≤ `timeout`) | the check runs on that server |
+| `connect(...)` (transfer) | yes, until the controller wrote it to the proxy console | only the controller owns the proxy |
+| `executeCloudCommand` / `completeCloudCommand` | yes, until the controller answers | the controller is the authority |
+
+Every blocking call has a non-blocking variant that runs it on a background thread and returns a
+`CompletableFuture`: `hasPermissionAsync`, `sendMessageAsync`, `kickAsync`, `connectAsync`,
+`executeCommandAsync`, `executeCloudCommandAsync`. Prefer those on a server's main thread.
+
 ### Scoreboards and other frequent readers
 
-Use `cloud.temporary()` for frequent reads: its player, service, and group data comes from one in-memory status
-snapshot that refreshes asynchronously every five seconds by default. Cached reads never issue HTTP on the caller's
-thread, so they are safe for scoreboards, events, or checks that run every second. Before the first refresh, cached
-collections are empty and counts are zero; while the bridge is unreachable, the last successful snapshot remains.
+Use `cloud.temporary()` for frequent reads: the full status document is cached in memory and refreshed in the
+background every five seconds by default. Cached reads never touch Redis on the caller's thread, so they are safe
+for scoreboards, events, or checks that run every second. Before the first refresh, cached collections are empty and
+counts are zero; while Redis is unreachable, the last successful snapshot remains.
 
 ```kotlin
 val cached = VibeCloud.instance().temporary()
 val online = cached.players().playerCount()
 val cloudPlayer = cached.players().findByName(player.name)
-val group = cloudPlayer?.group             // cached, no HTTP request
+val group = cloudPlayer?.group             // cached, no Redis read
 val services = cached.services().findByGroup("lobby")
 ```
 
-The old `cloud.players().playerCount()` convenience call uses the same cache. Configure its cadence with
-`temporaryRefreshInterval(Duration.ofSeconds(3))` on the `VibeCloud.connect` builder (the existing
-`playerCountRefreshInterval(...)` builder method remains as an alias). Call `cached.refreshAsync()` if you need to
-request an immediate background refresh; it returns a `CompletableFuture<CloudStatus>`.
+`cloud.players().playerCount()` uses the same cache. Configure its cadence with
+`temporaryRefreshInterval(Duration.ofSeconds(3))` on the builder. `cached.refreshAsync()` requests an immediate
+background refresh and returns a `CompletableFuture<CloudStatus>`.
 
 ### API reference
 
 | Call | Purpose |
 |---|---|
 | `VibeCloud.forService()` | Connect using the installed agent config (plugins inside managed services) |
-| `VibeCloud.connect { … }` | Connect with explicit base URL/token; stores the singleton |
+| `VibeCloud.connect { … }` | Connect with an explicit Redis URL/token; stores the singleton |
 | `VibeCloud.instance()` / `instanceOrNull()` | Access the singleton afterwards |
-| `VibeCloud.currentServiceName()` / `instance.currentService()` | Local service identity from the agent config (no HTTP; `null` outside the cloud) |
-| `cloud.players().all() / findByName(name) / refresh(player)` | Fresh roster/lookups (HTTP; use asynchronously) |
+| `VibeCloud.currentServiceName()` / `instance.currentService()` | Local service identity from the agent config (no Redis; `null` outside the cloud) |
+| `cloud.players().all() / findByName(name) / refresh(player)` | Fresh roster and lookups |
 | `cloud.players().findByUniqueId(uuid)` | UUID lookup (dashes/case-insensitive, name fallback); `CloudPlayer.uniqueId` / `uuid` come from the agent roster |
-| `cloud.players().hasPermission(player, node)` / `player.hasPermission(node)` | Effective permission check on the player's server (LuckPerms etc.); returns `CompletableFuture<Boolean>`, never blocks |
-| `cloud.temporary().players().all() / findByName(name)` | Cached player roster and details; never performs HTTP on the caller |
+| `cloud.players().hasPermission(player, node)` / `player.hasPermission(node)` | Effective permission check on the player's server (LuckPerms etc.); blocks until answered |
+| `cloud.temporary().players().all() / findByName(name)` | Cached player roster and details; never touches Redis on the caller |
 | `cloud.temporary().playerCount()` / `cloud.players().playerCount()` | Cached network player count (background refresh, default 5s) |
 | `cloud.temporary().services() / groups()` | Cached service and group snapshots |
-| `cloud.players().sendMessage(player, lines)` | Chat message (legacy `§` codes supported); returns a `CompletableFuture`, never blocks |
-| `cloud.players().kick(player, reason)` | Kick with reason; returns a `CompletableFuture`, never blocks |
-| `cloud.players().connect(player, targetService)` | Transfer via the proxy (`send`); returns a `CompletableFuture`, never blocks, needs a running proxy |
+| `cloud.players().sendMessage(player, lines)` | Chat message (legacy `§` codes supported); returns immediately |
+| `cloud.players().kick(player, reason)` | Kick with reason; returns immediately |
+| `cloud.players().connect(player, targetService)` | Transfer via the proxy (`send`); needs a running proxy |
 | `cloud.services().all() / findByName / findByGroup(group) / findOnline()` | Service snapshots |
-| `CloudService.executeCommand(commandLine)` | Console command on that service (runs on its main thread); returns a `CompletableFuture` |
+| `CloudService.executeCommand(commandLine)` | Console command on that service (runs on its main thread); returns immediately |
 | `cloud.groups().all() / findByName(name)` | Group configuration |
 | `cloud.status()` | Full status document in one call |
 | `cloud.executeCloudCommand(args) / completeCloudCommand(args)` | The `/cloud` surface from code |
+| `…Async(...)` variants | The same call on a background thread (`CompletableFuture`) |
 
 ### Player ids and permission checks
 
@@ -148,28 +167,21 @@ from that backend's permission system — LuckPerms (or any other provider insta
 group/luck data. Install LuckPerms on the backend servers (a shared MongoDB store keeps them in sync); a proxy-only
 LuckPerms install does not answer Bukkit permission checks on the backends.
 
-The check is a round trip: the cloud queues the node for the player's agent, the agent answers on its next heartbeat
-(executed on that server's main thread), and the SDK polls the cloud for the result. It is asynchronous like the
-actions above and fails with an `IOException` when the player left, the node could not be evaluated, or the answer
-took longer than ten seconds. Agents older than this feature ignore the request (the check then times out), so once
-the controller is upgraded, restart the backend services — the cloud reinstalls its bundled agent on every start.
+The request is published to every agent; the one that hosts the player evaluates the node on its main thread and
+pushes the answer to a one-shot Redis list. The call returns `true`/`false`, and throws an `IOException` when the
+player is offline, the node could not be evaluated, or no answer arrived within the configured timeout. Use
+`hasPermissionAsync` on the main thread:
 
 ```kotlin
-player.hasPermission("group.moderator").thenAccept { granted ->
+player.hasPermissionAsync("group.moderator").thenAccept { granted ->
     if (!granted) player.kick("§cStaff only")
 }
 ```
 
-Actions are asynchronous: they return immediately with a `CompletableFuture` that completes when the cloud accepted
-the action, or fails with an `IOException` (bridge unreachable, rejected token, no running proxy, unknown target).
-Message and kick are executed by the target service's agent within one heartbeat (default 5 s). A **transfer is
-written to the proxy's console right away** — no heartbeat wait — and works with every client version. A player who
-left in the meantime yields `CloudPlayerNotFoundException` / graceful `null` lookups.
-
-The HTTP transport is tuned for the loopback bridge: HTTP/1.1 is pinned (no h2c upgrade) and the keep-alive
-connection is opened during `connect` and kept warm by the background status refresh, so an action is a single
-round trip. Actions run on a shared daemon dispatcher, which is why the calling thread is never blocked - a server
-main thread can call `connect`/`sendMessage`/`kick` directly.
+A message or kick is broadcast to every backend agent, so the server that hosts the player acts on it — a player who
+just switched servers still receives the message instead of being lost to stale routing state. A transfer is written
+to the proxy's console right away and works with every client version. A player who left is reported by `null`
+lookups, and `hasPermission` throws `CloudPlayerNotFoundException`.
 
 ## 2. Embedding the controller (your own app)
 
@@ -218,36 +230,41 @@ val handle: AutoCloseable = cloud.events.subscribe { event ->
 
 Subscribers run on the cloud's dispatcher — hand long work to your own scope. Events are in-process only.
 
-## 3. Raw HTTP (scripts, bots, tools)
+## 3. Raw Redis (scripts, bots, tools)
 
-Every data endpoint needs `Authorization: Bearer <bridge.token>`:
+Everything lives under the `vibecloud:` prefix:
+
+| Key / channel | Type | Contents |
+|---|---|---|
+| `vibecloud:status` | string | The cloud status document (JSON), written by the controller |
+| `vibecloud:heartbeat` | channel | Agent heartbeats (JSON), consumed by the controller |
+| `vibecloud:actions` | channel | Player actions (message/kick/log/permission) broadcast by the SDK |
+| `vibecloud:commands:<service>` | list | Console commands for one service, popped by its agent |
+| `vibecloud:cloud` | list | Requests only the controller can execute (transfers, `/cloud`) |
+| `vibecloud:result:<id>` | list | One-shot answer to a permission check |
+| `vibecloud:cloud:result:<id>` | list | The controller's answer to a request |
 
 ```bash
-curl -H "Authorization: Bearer $(cat bridge.token)" http://127.0.0.1:25580/bridge/status
+# The whole network state, exactly what the SDK's status() parses
+redis-cli GET vibecloud:status | jq .
 ```
 
-| Endpoint | Returns |
-|---|---|
-| `GET /bridge/status` | Totals, groups, per-service state/port/players (plus enriched `player-details`: UUID/ping/world/gamemode when the agent reports them)/TPS/heap/CPU/agent version |
-| `GET /bridge/metrics` | Rolling history (players, TPS, RAM, host CPU…) + per-service metrics |
-| `GET /bridge/host` | Root-server CPU/memory/swap/uptime/load/OS/Java + per-process CPU |
-| `GET /bridge/activity` | Recent lifecycle events, newest first |
-| `GET /bridge/console?service=` | Last 200 console lines |
-| `POST /bridge/players` | `action=transfer&target=` → `202`, written to the proxy console off the request thread; `action=message|kick|inventory|permission` → queued for the player's agent (`permission` also needs `node=` and answers with a `request-id`) |
-| `GET /bridge/players/permission?request-id=` | Answer of a queued permission check: `202` + `pending`, `200` + `granted`/`denied`, `422` when it could not be evaluated, `404` for an unknown/expired id |
-| `POST /bridge/services/command` | Run a console command on a service |
-| `POST /bridge/cloud` | The `/cloud` command surface (`arg` repeated, `mode=execute|complete`) |
-| `POST /bridge/heartbeat` | Agent-only telemetry ingestion |
+Publishing an action or a request requires the shared token (the contents of `bridge.token`) in the message's
+`token` field; the controller and the agents reject anything else. Anyone with plain Redis access can read the
+status — bind Redis to `127.0.0.1` (the default) or protect it with `requirepass`, and see
+[docs/SECURITY.md](../SECURITY.md).
 
-The full request/response shapes live in [docs/API.md](../API.md). Cookie/session auth (the dashboard's way) and
-CSRF rules are documented in [docs/SECURITY.md](../SECURITY.md).
+The full message shapes live in [docs/API.md](../API.md).
 
 ## Good to know
 
-- The bridge binds to `127.0.0.1` by default — keep it that way and use a TLS reverse proxy for remote access.
-- The token grants full read access *and* command dispatch: distribute it like a password.
-- The facade and client throw `IOException` on transport errors, a rejected token (401), or unknown subcommands.
+- The token grants command dispatch: distribute it like a password, and treat the Redis instance as a trusted
+  component of the network.
+- The facade throws `IOException` when Redis is unreachable, the token is rejected, no proxy is running, the target
+  is unknown, or an answer timed out.
 - `bridge.heartbeat-interval-seconds` (default 5) controls how fresh player/TPS/CPU data is.
+- After upgrading the controller, restart the backend services: the cloud reinstalls its bundled agent jar on every
+  start, and an older agent does not know the newer message types.
 
 ---
 

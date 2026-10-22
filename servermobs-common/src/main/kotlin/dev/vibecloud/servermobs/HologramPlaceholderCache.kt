@@ -2,10 +2,6 @@ package dev.vibecloud.servermobs
 
 import org.bukkit.plugin.Plugin
 import org.bukkit.scheduler.BukkitTask
-import org.yaml.snakeyaml.Yaml
-import java.io.InputStream
-import java.net.HttpURLConnection
-import java.net.URI
 import java.nio.file.Files
 import java.nio.file.Paths
 import java.util.Properties
@@ -14,8 +10,12 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.logging.Logger
 
 /**
- * Polls the local VibeCloud status bridge off-thread and keeps player-count values for holograms
- * available to the server thread. Missing/invalid configuration simply leaves placeholders intact.
+ * Polls the VibeCloud status document (`vibecloud:status` in Redis) off-thread and keeps
+ * player-count values for holograms available to the server thread. Missing/invalid configuration
+ * simply leaves placeholders intact.
+ *
+ * The Redis URL comes from the agent config the cloud installs
+ * (`plugins/VibeCloud/agent.properties`); the status key is readable without the bridge token.
  */
 class HologramPlaceholderCache(
     private val plugin: Plugin,
@@ -30,9 +30,7 @@ class HologramPlaceholderCache(
     @Volatile
     private var stopped = false
     @Volatile
-    private var cloudUrl: String? = null
-    @Volatile
-    private var token: String? = null
+    private var redisUrl: String? = null
 
     fun start() {
         stopped = false
@@ -41,13 +39,12 @@ class HologramPlaceholderCache(
         val properties = Properties()
         try {
             Files.newInputStream(agentConfig).use { properties.load(it) }
-            cloudUrl = properties.getProperty("cloud-url")?.trim()?.trimEnd('/')?.takeIf { it.isNotEmpty() }
-            token = properties.getProperty("token")?.trim()?.takeIf { it.isNotEmpty() }
+            redisUrl = properties.getProperty("redis-url")?.trim()?.takeIf { it.isNotEmpty() }
         } catch (failure: Exception) {
             logger.warning("Could not load VibeCloud settings for hologram placeholders: ${failure.message}")
             return
         }
-        if (cloudUrl == null || token == null) return
+        if (redisUrl == null) return
         refreshAsync()
         refreshTask = org.bukkit.Bukkit.getScheduler()
             .runTaskTimer(plugin, Runnable(::refreshAsync), refreshIntervalTicks, refreshIntervalTicks)
@@ -60,38 +57,20 @@ class HologramPlaceholderCache(
         running.set(false)
     }
 
-    /** Replaces recognized player-count placeholders from the last cached response. */
+    /** Replaces recognized player-count placeholders from the last cached status document. */
     fun resolve(input: String): String = resolvePlayerCountPlaceholders(input, status)
 
     private fun refreshAsync() {
         if (stopped || !running.compareAndSet(false, true)) return
-        val base = cloudUrl ?: run {
-            running.set(false)
-            return
-        }
-        val auth = token ?: run {
+        val url = redisUrl ?: run {
             running.set(false)
             return
         }
         CompletableFuture.runAsync {
             try {
-                val connection = URI("$base/bridge/status").toURL().openConnection() as HttpURLConnection
-                connection.requestMethod = "GET"
-                connection.connectTimeout = CONNECT_TIMEOUT_MS
-                connection.readTimeout = READ_TIMEOUT_MS
-                connection.setRequestProperty("Accept", "application/json")
-                connection.setRequestProperty("Authorization", "Bearer $auth")
-                connection.setRequestProperty("User-Agent", USER_AGENT)
-                try {
-                    if (connection.responseCode == HttpURLConnection.HTTP_OK) {
-                        val body = connection.inputStream.use { stream: InputStream -> stream.bufferedReader().readText() }
-                        @Suppress("UNCHECKED_CAST")
-                        val parsed = Yaml().load<Any?>(body) as? Map<String, Any?>
-                        if (parsed != null && !stopped) status = parsed
-                    }
-                } finally {
-                    connection.disconnect()
-                }
+                val body = RedisStatusReader(url).read(STATUS_KEY) ?: return@runAsync
+                val parsed = parseStatusDocument(body)
+                if (parsed != null && !stopped) status = parsed
             } catch (failure: Exception) {
                 logger.fine("Could not refresh cached hologram player counts: ${failure.message}")
             } finally {
@@ -102,8 +81,8 @@ class HologramPlaceholderCache(
 
     companion object {
         const val DEFAULT_REFRESH_INTERVAL_TICKS = 100L
-        private const val CONNECT_TIMEOUT_MS = 1500
-        private const val READ_TIMEOUT_MS = 2000
-        private const val USER_AGENT = "VibeCloud-ServerMobs/1.0"
+
+        /** Redis key the controller publishes the cloud status document to. */
+        const val STATUS_KEY = "vibecloud:status"
     }
 }

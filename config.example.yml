@@ -24,15 +24,21 @@ runtime:
 reconciliation:
   interval-seconds: 5
 
-# Local HTTP bridge: backend agent plugins report live player rosters here, the web dashboard is
-# served at its root, and plugins can read the cloud status from code. Agents are installed
-# automatically into every backend service; the shared token is generated at bridge.token next to
-# this file. Keep bind-address at 127.0.0.1 and put a TLS reverse proxy in front for remote
-# dashboard access — see docs/SECURITY.md for the full deployment guide.
+# Redis carries the agent bridge: backend agents publish their rosters there, the controller
+# publishes the cloud status, and plugins read it from code. Redis must be reachable before the
+# cloud starts — the default is a local server on the standard port. Credentials and a database
+# can be given in the URL:
+#   redis://127.0.0.1:6379
+#   redis://:password@127.0.0.1:6379/2
+#   rediss://redis.example.com:6380
+redis:
+  url: "redis://127.0.0.1:6379"
+
+# Agent bridge settings: how often backends report, when an agent counts as offline, and the
+# in-game service log. Agents are installed automatically into every backend service; the shared
+# token is generated at bridge.token next to this file.
 bridge:
   enabled: true
-  port: 25580
-  bind-address: "127.0.0.1"
   heartbeat-interval-seconds: 5
   offline-timeout-seconds: 20
 

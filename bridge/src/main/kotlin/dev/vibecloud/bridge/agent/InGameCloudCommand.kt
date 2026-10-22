@@ -8,10 +8,9 @@ import org.bukkit.command.CommandSender
 import org.bukkit.command.TabCompleter
 
 /**
- * The in-game `/cloud` command: forwards the argument list to the cloud's bridge
- * (`POST /bridge/cloud`) and prints the returned lines to the sender. The cloud is the
- * authority — subcommands, lifecycle actions, listings and completions all behave exactly
- * like the cloud console.
+ * The in-game `/cloud` command: forwards the argument list to the controller over Redis and
+ * prints the returned lines to the sender. The cloud is the authority — subcommands, lifecycle
+ * actions, listings and completions all behave exactly like the cloud console.
  *
  * Output is branded with the cloud's service-log prefix (leading the first line of every
  * response block, matching the agent's other messages). The response lines carry legacy
@@ -29,9 +28,9 @@ class InGameCloudCommand(private val plugin: VibeCloudAgentPlugin) : CommandExec
             )
             return true
         }
-        // The bridge call is a blocking HTTP round-trip (local, sub-millisecond typical): run it
-        // async so a stalled cloud can never tick-lag the server, then hand results to the
-        // sender from the main thread (Bukkit API is not thread-safe).
+        // A cloud command is a blocking round trip to the controller (local Redis, typically
+        // milliseconds): run it async so a stalled controller can never tick-lag the server, then
+        // hand results to the sender from the main thread (Bukkit API is not thread-safe).
         val arguments = args.toList()
         plugin.server.scheduler.runTaskAsynchronously(
             plugin,

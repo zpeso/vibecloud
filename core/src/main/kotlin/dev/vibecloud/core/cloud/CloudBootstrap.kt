@@ -9,19 +9,18 @@ import dev.vibecloud.api.event.ServiceStoppedEvent
 import dev.vibecloud.api.server.ServerCatalog
 import dev.vibecloud.common.config.CloudConfigRepository
 import dev.vibecloud.common.logging.Logger
-import dev.vibecloud.core.bridge.ActivityLog
 import dev.vibecloud.core.bridge.BridgeAgentInstaller
 import dev.vibecloud.core.bridge.BridgeAgentRegistry
-import dev.vibecloud.core.bridge.BridgeCommandQueue
 import dev.vibecloud.core.bridge.BridgeCloudCommands
-import dev.vibecloud.core.bridge.BridgeHttpServer
-import dev.vibecloud.core.bridge.ServiceLogBroadcaster
+import dev.vibecloud.core.bridge.BridgeCommandSink
 import dev.vibecloud.core.bridge.BridgeManager
 import dev.vibecloud.core.bridge.BridgeTokenStore
-import dev.vibecloud.core.bridge.HostMetrics
+import dev.vibecloud.core.bridge.CloudStatusDocument
 import dev.vibecloud.core.bridge.JsonWriter
-import dev.vibecloud.core.bridge.MetricsHistory
+import dev.vibecloud.core.bridge.RedisBridge
+import dev.vibecloud.core.bridge.ServiceLogBroadcaster
 import dev.vibecloud.core.bridge.ServicePlayerTracker
+import dev.vibecloud.transport.JedisRedisGateway
 import dev.vibecloud.core.event.CoroutineEventBus
 import dev.vibecloud.core.group.LocalGroupManager
 import dev.vibecloud.core.port.PortRangeAllocator
@@ -48,13 +47,6 @@ class CloudBootstrap(
     private val serverAdapters: Collection<ServerAdapter> = defaultServerAdapters().all(),
     private val serverCatalog: ServerCatalog = PaperMcServerCatalog(),
 ) {
-    /**
-     * Release version for the dashboard and `/bridge/host`: the core jar's implementation
-     * version (stamped by the release build), or empty when running from an unversioned build.
-     */
-    private fun cloudVersion(): String = runCatching {
-        CloudBootstrap::class.java.getPackage()?.implementationVersion.orEmpty()
-    }.getOrDefault("")
     fun create(configFile: Path): Cloud {
         val repository = CloudConfigRepository(configFile)
         val config = repository.loadOrCreate()
@@ -113,7 +105,7 @@ class CloudBootstrap(
                     }
                 },
             )
-            // Local HTTP bridge: backend agents report here; plugins read live cloud state here.
+            // Redis bridge: backend agents publish heartbeats here and plugins read live cloud state.
             val bridgeTokenStore = BridgeTokenStore(
                 configFile.parent?.resolve("bridge.token") ?: Path.of("bridge.token"),
                 logger,
@@ -123,40 +115,23 @@ class CloudBootstrap(
             if (config.bridge.enabled) bridgeTokenStore.obtain()
             val bridgeRegistry = BridgeAgentRegistry { config.bridge.offlineTimeout }
             val bridgeTracker = ServicePlayerTracker()
-            // Console-command writer shared by the HTTP surface and the in-game /cloud command.
+            // Console-command writer shared by the bridge and the in-game /cloud command.
             val consoleCommandWriter: (String, String) -> Boolean = { serviceName, command ->
                 runBlocking { serviceManagerReference.get()?.sendConsoleCommand(serviceName, command) == true }
             }
-            // The in-game /cloud command surface needs the service manager and the bridge's
-            // command queue, neither of which exists while the bridge server is being
-            // constructed — resolve both lazily on first request instead.
-            var commandQueueHolder: BridgeCommandQueue? = null
+            // The in-game /cloud surface needs the service manager and the bridge's command sink,
+            // neither of which exists while the bridge is being constructed — resolve both lazily.
+            var commandSinkHolder: BridgeCommandSink? = null
             // Lifecycle notices fanned out to running agents as `log` commands (all holders of
-            // cloud.logs see start/stop/restart/crash in-game). Resolved lazily with the queue
-            // holder — the bridge server owns the queue and is constructed afterwards.
+            // cloud.logs see start/stop/restart in-game). Resolved lazily with the sink holder.
             val serviceLogBroadcaster = ServiceLogBroadcaster(
-                commandQueue = { commandQueueHolder },
+                commandSink = { commandSinkHolder },
                 services = { serviceManagerReference.get()?.all().orEmpty().toList() },
                 messages = { config.bridge.serviceLog },
             )
             // Resolved later in create(); the /cloud group commands need it for version switches.
             var templateManagerHolder: FileTemplateManager? = null
-            // Shared rolling metrics history: the manager samples it, the HTTP endpoint renders it.
-            val metricsHistory = MetricsHistory()
-            // Host-level metrics (CPU load, memory, uptime of the root server) plus per-process
-            // CPU of the running services; sampled by the reconciler, rendered by the dashboard.
-            val hostMetrics = HostMetrics()
-            // In-memory activity feed for the dashboard: lifecycle events, newest first.
-            val activityLog = ActivityLog()
             events.subscribe { event ->
-                when (event) {
-                    is ServiceCreatedEvent -> activityLog.add("created", "Service ${event.service.name} created for group ${event.service.groupName}")
-                    is ServiceStartedEvent -> activityLog.add("started", "Service ${event.service.name} started (port ${event.service.port})")
-                    is ServiceStoppedEvent -> activityLog.add("stopped", "Service ${event.service.name} stopped")
-                    is ServiceCrashedEvent -> activityLog.add("crashed", "Service ${event.service.name} crashed: ${event.reason.take(160)}")
-                    is ServiceDeletedEvent -> activityLog.add("deleted", "Service ${event.service.name} deleted")
-                    else -> Unit
-                }
                 // Network-wide service log: mirrors lifecycle events to running agents. Best
                 // effort — a broadcast failure must never disturb the event bus or the manager.
                 runCatching { serviceLogBroadcaster.broadcast(event) }
@@ -168,15 +143,15 @@ class CloudBootstrap(
                         services = manager,
                         groups = groupManager,
                         tracker = bridgeTracker,
-                        commandQueue = commandQueueHolder ?: return@let null,
+                        commands = commandSinkHolder ?: return@let null,
                         sendConsoleCommand = consoleCommandWriter,
                         serverCatalog = serverCatalog,
                         templates = templateManagerHolder,
                     )
                 }
             }
-            val bridgeServer = BridgeHttpServer(
-                cloudView = object : BridgeHttpServer.CloudView {
+            val redisBridge = RedisBridge(
+                cloudView = object : CloudStatusDocument.CloudView {
                     override fun services() = serviceManagerReference.get()?.all().orEmpty().toList()
                     override fun groupCount() = groupManager.all().size
                     override fun snapshotGroups() = groupManager.all().joinToString(",") { group ->
@@ -191,44 +166,29 @@ class CloudBootstrap(
                         )
                     }.let { "[$it]" } // wrap as a proper JSON array
                 },
-                // The bridge dispatches console commands (proxy `send ...` transfers, agent
-                // commands) through the service manager's stdin writer.
+                // The bridge dispatches proxy `send ...` transfers through the service manager's
+                // stdin writer.
                 sendConsoleCommand = consoleCommandWriter,
                 cloudCommands = cloudCommands,
-                metricsHistory = metricsHistory,
-                consoleHistory = { serviceName, maxLines ->
-                    serviceManagerReference.get()?.console?.history(serviceName, maxLines).orEmpty()
-                },
                 tokenStore = bridgeTokenStore,
                 registry = bridgeRegistry,
                 tracker = bridgeTracker,
                 settings = config.bridge,
+                redis = JedisRedisGateway(config.redis.url),
+                redisUrl = config.redis.url,
                 logger = logger,
-                hostMetrics = hostMetrics,
-                activityLog = activityLog,
-                cloudVersion = cloudVersion(),
             )
-            commandQueueHolder = bridgeServer.commandQueue
+            commandSinkHolder = redisBridge
             val bridgeManager = BridgeManager(
-                server = bridgeServer,
+                bridge = redisBridge,
                 registry = bridgeRegistry,
                 tracker = bridgeTracker,
-                settings = config.bridge,
                 logger = logger,
-                metrics = metricsHistory,
             )
             val agentInstaller = BridgeAgentInstaller(
                 settings = config.bridge,
                 tokenStore = bridgeTokenStore,
-                cloudUrl = {
-                    if (!config.bridge.enabled) {
-                        null
-                    } else {
-                        val host = if (config.bridge.bindAddress == "0.0.0.0") "127.0.0.1" else config.bridge.bindAddress
-                        val port = bridgeServer.boundPort()
-                        if (port <= 0) null else "http://$host:$port"
-                    }
-                },
+                redisUrl = { if (config.bridge.enabled) config.redis.url else null },
                 agentJarResolver = BridgeAgentInstaller.defaultAgentJarResolver(configFile.parent),
                 logger = logger,
             )

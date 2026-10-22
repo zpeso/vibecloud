@@ -1,15 +1,15 @@
-package dev.vibecloud.api.bridge
+package dev.vibecloud.transport
 
 /**
  * Minimal JSON reader (RFC 8259 subset) for the bridge documents — no third-party dependencies,
- * because the SDK must stay zero-dependency for shading into plugins.
+ * because the SDK stays dependency-free so it shades cleanly into plugins.
  *
  * The bridge only ever emits objects, arrays, strings, and integers, but the parser accepts the
  * full grammar (literals, fractional numbers, nested structures) so documents can evolve without
  * breaking clients. Whitespace between tokens is handled, and string contents are unescaped
  * exactly like the bridge writes them (`\"`, `\\`, `\/`, `\b`, `\f`, `\n`, `\r`, `\t`, `\uXXXX`).
  */
-internal object MiniJson {
+object MiniJson {
 
     /** Any parsed JSON value: [Map] (object), [List] (array), [String], [Long]/[Double], [Boolean], or null. */
     fun parse(json: String): Any? {

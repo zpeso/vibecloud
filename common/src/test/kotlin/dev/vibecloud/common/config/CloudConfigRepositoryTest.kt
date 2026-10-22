@@ -37,6 +37,8 @@ class CloudConfigRepositoryTest {
             // bridge.service-log expands with its defaults so users can discover the keys.
             assertEquals(ServiceLogMessages.DEFAULT_PREFIX, reloaded.bridge.serviceLog.prefix)
             assertEquals("%service% is now running", reloaded.bridge.serviceLog.started)
+            // The Redis bridge section is written with its default and round-trips unchanged.
+            assertEquals("redis://127.0.0.1:6379", reloaded.redis.url)
         } finally {
             directory.toFile().deleteRecursively()
         }
@@ -66,24 +68,27 @@ class CloudConfigRepositoryTest {
         val directory = Files.createTempDirectory("cloud-config-test")
         try {
             val file = directory.resolve("config.yml")
-            // A pre-1.0.9 config.yml: bridge settings exist, service-log does not.
+            // A pre-Redis config.yml: bridge cadence exists, service-log and redis do not.
             Files.write(
                 file,
                 listOf(
                     "bridge:",
-                    "  port: 25581",
+                    "  heartbeat-interval-seconds: 12",
                 ),
             )
 
             val backfilled = CloudConfigRepository(file).loadOrCreate()
-            assertEquals(25581, backfilled.bridge.port)
-            // First load already persisted the new section with its defaults; a fresh
+            assertEquals(12, backfilled.bridge.heartbeatInterval.seconds)
+            assertEquals("redis://127.0.0.1:6379", backfilled.redis.url)
+            // First load already persisted the new sections with their defaults; a fresh
             // repository reads the file (no further backfill) and sees the same values.
             val raw = Files.readAllLines(file).joinToString("\n")
             assertTrue(raw.contains("service-log"), "config.yml should now contain the service-log section:\n$raw")
+            assertTrue(raw.contains("redis:"), "config.yml should now contain the redis section:\n$raw")
             val reloaded = CloudConfigRepository(file).loadOrCreate()
-            assertEquals(25581, reloaded.bridge.port)
+            assertEquals(12, reloaded.bridge.heartbeatInterval.seconds)
             assertEquals(ServiceLogMessages.DEFAULT_PREFIX, reloaded.bridge.serviceLog.prefix)
+            assertEquals("redis://127.0.0.1:6379", reloaded.redis.url)
         } finally {
             directory.toFile().deleteRecursively()
         }
@@ -94,7 +99,6 @@ class CloudConfigRepositoryTest {
             file,
             listOf(
                 "bridge:",
-                "  port: 25580",
                 "  service-log:",
                 "    prefix: '\u00a73NCloud \u00a78» '",
                 "    starting: '[start] %service%'",

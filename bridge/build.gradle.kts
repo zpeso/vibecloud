@@ -23,6 +23,13 @@ tasks.withType<JavaCompile>().configureEach {
 }
 
 dependencies {
+    // Redis transport shared with the controller: the gateway, the key layout and the JSON
+    // helpers. Jedis comes in through it and is shaded into the agent jar.
+    implementation(project(":transport"))
+    // Jedis logs through SLF4J; a server JVM has no binding for our shaded copy, so ship a no-op
+    // one instead of letting SLF4J print its "no binding" warning into every server log.
+    implementation("org.slf4j:slf4j-nop:1.7.36")
+
     // Agent plugin code is compiled against the Paper API but only uses stable Bukkit types.
     compileOnly("io.papermc.paper:paper-api:1.21.4-R0.1-SNAPSHOT") // Java 21
 
@@ -38,6 +45,9 @@ val agentJar = tasks.register<Jar>("agentJar") {
     archiveFileName = "VibeCloud-Agent.jar"
     destinationDirectory = layout.buildDirectory.dir("libs-agent")
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    // The shaded runtime classpath includes project jars (transport); declare the dependency
+    // explicitly so Gradle 9 never evaluates the zipTree before they are built.
+    dependsOn(configurations.runtimeClasspath)
     from(sourceSets.main.get().output)
     from({
         configurations.runtimeClasspath.get().map { if (it.isDirectory) it else zipTree(it) }

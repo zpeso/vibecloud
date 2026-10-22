@@ -1,7 +1,7 @@
 name: VibeCloud
 version: '${version}'
 main: dev.vibecloud.bridge.agent.VibeCloudAgentPlugin
-description: Reports live player rosters from this server to the VibeCloud bridge and provides the /cloud command.
+description: Reports live player rosters and answers cloud actions over Redis; provides the /cloud command.
 authors: [VibeCloud]
 load: STARTUP
 

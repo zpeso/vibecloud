@@ -1,12 +1,14 @@
 package dev.vibecloud.api.bridge
 
+import dev.vibecloud.transport.BridgeJson
+import dev.vibecloud.transport.BridgeProtocol
+import dev.vibecloud.transport.JedisRedisGateway
+import dev.vibecloud.transport.RedisGateway
+import dev.vibecloud.transport.strings
 import java.io.IOException
-import java.net.URI
-import java.net.http.HttpClient
-import java.net.http.HttpRequest
-import java.net.http.HttpResponse
 import java.nio.file.Path
 import java.time.Duration
+import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -20,10 +22,9 @@ import java.util.concurrent.Executors
  * cloud.services().findByGroup("lobby").forEach { service -> service.executeCommand("say hi") }
  * ```
  *
- * The facade talks to the cloud's local bridge endpoint. Plugin code should call
- * [forService] (or [connect]) once during startup; [forService] reads the connection
- * details from the agent config the cloud installs into every service
- * (`plugins/VibeCloud/agent.properties`).
+ * The facade talks to the controller through Redis. Plugin code should call [forService] (or
+ * [connect]) once during startup; [forService] reads the connection details from the agent config
+ * the cloud installs into every service (`plugins/VibeCloud/agent.properties`).
  *
  * Provider collections are snapshots of the cloud state (players join/leave, services
  * start/stop); each provider also exposes direct lookups such as
@@ -31,41 +32,31 @@ import java.util.concurrent.Executors
  * [temporary] exposes an asynchronously refreshed in-memory status snapshot for frequent reads;
  * [CloudPlayerProvider.playerCount] is a convenience backed by that same cache.
  *
- * ## Latency
+ * ## Latency and blocking
  *
- * State-changing actions ([CloudPlayerProvider.connect], [CloudPlayerProvider.sendMessage],
- * [CloudPlayerProvider.kick], [CloudService.executeCommand]) never block the caller: they are
- * handed to a shared daemon dispatcher and return a [CompletableFuture]. The transport pins
- * HTTP/1.1 and keeps the connection alive (the background status refresh keeps it warm), so a
- * local bridge call is a single round trip with no handshake. Read calls that need a result
- * (`status()`, `all()`, `findByName`) still block; use [temporary] for hot paths.
+ * The status document is a single local Redis `GET`, so read calls are synchronous and fast.
+ * Actions ([CloudPlayerProvider.sendMessage], [CloudPlayerProvider.kick],
+ * [CloudPlayerProvider.connect], [CloudService.executeCommand]) publish one Redis message and
+ * return immediately; they are delivered to the player's agent without a heartbeat wait.
+ *
+ * Two calls need an answer and therefore block until it arrives: a permission check (the
+ * player's server must evaluate the node) and a cloud command/transfer (the controller executes
+ * it). Both have asynchronous variants (`…Async`) that run the wait on a background thread —
+ * prefer those on a server's main thread. The synchronous variants keep working everywhere else
+ * and never wait longer than [Builder.timeout].
  */
 class VibeCloud private constructor(
-    private val baseUrl: String,
+    private val redis: RedisGateway,
     private val token: String,
     private val timeout: Duration,
     private val playerCountRefreshInterval: Duration,
     private val serviceIdentity: ServiceIdentity?,
 ) {
-    // HTTP/1.1 is pinned deliberately: the bridge is a local, plain-text endpoint, and the JDK
-    // client's default HTTP/2 would otherwise pay for an h2c upgrade on the first request. The
-    // client pools and reuses the keep-alive connection for every call.
-    private val http: HttpClient = HttpClient.newBuilder()
-        .version(HttpClient.Version.HTTP_1_1)
-        .connectTimeout(timeout)
-        .build()
-
     private val statusCache = CloudStatusCache(this, playerCountRefreshInterval)
     private val players = CloudPlayerProvider(this, statusCache)
     private val services = CloudServiceProvider(this)
     private val groups = CloudGroupProvider(this)
     private val temporary = TemporaryCloudData(this, statusCache)
-
-    init {
-        // Open the connection in the background so the first action/read does not pay for the TCP
-        // setup (and the h2c negotiation the pinned HTTP/1.1 version avoids).
-        warmUp()
-    }
 
     /** Access to the players online across the whole network. */
     fun players(): CloudPlayerProvider = players
@@ -75,9 +66,9 @@ class VibeCloud private constructor(
 
     /**
      * Cached, read-only cloud state for frequent polling (including from a server's main thread).
-     * Reads from this provider never perform HTTP; a status request runs in the background when
-     * the cache expires. The default refresh cadence is five seconds and can be configured with
-     * [Builder.playerCountRefreshInterval].
+     * Reads from this provider never touch Redis; a background refresh runs when the cache
+     * expires. The default refresh cadence is five seconds and can be configured with
+     * [Builder.temporaryRefreshInterval].
      */
     fun temporary(): TemporaryCloudData {
         statusCache.refresh()
@@ -97,9 +88,20 @@ class VibeCloud private constructor(
     /**
      * Overall cloud status: group/service totals, players online, per-service state. Kept for
      * scripts and tools that want the full document in one call.
+     *
+     * @throws IOException when Redis is unreachable or the controller has not published a status
+     * document yet.
      */
     @Throws(IOException::class)
-    fun status(): CloudStatus = get("/bridge/status") { CloudStatusParser.parse(it) }
+    fun status(): CloudStatus {
+        val json = read(BridgeProtocol.STATUS_KEY)
+            ?: throw IOException("VibeCloud status is unavailable (is the controller running with Redis access?)")
+        return try {
+            CloudStatusParser.parse(json)
+        } catch (failure: IllegalArgumentException) {
+            throw IOException("VibeCloud status document is malformed: ${failure.message}", failure)
+        }
+    }
 
     /**
      * Runs a cloud command server-side — the same surface that powers the in-game `/cloud`
@@ -112,115 +114,149 @@ class VibeCloud private constructor(
      * VibeCloud.instance.executeCloudCommand("restart", "citybuild-1")
      * ```
      *
+     * Blocks until the controller answered, at most [Builder.timeout]; use
+     * [executeCloudCommandAsync] on a server's main thread.
+     *
      * @throws IOException on transport errors, a rejected token, or an unknown subcommand.
      */
     @JvmOverloads
     @Throws(IOException::class)
-    fun executeCloudCommand(args: List<String> = emptyList()): List<String> = postCloud(args, complete = false)
+    fun executeCloudCommand(args: List<String> = emptyList()): List<String> =
+        cloudCommand(args, complete = false)
+
+    /** [executeCloudCommand] on a background thread; never blocks the caller. */
+    fun executeCloudCommandAsync(args: List<String> = emptyList()): CompletableFuture<List<String>> =
+        CompletableFuture.supplyAsync({ cloudCommand(args, complete = false) }, dispatcher)
 
     /**
      * Tab-completion suggestions for a partial `/cloud` argument list, resolved server-side so
      * suggestions always match the cloud's actual command set and live service/player names.
      */
     @Throws(IOException::class)
-    fun completeCloudCommand(args: List<String>): List<String> = postCloud(args, complete = true)
+    fun completeCloudCommand(args: List<String>): List<String> = cloudCommand(args, complete = true)
 
-    private fun postCloud(args: List<String>, complete: Boolean): List<String> {
-        val form = buildString {
-            args.forEachIndexed { index, arg ->
-                if (index > 0) append('&')
-                append("arg=").append(urlEncode(arg))
-            }
-            if (args.isNotEmpty()) append('&')
-            append("mode=").append(if (complete) "complete" else "execute")
-        }
-        return post("/bridge/cloud", form) { body ->
-            parseStringArray(body, if (complete) "suggestions" else "lines")
-        }
+    private fun cloudCommand(args: List<String>, complete: Boolean): List<String> {
+        val requestId = newRequestId()
+        val request = BridgeJson.obj(
+            "token" to BridgeJson.str(token),
+            "type" to BridgeJson.str(BridgeProtocol.REQUEST_CLOUD_COMMAND),
+            "args" to BridgeJson.strArray(args),
+            "mode" to BridgeJson.str(if (complete) "complete" else "execute"),
+            "request-id" to BridgeJson.str(requestId),
+        )
+        push(BridgeProtocol.CLOUD_REQUESTS_KEY, request)
+        val response = awaitCloudResponse(requestId)
+        val error = response.optString("error")
+        if (error != null) throw IOException("Cloud command failed: $error")
+        return response.strings("lines")
     }
 
-    private fun urlEncode(value: String): String =
-        java.net.URLEncoder.encode(value, Charsets.UTF_8).replace("+", "%20")
+    /**
+     * Asks the controller to move [playerName] to [targetService] (or `<group>#`). The controller
+     * writes the transfer to the proxy console and answers with its lines, or throws.
+     */
+    @Throws(IOException::class)
+    internal fun transfer(playerName: String, targetService: String): List<String> {
+        val requestId = newRequestId()
+        push(
+            BridgeProtocol.CLOUD_REQUESTS_KEY,
+            BridgeJson.obj(
+                "token" to BridgeJson.str(token),
+                "type" to BridgeJson.str(BridgeProtocol.REQUEST_TRANSFER),
+                "player" to BridgeJson.str(playerName),
+                "target" to BridgeJson.str(targetService),
+                "request-id" to BridgeJson.str(requestId),
+            ),
+        )
+        val response = awaitCloudResponse(requestId)
+        response.optString("error")?.let { throw IOException("Transfer failed: $it") }
+        return response.strings("lines")
+    }
 
-    private fun parseStringArray(json: String, key: String): List<String> {
-        val root = runCatching { MiniJson.parse(json) }.getOrNull() as? Map<*, *> ?: return emptyList()
-        return (root[key] as? List<*>).orEmpty().mapNotNull { it as? String }
+    /** Queues a console command for one service; its agent executes it on the main thread. */
+    internal fun enqueueConsoleCommand(serviceName: String, commandLine: String) {
+        push(
+            BridgeProtocol.commandsKey(serviceName),
+            BridgeJson.obj(
+                "token" to BridgeJson.str(token),
+                "type" to BridgeJson.str(BridgeProtocol.COMMAND_CONSOLE),
+                "command" to BridgeJson.str(commandLine),
+            ),
+        )
     }
 
     // -- transport -----------------------------------------------------------
 
-    internal fun <T> get(path: String, parse: (String) -> T): T = send(request("GET", path), parse)
+    internal fun read(key: String): String? = try {
+        redis.get(key)
+    } catch (failure: Exception) {
+        throw IOException("VibeCloud Redis is unreachable: ${failure.message}", failure)
+    }
 
-    internal fun <T> post(path: String, form: String, parse: (String) -> T): T =
-        send(postRequest(path, form), parse)
-
-    /**
-     * Fire-and-forget POST. The request runs on the shared daemon dispatcher, so the caller (often
-     * a server's main thread) returns immediately. The returned future completes when the bridge
-     * answered; it fails with the same [IOException]s as the blocking calls (`VibeCloud bridge
-     * unreachable`, a rejected token, or a 4xx/5xx response).
-     */
-    internal fun postAsync(path: String, form: String): CompletableFuture<Void> =
-        postAsyncJson(path, form).thenAccept { }
-
-    /** [postAsync] that keeps the bridge's response body (e.g. the queued request id). */
-    internal fun postAsyncJson(path: String, form: String): CompletableFuture<String> =
-        CompletableFuture.supplyAsync({ send(postRequest(path, form)) { it } }, dispatcher)
-
-    /** Asks the cloud whether a queued permission check has an answer yet. */
-    internal fun permissionState(requestId: String): PermissionState =
-        get("/bridge/players/permission?request-id=" + urlEncode(requestId)) { PermissionState.parse(it) }
-
-    private fun postRequest(path: String, form: String): HttpRequest = HttpRequest.newBuilder()
-        .uri(URI.create(baseUrl + path))
-        .timeout(timeout)
-        .header("Authorization", "Bearer $token")
-        .header("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
-        .POST(HttpRequest.BodyPublishers.ofString(form))
-        .build()
-
-    /**
-     * Opens the keep-alive connection in the background. Failures are ignored: this is a warm-up,
-     * not an operation, and an unreachable bridge surfaces on the next real call.
-     */
-    private fun warmUp() {
-        dispatcher.execute {
-            runCatching { send(request("GET", "/bridge/status")) { it } }
+    private fun push(key: String, message: String) {
+        try {
+            redis.rpush(key, message)
+        } catch (failure: Exception) {
+            throw IOException("VibeCloud Redis is unreachable: ${failure.message}", failure)
         }
     }
 
-    private fun <T> send(request: HttpRequest, parse: (String) -> T): T {
-        val response = try {
-            http.send(request, HttpResponse.BodyHandlers.ofString())
-        } catch (failure: IOException) {
-            throw IOException("VibeCloud bridge unreachable: ${failure.message}", failure)
-        } catch (failure: InterruptedException) {
-            Thread.currentThread().interrupt()
-            throw IOException("VibeCloud bridge call interrupted", failure)
+    /** Publishes one message on the actions channel; actions are broadcast to every agent. */
+    internal fun publishAction(action: String) {
+        try {
+            redis.publish(BridgeProtocol.ACTIONS_CHANNEL, action)
+        } catch (failure: Exception) {
+            throw IOException("VibeCloud Redis is unreachable: ${failure.message}", failure)
         }
-        if (response.statusCode() == 401) {
-            throw IOException("VibeCloud bridge rejected the token (401)")
-        }
-        if (response.statusCode() >= 400) {
-            throw IOException(
-                "VibeCloud bridge call failed: HTTP ${response.statusCode()} ${response.body().take(200)}",
-            )
-        }
-        return parse(response.body())
     }
 
-    private fun request(method: String, path: String): HttpRequest = HttpRequest.newBuilder()
-        .uri(URI.create(baseUrl + path))
-        .timeout(timeout)
-        .header("Authorization", "Bearer $token")
-        .header("Accept", "application/json")
-        .GET()
-        .build()
+    internal fun actionJson(
+        type: CloudCommandType,
+        playerName: String,
+        vararg fields: Pair<String, String>,
+    ): String = BridgeJson.obj(
+        "token" to BridgeJson.str(token),
+        "type" to BridgeJson.str(type.wireName),
+        "player" to BridgeJson.str(playerName),
+        *fields.map { (key, value) -> key to BridgeJson.str(value) }.toTypedArray(),
+    )
+
+    /** Waits for a one-shot answer (`permission`, `inventory`) pushed by an agent. */
+    @Throws(IOException::class)
+    internal fun awaitResult(requestId: String, waitMillis: Long = timeout.toMillis()): String {
+        val key = BridgeProtocol.resultKey(requestId)
+        val answer = try {
+            redis.blpop((waitMillis / 1000).toInt().coerceAtLeast(1), key)
+        } catch (failure: Exception) {
+            throw IOException("VibeCloud Redis is unreachable: ${failure.message}", failure)
+        } finally {
+            runCatching { redis.del(key) }
+        }
+        return answer ?: throw IOException("Timed out waiting for the answer to request $requestId")
+    }
+
+    private fun awaitCloudResponse(requestId: String): Map<*, *> {
+        val key = BridgeProtocol.cloudResultKey(requestId)
+        val answer = try {
+            redis.blpop(timeout.seconds.toInt().coerceAtLeast(1), key)
+        } catch (failure: Exception) {
+            throw IOException("VibeCloud Redis is unreachable: ${failure.message}", failure)
+        } finally {
+            runCatching { redis.del(key) }
+        } ?: throw IOException("Timed out waiting for the controller to answer request $requestId")
+        return BridgeJson.parseObject(answer)
+            ?: throw IOException("The controller returned a malformed answer: ${answer.take(120)}")
+    }
+
+    internal fun newRequestId(): String = UUID.randomUUID().toString().take(8)
 
     class Builder internal constructor() {
-        var baseUrl: String = "http://127.0.0.1:25580"
+        /** `redis://[user:password@]host:port[/db]`; `rediss://` enables TLS. */
+        var redisUrl: String = "redis://127.0.0.1:6379"
         var token: String = ""
-        var timeout: Duration = Duration.ofSeconds(3)
+
+        /** Upper bound for calls that wait for an answer (permission checks, cloud commands). */
+        var timeout: Duration = Duration.ofSeconds(5)
 
         /**
          * How often the cached status snapshot used by `temporary()` and `players().playerCount()`
@@ -234,6 +270,11 @@ class VibeCloud private constructor(
          */
         var currentService: ServiceIdentity? = null
 
+        /** Explicit transport, used by tests to run against an in-memory gateway. */
+        private var gateway: RedisGateway? = null
+
+        internal fun gateway(gateway: RedisGateway) = apply { this.gateway = gateway }
+
         /** Backwards-compatible alias for [temporaryRefreshInterval]. */
         var playerCountRefreshInterval: Duration
             get() = temporaryRefreshInterval
@@ -241,31 +282,40 @@ class VibeCloud private constructor(
                 temporaryRefreshInterval = value
             }
 
-        fun baseUrl(baseUrl: String) = apply { this.baseUrl = baseUrl }
+        fun redisUrl(redisUrl: String) = apply { this.redisUrl = redisUrl }
         fun token(token: String) = apply { this.token = token }
         fun currentService(identity: ServiceIdentity?) = apply { this.currentService = identity }
         fun timeout(timeout: Duration) = apply { this.timeout = timeout }
-        fun playerCountRefreshInterval(interval: Duration) = apply { this.temporaryRefreshInterval = interval }
-        fun temporaryRefreshInterval(interval: Duration) = apply { this.temporaryRefreshInterval = interval }
+        fun playerCountRefreshInterval(interval: Duration) = apply {
+            this.temporaryRefreshInterval = interval
+        }
+        fun temporaryRefreshInterval(interval: Duration) = apply {
+            this.temporaryRefreshInterval = interval
+        }
 
         fun build(): VibeCloud {
             require(token.isNotBlank()) { "bridge token is required" }
             require(!temporaryRefreshInterval.isNegative && !temporaryRefreshInterval.isZero) {
                 "temporary refresh interval must be positive"
             }
-            return VibeCloud(baseUrl.removeSuffix("/"), token, timeout, temporaryRefreshInterval, currentService)
+            return VibeCloud(
+                redis = gateway ?: JedisRedisGateway(redisUrl),
+                token = token,
+                timeout = timeout,
+                playerCountRefreshInterval = temporaryRefreshInterval,
+                serviceIdentity = currentService,
+            )
         }
     }
 
     companion object {
         /**
-         * Shared daemon dispatcher for fire-and-forget bridge traffic. A single thread keeps
-         * actions in the order they were issued (message before kick, transfer before the next
-         * one) while never blocking a caller; a bridge request is a sub-millisecond local round
-         * trip, so one thread is far more throughput than plugins ever need.
+         * Shared daemon dispatcher for background work (async action wrappers, cached status
+         * refreshes). A single thread keeps actions in the order they were issued while never
+         * blocking a caller.
          */
         internal val dispatcher: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
-            Thread(runnable, "vibecloud-bridge").apply { isDaemon = true }
+            Thread(runnable, "vibecloud-api").apply { isDaemon = true }
         }
 
         @Volatile
@@ -301,7 +351,7 @@ class VibeCloud private constructor(
         @JvmStatic
         fun forService(): VibeCloud = connect { builder ->
             val config = AgentConfig.load(Path.of("plugins", AgentConfig.CONFIG_DIRECTORY, "agent.properties"))
-            builder.baseUrl(config.cloudUrl)
+            builder.redisUrl(config.redisUrl)
                 .token(config.token)
                 .currentService(ServiceIdentity(config.serviceId, config.serviceName, config.groupName))
         }
@@ -317,3 +367,6 @@ class VibeCloud private constructor(
         }
     }
 }
+
+/** Reads an optional string field from a parsed JSON object. */
+internal fun Map<*, *>.optString(key: String): String? = (this[key] as? String)?.takeIf { it.isNotEmpty() }

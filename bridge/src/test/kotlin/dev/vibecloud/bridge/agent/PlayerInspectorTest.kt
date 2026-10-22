@@ -6,21 +6,10 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Wire-contract tests for the dashboard's player inspector. The roster entry order is a
+ * Wire-contract tests for the agent roster snapshot. The roster entry order is a
  * cross-process contract with the cloud's `parsePlayerMeta` — append only, never reorder.
  */
 class PlayerInspectorTest {
-
-    @Test
-    fun `inventory payload joins items with the entry separator`() {
-        val snapshot = PlayerInspector.Snapshot(
-            fields = emptyMap(),
-            inventory = listOf("1|diamond_sword|1|88|Fire sword|lore|sharpness:5", "2|golden_apple|12||||"),
-        )
-        val encoded = PlayerInspector.encodeInventory(snapshot)
-        assertEquals(2, PlayerInspector.decodeInventory(encoded).size)
-        assertTrue(encoded.contains("diamond_sword") && encoded.contains("golden_apple"))
-    }
 
     @Test
     fun `SERVICE_LOG_PREFIX uses legacy section codes only`() {
@@ -39,7 +28,7 @@ class PlayerInspectorTest {
             java.nio.file.Files.writeString(
                 file,
                 """
-                cloud-url=http://127.0.0.1:25580
+                redis-url=redis://127.0.0.1:6379
                 service-id=lobby-1
                 service-name=lobby-1
                 token=test-token
@@ -60,7 +49,7 @@ class PlayerInspectorTest {
             java.nio.file.Files.writeString(
                 file,
                 """
-                cloud-url=http://127.0.0.1:25580
+                redis-url=redis://127.0.0.1:6379
                 service-id=lobby-1
                 service-name=lobby-1
                 token=test-token

@@ -27,4 +27,4 @@ plugins {
 }
 
 rootProject.name = "vibecloud"
-include("api", "common", "core", "bridge", "servermobs", "servermobs-legacy", "launcher")
+include("api", "common", "core", "bridge", "servermobs", "servermobs-legacy", "launcher", "transport")

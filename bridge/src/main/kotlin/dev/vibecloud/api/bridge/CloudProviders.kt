@@ -1,18 +1,17 @@
 package dev.vibecloud.api.bridge
 
+import dev.vibecloud.transport.BridgeJson
+import dev.vibecloud.transport.BridgeProtocol
 import java.io.IOException
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
-import java.util.concurrent.TimeUnit
 
 /**
  * A player currently online somewhere in the network. Instances are lightweight snapshots —
  * grab a fresh handle from [CloudPlayerProvider] when you need up-to-date data.
  *
- * Actions ([sendMessage], [kick], [connect]) are dispatched through the cloud: the call returns
- * immediately, never blocking the caller, and yields a [CompletableFuture] that completes when
- * the cloud accepted the action (message/kick are then executed by the player's agent on its
- * server's main thread; a transfer is written to the proxy's console right away). Use
+ * Actions ([sendMessage], [kick], [connect]) publish one Redis message and return immediately;
+ * the agent that hosts the player executes them on its server's main thread. Use
  * [CloudPlayerProvider.refresh] afterwards to observe the effect.
  */
 class CloudPlayer internal constructor(
@@ -39,11 +38,21 @@ class CloudPlayer internal constructor(
     val health: Double? get() = details?.health
     /** Convenience access to the agent-reported food level, if available. */
     val food: Int? get() = details?.food
+
     /**
      * Checks whether this player has [node] (e.g. `group.moderator`) on the server they are on.
-     * Shortcut for `VibeCloud.instance().players().hasPermission(this, node)`; never blocks.
+     * Shortcut for `VibeCloud.instance().players().hasPermission(this, node)`.
+     *
+     * Blocks until the player's server answered (typically milliseconds, at most the configured
+     * timeout); use [hasPermissionAsync] on a server's main thread. Never throws for a missing
+     * permission — it answers `false`.
      */
-    fun hasPermission(node: String): CompletableFuture<Boolean> = cloud.players().hasPermission(this, node)
+    fun hasPermission(node: String): Boolean = cloud.players().hasPermission(this, node)
+
+    /** [hasPermission] on a background thread; never blocks the caller. */
+    fun hasPermissionAsync(node: String): CompletableFuture<Boolean> =
+        cloud.players().hasPermissionAsync(this, node)
+
     override fun equals(other: Any?): Boolean = other is CloudPlayer && other.name == name
     override fun hashCode(): Int = name.hashCode()
     override fun toString(): String = "CloudPlayer(name=$name, service=$service, group=$group)"
@@ -53,16 +62,16 @@ class CloudPlayer internal constructor(
 class CloudPlayerNotFoundException(name: String) : IOException("Cloud player '$name' is not online")
 
 /**
- * Players online across the whole network. The existing finders query the cloud directly for
- * fresh state; use [VibeCloud.temporary] for cached roster lookups that never block.
- * [playerCount] reads from that same asynchronously refreshed cache.
+ * Players online across the whole network. The finders read the cloud status document from
+ * Redis (one local round trip); use [VibeCloud.temporary] for cached roster lookups that never
+ * touch Redis on the caller's thread. [playerCount] reads from that same cache.
  */
 class CloudPlayerProvider internal constructor(
     private val cloud: VibeCloud,
     private val cache: CloudStatusCache,
 ) {
     /**
-     * All players online in the network. This is a fresh, blocking HTTP read; use
+     * All players online in the network. This is a fresh, blocking read from Redis; use
      * `cloud.temporary().players().all()` for frequent cached reads. Every entry carries the
      * agent's [PlayerDetail] (including the UUID) when the agent reported one.
      */
@@ -98,146 +107,122 @@ class CloudPlayerProvider internal constructor(
     /**
      * Checks whether [player] effectively has [node] (e.g. `group.moderator`) on the server they
      * are currently on. The check runs there, through the server's permission system, so
-     * LuckPerms (or any other permissions plugin installed on the backend) answers it — the
-     * player's group/luck data is whatever that server sees.
+     * LuckPerms (or any other permissions plugin installed on the backend) answers it.
      *
-     * The call returns immediately and never blocks the caller; the returned future completes
-     * with the answer (`true`/`false`) within one heartbeat plus the check itself (typically a
-     * few seconds) and fails with an [IOException] when the player left, the agent could not
-     * evaluate the node, or the check timed out.
+     * The call blocks until the answer arrives (milliseconds — the agent picks the request up
+     * from its command list immediately), at most the configured timeout. It throws an
+     * [IOException] when the player left, is not online, the agent could not evaluate the node,
+     * or the answer timed out. Use [hasPermissionAsync] on a server's main thread.
      */
-    fun hasPermission(player: CloudPlayer, node: String): CompletableFuture<Boolean> = hasPermission(player.name, node)
+    fun hasPermission(player: CloudPlayer, node: String): Boolean = hasPermission(player.name, node)
+
+    /** [hasPermission] on a background thread; never blocks the caller. */
+    fun hasPermissionAsync(player: CloudPlayer, node: String): CompletableFuture<Boolean> =
+        hasPermissionAsync(player.name, node)
 
     /** [hasPermission] by player name. */
-    fun hasPermission(playerName: String, node: String): CompletableFuture<Boolean> {
+    fun hasPermission(playerName: String, node: String): Boolean {
+        val trimmed = validateNode(node)
+        // Fail fast when the player is not in the roster at all: the check must run on their
+        // server, so nobody could answer it.
+        if (findByName(playerName) == null) throw CloudPlayerNotFoundException(playerName)
+        val requestId = cloud.newRequestId()
+        cloud.publishAction(
+            cloud.actionJson(
+                CloudCommandType.PERMISSION,
+                playerName,
+                "node" to trimmed,
+                "request-id" to requestId,
+            ),
+        )
+        val answer = cloud.awaitResult(requestId)
+        return when {
+            answer == BridgeProtocol.RESULT_GRANTED -> true
+            answer == BridgeProtocol.RESULT_DENIED -> false
+            answer == BridgeProtocol.RESULT_OFFLINE -> throw CloudPlayerNotFoundException(playerName)
+            answer.startsWith(BridgeProtocol.RESULT_ERROR_PREFIX) ->
+                throw IOException("Permission check of '$trimmed' failed: ${answer.removePrefix(BridgeProtocol.RESULT_ERROR_PREFIX)}")
+
+            else -> throw IOException("Unexpected permission answer: ${answer.take(120)}")
+        }
+    }
+
+    /** [hasPermission] by player name, on a background thread. */
+    fun hasPermissionAsync(playerName: String, node: String): CompletableFuture<Boolean> =
+        CompletableFuture.supplyAsync({ hasPermission(playerName, node) }, VibeCloud.dispatcher)
+
+    /** Re-reads the cloud state and returns the player if still online. */
+    fun refresh(player: CloudPlayer): CloudPlayer? = findByName(player.name)
+
+    /** Sends a chat message to the player (legacy `§` color codes are supported). */
+    fun sendMessage(player: CloudPlayer, vararg lines: String) = sendMessage(player, lines.toList())
+
+    /**
+     * Sends a chat message to the player. The message is published to Redis at once and executed
+     * by the player's agent on its server's main thread; the call never blocks. A player who went
+     * offline in the meantime is simply skipped.
+     */
+    fun sendMessage(player: CloudPlayer, lines: List<String>) {
+        require(lines.any { it.isNotEmpty() }) { "message lines must not be empty" }
+        cloud.publishAction(
+            cloud.actionJson(CloudCommandType.MESSAGE, player.name, "lines" to lines.joinToString("\n")),
+        )
+    }
+
+    /** [sendMessage] on a background thread; never blocks the caller. */
+    fun sendMessageAsync(player: CloudPlayer, vararg lines: String): CompletableFuture<Void> =
+        sendMessageAsync(player, lines.toList())
+
+    /** [sendMessage] on a background thread; never blocks the caller. */
+    fun sendMessageAsync(player: CloudPlayer, lines: List<String>): CompletableFuture<Void> =
+        CompletableFuture.runAsync({ sendMessage(player, lines) }, VibeCloud.dispatcher)
+
+    /** Kicks the player with an optional reason; returns immediately. */
+    @JvmOverloads
+    fun kick(player: CloudPlayer, reason: String = "Kicked by the cloud") {
+        cloud.publishAction(cloud.actionJson(CloudCommandType.KICK, player.name, "reason" to reason))
+    }
+
+    /** [kick] on a background thread; never blocks the caller. */
+    @JvmOverloads
+    fun kickAsync(player: CloudPlayer, reason: String = "Kicked by the cloud"): CompletableFuture<Void> =
+        CompletableFuture.runAsync({ kick(player, reason) }, VibeCloud.dispatcher)
+
+    /**
+     * Connects (transfers) the player to another service. The controller writes the transfer to
+     * the proxy's console (`send <player> <server>`), so it works with every client version and
+     * needs no extra configuration; a running proxy service is required. Accepts a service name
+     * or a `<group>#` target to pick the group's first running service.
+     *
+     * Blocks until the controller accepted the transfer (milliseconds), and throws an
+     * [IOException] when Redis is unreachable, no proxy is running, or the target is unknown.
+     */
+    fun connect(player: CloudPlayer, target: CloudService) = connect(player, target.name)
+
+    /** Connects the player to the service (or `<group>#`) with the given name. */
+    fun connect(player: CloudPlayer, targetService: String) {
+        cloud.transfer(player.name, targetService)
+    }
+
+    /** [connect] on a background thread; never blocks the caller. */
+    fun connectAsync(player: CloudPlayer, targetService: String): CompletableFuture<Void> =
+        CompletableFuture.runAsync({ connect(player, targetService) }, VibeCloud.dispatcher)
+
+    /** [connect] on a background thread; never blocks the caller. */
+    fun connectAsync(player: CloudPlayer, target: CloudService): CompletableFuture<Void> =
+        CompletableFuture.runAsync({ connect(player, target) }, VibeCloud.dispatcher)
+
+    private fun validateNode(node: String): String {
         val trimmed = node.trim()
         require(trimmed.isNotEmpty()) { "permission node must not be empty" }
         require(trimmed.length <= MAX_PERMISSION_NODE_LENGTH) {
             "permission node must not exceed $MAX_PERMISSION_NODE_LENGTH characters"
         }
-        val form = formEncode(
-            "player" to playerName,
-            "action" to CloudCommandType.PERMISSION.wireName,
-            "node" to trimmed,
-        )
-        return cloud.postAsyncJson("/bridge/players", form).thenCompose { body ->
-            val requestId = REQUEST_ID.find(body)?.groupValues?.get(1)?.takeIf { it.isNotEmpty() }
-            if (requestId == null) {
-                CompletableFuture.failedFuture(
-                    IOException("Cloud did not return a permission request id: ${body.take(120)}"),
-                )
-            } else {
-                pollPermission(requestId, trimmed, System.nanoTime() + PERMISSION_TIMEOUT.toNanos())
-            }
-        }
+        return trimmed
     }
-
-    /** Polls the cloud for the answer to [requestId] on the shared dispatcher, never the caller. */
-    private fun pollPermission(requestId: String, node: String, deadlineNanos: Long): CompletableFuture<Boolean> {
-        val result = CompletableFuture<Boolean>()
-        val executor = VibeCloud.dispatcher
-        lateinit var attempt: Runnable
-        attempt = Runnable {
-            if (result.isDone) return@Runnable
-            val state = try {
-                cloud.permissionState(requestId)
-            } catch (failure: IOException) {
-                result.completeExceptionally(failure)
-                return@Runnable
-            }
-            when (state) {
-                PermissionState.GRANTED -> result.complete(true)
-                PermissionState.DENIED -> result.complete(false)
-                PermissionState.PENDING -> if (System.nanoTime() >= deadlineNanos) {
-                    result.completeExceptionally(
-                        IOException("Timed out waiting for the permission check of '$node' (cloud request $requestId)"),
-                    )
-                } else {
-                    CompletableFuture
-                        .delayedExecutor(PERMISSION_POLL_INTERVAL_MILLIS, TimeUnit.MILLISECONDS, executor)
-                        .execute(attempt)
-                }
-            }
-        }
-        CompletableFuture.runAsync(attempt, executor)
-        return result
-    }
-
-    /** Re-reads the cloud state and returns the player if still online. */
-    fun refresh(player: CloudPlayer): CloudPlayer? = findByName(player.name)
-
-    /**
-     * Sends a chat message to the player. Lines are sent as chat messages on the player's
-     * server (legacy `§` color codes are supported). Returns immediately; see [sendMessage].
-     */
-    fun sendMessage(player: CloudPlayer, vararg lines: String): CompletableFuture<Void> =
-        sendMessage(player, lines.toList())
-
-    /**
-     * Sends a chat message to the player. The call does not block: the bridge request runs on a
-     * shared daemon dispatcher. The returned future completes when the cloud accepted the message
-     * (delivered by the player's agent on its next heartbeat) and fails with an [IOException] if
-     * the bridge is unreachable or rejects the call.
-     */
-    fun sendMessage(player: CloudPlayer, lines: List<String>): CompletableFuture<Void> = sendPlayerAction(
-        player, CloudCommandType.MESSAGE, "lines" to lines.joinToString("\n"),
-    )
-
-    /**
-     * Kicks the player with an optional reason. Returns immediately; the returned future completes
-     * when the cloud accepted the kick (delivered by the player's agent on its next heartbeat).
-     */
-    fun kick(
-        player: CloudPlayer,
-        reason: String = "Kicked by the cloud",
-    ): CompletableFuture<Void> = sendPlayerAction(player, CloudCommandType.KICK, "reason" to reason)
-
-    /**
-     * Connects (transfers) the player to another service. The cloud dispatches the transfer
-     * through the proxy's console (`send <player> <server>`) so it works with every client
-     * version and needs no extra configuration. Requires a running proxy service; accepts a
-     * service name or a `<group>#` target to pick the group's first running service.
-     *
-     * The call returns immediately — the transfer request is handed to the bridge in the
-     * background, so no game thread ever waits on it. The returned future completes once the
-     * cloud accepted the transfer, and fails with an [IOException] when the bridge is unreachable,
-     * rejected the request, or found no running proxy / unknown target.
-     */
-    fun connect(player: CloudPlayer, target: CloudService): CompletableFuture<Void> =
-        connect(player, target.name)
-
-    /** Connects the player to the service (or `<group>#`) with the given name. */
-    fun connect(player: CloudPlayer, targetService: String): CompletableFuture<Void> = sendPlayerAction(
-        player, CloudCommandType.TRANSFER, "target" to targetService,
-    )
-
-    private fun sendPlayerAction(
-        player: CloudPlayer,
-        type: CloudCommandType,
-        field: Pair<String, String>,
-    ): CompletableFuture<Void> {
-        val form = formEncode(
-            "player" to player.name,
-            "action" to type.wireName,
-            field.first to field.second,
-        )
-        return cloud.postAsync("/bridge/players", form)
-    }
-
-    internal fun formEncode(vararg fields: Pair<String, String>): String =
-        fields.joinToString("&") { (key, value) ->
-            val safe = value.ifEmpty { " " }
-            urlEncode(key) + "=" + urlEncode(safe)
-        }
-
-    private fun urlEncode(value: String): String =
-        java.net.URLEncoder.encode(value, Charsets.UTF_8).replace("+", "%20")
 
     private companion object {
         const val MAX_PERMISSION_NODE_LENGTH = 128
-        const val PERMISSION_POLL_INTERVAL_MILLIS = 250L
-        val PERMISSION_TIMEOUT: java.time.Duration = java.time.Duration.ofSeconds(10)
-        val REQUEST_ID = Regex("\"request-id\"\\s*:\\s*\"([^\"]*)\"")
     }
 }
 
@@ -272,17 +257,17 @@ class CloudService internal constructor(
 ) {
     /**
      * Runs a console command on this service (e.g. `executeCommand("say Restarting soon")`). The
-     * call returns immediately and never blocks the caller; the returned future completes when the
-     * cloud queued the command for the service's agent (executed on its next heartbeat).
+     * command is queued in Redis and picked up by the service's agent immediately; the call never
+     * blocks. Agents that are not running simply never consume it (the list is bounded by the
+     * service's own traffic, and `BridgeProtocol.commandsKey` lives for the service's lifetime).
      */
-    fun executeCommand(commandLine: String): CompletableFuture<Void> {
-        val form = cloud.services().formEncode(
-            "service" to name,
-            "action" to CloudCommandType.COMMAND.wireName,
-            "command" to commandLine,
-        )
-        return cloud.postAsync("/bridge/services", form)
+    fun executeCommand(commandLine: String) {
+        cloud.enqueueConsoleCommand(name, commandLine)
     }
+
+    /** [executeCommand] on a background thread; never blocks the caller. */
+    fun executeCommandAsync(commandLine: String): CompletableFuture<Void> =
+        CompletableFuture.runAsync({ executeCommand(commandLine) }, VibeCloud.dispatcher)
 
     override fun toString(): String = "CloudService(name=$name, group=$group, state=$state, port=$port)"
 }
@@ -303,12 +288,6 @@ class CloudServiceProvider internal constructor(private val cloud: VibeCloud) {
     /** All services that currently have a connected agent. */
     fun findOnline(): List<CloudService> =
         cloud.status().services.filter { it.agentOnline }.map { it.toCloudService(cloud) }
-
-    internal fun formEncode(vararg fields: Pair<String, String>): String =
-        fields.joinToString("&") { (key, value) ->
-            val safe = value.ifEmpty { " " }
-            java.net.URLEncoder.encode(key, Charsets.UTF_8) + "=" + java.net.URLEncoder.encode(safe, Charsets.UTF_8)
-        }
 }
 
 /**

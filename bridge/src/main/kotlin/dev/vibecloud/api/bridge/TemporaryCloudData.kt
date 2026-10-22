@@ -4,9 +4,9 @@ import java.time.Duration
 import java.util.concurrent.CompletableFuture
 
 /**
- * Read-only, in-memory view of the latest bridge status. Reads return immediately and never make
- * HTTP requests on the caller's thread. The first read, and reads after the configured refresh
- * interval, trigger a background refresh; use [refreshAsync] to request one explicitly.
+ * Read-only, in-memory view of the latest bridge status. Reads return immediately and never touch
+ * Redis on the caller's thread. The first read, and reads after the configured refresh interval,
+ * trigger a background refresh; use [refreshAsync] to request one explicitly.
  */
 class TemporaryCloudData internal constructor(
     private val cloud: VibeCloud,
@@ -66,9 +66,16 @@ class TemporaryCloudPlayerProvider internal constructor(
      */
     fun findByUniqueId(uniqueId: String): CloudPlayer? = all().resolveUniqueId(uniqueId)
 
-    /** [hasPermission][dev.vibecloud.api.bridge.CloudPlayerProvider.hasPermission] for a cached player snapshot. */
-    fun hasPermission(player: CloudPlayer, node: String): CompletableFuture<Boolean> =
-        cloud.players().hasPermission(player, node)
+    /**
+     * [hasPermission][dev.vibecloud.api.bridge.CloudPlayerProvider.hasPermission] for a cached
+     * player snapshot. Blocks until the player's server answered; see [hasPermissionAsync] for the
+     * non-blocking variant.
+     */
+    fun hasPermission(player: CloudPlayer, node: String): Boolean = cloud.players().hasPermission(player, node)
+
+    /** [hasPermission] on a background thread; never blocks the caller. */
+    fun hasPermissionAsync(player: CloudPlayer, node: String): CompletableFuture<Boolean> =
+        cloud.players().hasPermissionAsync(player, node)
 
     /** Cached network-wide player count. */
     fun playerCount(): Int = cache.snapshot().totalPlayersOnline

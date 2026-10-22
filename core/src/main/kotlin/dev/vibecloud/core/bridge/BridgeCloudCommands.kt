@@ -22,7 +22,7 @@ class BridgeCloudCommands(
     private val services: ServiceManager,
     private val groups: GroupManager,
     private val tracker: ServicePlayerTracker,
-    private val commandQueue: BridgeCommandQueue,
+    private val commands: BridgeCommandSink,
     private val sendConsoleCommand: (serviceName: String, command: String) -> Boolean,
     /** Enables `group version <name> <version>`: online version lookup and template downloads. */
     private val serverCatalog: ServerCatalog? = null,
@@ -429,10 +429,10 @@ class BridgeCloudCommands(
             service.state == ServiceState.RUNNING &&
                 tracker.playerNames(service.name).any { it.equals(player, ignoreCase = true) }
         } ?: return listOf(error("Player '$player' is not online"))
-        commandQueue.enqueue(
-            target.id,
+        commands.enqueue(
+            target.name,
             BridgeCommand(
-                id = commandQueue.nextId(),
+                id = commands.nextId(),
                 type = "message",
                 playerName = player,
                 payload = mapOf("lines" to text),
@@ -453,7 +453,7 @@ class BridgeCloudCommands(
             return listOf(error("Service '${known.name}' is not running"))
         }
         runCatching {
-            commandQueue.enqueue(known.id, BridgeCommand(id = commandQueue.nextId(), type = "command", playerName = null, payload = mapOf("command" to commandLine)))
+            commands.enqueue(known.name, BridgeCommand(id = commands.nextId(), type = "command", playerName = null, payload = mapOf("command" to commandLine)))
         }
         return listOf(success("Command sent to ${known.name}."))
     }

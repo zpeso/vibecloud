@@ -1,98 +1,8 @@
 package dev.vibecloud.api.bridge
 
-import java.io.IOException
-import java.net.URI
-import java.net.http.HttpClient
-import java.net.http.HttpRequest
-import java.net.http.HttpResponse
-import java.nio.file.Path
-import java.time.Duration
+import dev.vibecloud.transport.MiniJson
 
-/**
- * Tiny HTTP client for reading VibeCloud bridge state from any Java/Kotlin process — a plugin on
- * a backend server, a Velocity plugin, or an external tool. Uses only the JDK HTTP client.
- *
- * ```kotlin
- * val client = VibeCloudClient.builder()
- *     .baseUrl("http://127.0.0.1:25580")
- *     .token(Files.readString(Path.of("bridge.token")).trim())
- *     .build()
- * val status = client.status()
- * println("Players online in the whole network: ${status.totalPlayersOnline}")
- * ```
- */
-class VibeCloudClient private constructor(
-    private val baseUrl: String,
-    private val token: String,
-    private val timeout: Duration,
-) {
-    // HTTP/1.1 is pinned deliberately: the bridge is a local, plain-text endpoint, and the JDK
-    // client's default HTTP/2 would otherwise pay for an h2c upgrade on the first request.
-    private val http: HttpClient = HttpClient.newBuilder()
-        .version(HttpClient.Version.HTTP_1_1)
-        .connectTimeout(timeout)
-        .build()
-
-    /** Fetches the full cloud status document. Throws [IOException] on transport or HTTP errors. */
-    fun status(): CloudStatus {
-        val request = request("GET", "/bridge/status")
-        val response = http.send(request, HttpResponse.BodyHandlers.ofString())
-        if (response.statusCode() != 200) {
-            throw IOException("Bridge status failed: HTTP ${response.statusCode()} ${response.body()}")
-        }
-        return CloudStatusParser.parse(response.body())
-    }
-
-    private fun request(method: String, path: String): HttpRequest = HttpRequest.newBuilder()
-        .uri(URI.create(baseUrl + path))
-        .timeout(timeout)
-        .header("Authorization", "Bearer $token")
-        .header("Accept", "application/json")
-        .GET()
-        .build()
-
-    class Builder internal constructor() {
-        var baseUrl: String = "http://127.0.0.1:25580"
-        var token: String = ""
-        var timeout: Duration = Duration.ofSeconds(3)
-
-        fun baseUrl(baseUrl: String) = apply { this.baseUrl = baseUrl }
-        fun token(token: String) = apply { this.token = token }
-        fun timeout(timeout: Duration) = apply { this.timeout = timeout }
-
-        fun build(): VibeCloudClient {
-            require(token.isNotBlank()) { "bridge token is required" }
-            return VibeCloudClient(baseUrl.removeSuffix("/"), token, timeout)
-        }
-    }
-
-    companion object {
-        fun builder(): Builder = Builder()
-
-        /**
-         * Convenience factory for agents/plugins running inside a cloud-managed service: reads the
-         * cloud URL and token from the service's `plugins/VibeCloud/agent.properties`.
-         *
-         * Prefer [VibeCloud.forService] — it stores the [VibeCloud.instance] singleton and offers
-         * the full provider surface on top of the same transport.
-         */
-        @Deprecated(
-            "Use VibeCloud.forService() instead",
-            ReplaceWith("VibeCloud.forService()", "dev.vibecloud.api.bridge.VibeCloud"),
-        )
-        fun forService(): VibeCloudClient {
-            val config = AgentConfig.load(
-                Path.of("plugins", "VibeCloud", "agent.properties"),
-            )
-            return builder()
-                .baseUrl(config.cloudUrl)
-                .token(config.token)
-                .build()
-        }
-    }
-}
-
-/** Immutable snapshot of the `/bridge/status` document. */
+/** Immutable snapshot of the cloud status document published by the controller. */
 class CloudStatus(
     val groupCount: Int,
     val serviceCount: Int,
@@ -158,30 +68,13 @@ class GroupStatus(
     val alwaysRunningServices: Int,
 )
 
-/** Wire names of the actions dispatched to backend agents (see `/bridge/players`, `/bridge/services`). */
+/** Wire names of the actions dispatched to backend agents. */
 enum class CloudCommandType(internal val wireName: String) {
     MESSAGE("message"),
     KICK("kick"),
     TRANSFER("transfer"),
     COMMAND("command"),
     PERMISSION("permission"),
-}
-
-/** State of an asynchronous permission check, as answered by `GET /bridge/players/permission`. */
-internal enum class PermissionState(val wire: String) {
-    PENDING("pending"),
-    GRANTED("granted"),
-    DENIED("denied"),
-    ;
-
-    companion object {
-        fun parse(json: String): PermissionState {
-            val root = runCatching { MiniJson.parse(json) }.getOrNull() as? Map<*, *>
-            val state = root?.get("state") as? String
-            return entries.firstOrNull { it.wire == state }
-                ?: throw java.io.IOException("Unexpected permission response: ${json.take(120)}")
-        }
-    }
 }
 
 internal fun ServiceStatus.toCloudService(cloud: VibeCloud): CloudService = CloudService(

@@ -21,6 +21,9 @@ runtime:
 reconciliation:
   interval-seconds: 5
 
+redis:
+  url: "redis://127.0.0.1:6379"
+
 groups:
   lobby:
     type: PAPER

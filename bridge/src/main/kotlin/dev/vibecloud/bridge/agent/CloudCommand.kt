@@ -1,8 +1,11 @@
 package dev.vibecloud.bridge.agent
 
+import dev.vibecloud.transport.BridgeJson
+import dev.vibecloud.transport.text
+
 /**
- * A command the cloud delivered with the agent's heartbeat response: a player action
- * (message/kick/transfer) or a service console command.
+ * A command the cloud delivered through Redis: a player action (message/kick/log/permission) or
+ * a service console command.
  */
 data class CloudCommand(
     val id: Long,
@@ -14,32 +17,24 @@ data class CloudCommand(
 }
 
 internal object CloudCommandParser {
-    private val NUMBER_FIELD = Regex("\"id\"\\s*:\\s*(-?[0-9]+)")
-    private val STRING_FIELD = Regex("\"([A-Za-z0-9_-]+)\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"")
-
     /**
-     * Extracts commands from the heartbeat response. The document is a JSON array of objects;
-     * `player` may be `null` for console commands (the regex-based reader tolerates that).
+     * Parses one action message. The message is a flat JSON object; `token`, `id`, `type` and
+     * `player` are control fields, everything else is the command's payload.
      */
-    fun parse(json: String): List<CloudCommand> {
-        if (!json.trimStart().startsWith("[")) return emptyList()
-        return Regex("\\{[^{}]*}").findAll(json).map { entry ->
-            val fields = mutableMapOf<String, String>()
-            STRING_FIELD.findAll(entry.value).forEach { fields[it.groupValues[1]] = unescape(it.groupValues[2]) }
-            val id = NUMBER_FIELD.find(entry.value)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
-            CloudCommand(
-                id = id,
-                type = fields["type"].orEmpty(),
-                playerName = fields["player"],
-                payload = fields.filterKeys { it !in setOf("type", "player", "id") },
-            )
-        }.toList()
+    fun parse(json: String): CloudCommand? {
+        val fields = BridgeJson.parseObject(json) ?: return null
+        val type = fields.text("type") ?: return null
+        val payload = LinkedHashMap<String, String>()
+        fields.forEach { (key, value) ->
+            if (key is String && key !in CONTROL_FIELDS && value is String) payload[key] = value
+        }
+        return CloudCommand(
+            id = (fields["id"] as? Number)?.toLong() ?: 0L,
+            type = type,
+            playerName = fields.text("player"),
+            payload = payload,
+        )
     }
 
-    private fun unescape(value: String): String = value
-        .replace("\\\"", "\"")
-        .replace("\\\\", "\\")
-        .replace("\\n", "\n")
-        .replace("\\r", "\r")
-        .replace("\\t", "\t")
+    private val CONTROL_FIELDS = setOf("token", "id", "type", "player")
 }
