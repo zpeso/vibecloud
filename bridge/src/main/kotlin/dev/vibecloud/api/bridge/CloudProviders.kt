@@ -1,7 +1,9 @@
 package dev.vibecloud.api.bridge
 
 import java.io.IOException
+import java.util.UUID
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
 
 /**
  * A player currently online somewhere in the network. Instances are lightweight snapshots —
@@ -27,10 +29,21 @@ class CloudPlayer internal constructor(
     val pingMs: Int? get() = details?.pingMs
     /** Convenience access to the agent-reported UUID, if available. */
     val uniqueId: String? get() = details?.uuid
+    /**
+     * The agent-reported UUID parsed into a [UUID], or `null` when the agent did not report one
+     * (or reported something that is not a UUID). Use this instead of
+     * `UUID.fromString(player.uniqueId)`, which throws on a missing id.
+     */
+    val uuid: UUID? get() = uniqueId?.let { runCatching { UUID.fromString(it.trim()) }.getOrNull() }
     /** Convenience access to the agent-reported health, if available. */
     val health: Double? get() = details?.health
     /** Convenience access to the agent-reported food level, if available. */
     val food: Int? get() = details?.food
+    /**
+     * Checks whether this player has [node] (e.g. `group.moderator`) on the server they are on.
+     * Shortcut for `VibeCloud.instance().players().hasPermission(this, node)`; never blocks.
+     */
+    fun hasPermission(node: String): CompletableFuture<Boolean> = cloud.players().hasPermission(this, node)
     override fun equals(other: Any?): Boolean = other is CloudPlayer && other.name == name
     override fun hashCode(): Int = name.hashCode()
     override fun toString(): String = "CloudPlayer(name=$name, service=$service, group=$group)"
@@ -50,11 +63,17 @@ class CloudPlayerProvider internal constructor(
 ) {
     /**
      * All players online in the network. This is a fresh, blocking HTTP read; use
-     * `cloud.temporary().players().all()` for frequent cached reads.
+     * `cloud.temporary().players().all()` for frequent cached reads. Every entry carries the
+     * agent's [PlayerDetail] (including the UUID) when the agent reported one.
      */
     fun all(): List<CloudPlayer> = cloud.status().services
         .filter { it.agentOnline }
-        .flatMap { service -> service.players.map { CloudPlayer(cloud, it, service.name, service.group) } }
+        .flatMap { service ->
+            val details = service.playerDetails.associateBy { it.name.lowercase() }
+            service.players.map { name ->
+                CloudPlayer(cloud, name, service.name, service.group, details[name.lowercase()])
+            }
+        }
 
     /**
      * Number of players online across the whole network, read from an in-memory cache. A stale
@@ -66,10 +85,83 @@ class CloudPlayerProvider internal constructor(
     fun findByName(name: String): CloudPlayer? = all().firstOrNull { it.name.equals(name, ignoreCase = true) }
 
     /**
-     * Finds a player by unique id. The cloud reports player rosters by name; a name→id mapping
-     * is not tracked server-side, so this delegates to [findByName] — pass the player's name.
+     * Finds a player by their UUID, or `null`. Dashes and letter case do not matter
+     * (`d0f7d4b1-0e3f-4a4b-…` and `D0F7D4B10E3F4A4B…` are the same player). When no online player
+     * has that id the argument is matched as a name instead, so callers that used this method for
+     * name lookups keep working.
+     *
+     * A player whose agent reports no UUID (legacy agents, name-only rosters) can only be found
+     * by name.
      */
-    fun findByUniqueId(uniqueId: String): CloudPlayer? = findByName(uniqueId)
+    fun findByUniqueId(uniqueId: String): CloudPlayer? = all().resolveUniqueId(uniqueId)
+
+    /**
+     * Checks whether [player] effectively has [node] (e.g. `group.moderator`) on the server they
+     * are currently on. The check runs there, through the server's permission system, so
+     * LuckPerms (or any other permissions plugin installed on the backend) answers it — the
+     * player's group/luck data is whatever that server sees.
+     *
+     * The call returns immediately and never blocks the caller; the returned future completes
+     * with the answer (`true`/`false`) within one heartbeat plus the check itself (typically a
+     * few seconds) and fails with an [IOException] when the player left, the agent could not
+     * evaluate the node, or the check timed out.
+     */
+    fun hasPermission(player: CloudPlayer, node: String): CompletableFuture<Boolean> = hasPermission(player.name, node)
+
+    /** [hasPermission] by player name. */
+    fun hasPermission(playerName: String, node: String): CompletableFuture<Boolean> {
+        val trimmed = node.trim()
+        require(trimmed.isNotEmpty()) { "permission node must not be empty" }
+        require(trimmed.length <= MAX_PERMISSION_NODE_LENGTH) {
+            "permission node must not exceed $MAX_PERMISSION_NODE_LENGTH characters"
+        }
+        val form = formEncode(
+            "player" to playerName,
+            "action" to CloudCommandType.PERMISSION.wireName,
+            "node" to trimmed,
+        )
+        return cloud.postAsyncJson("/bridge/players", form).thenCompose { body ->
+            val requestId = REQUEST_ID.find(body)?.groupValues?.get(1)?.takeIf { it.isNotEmpty() }
+            if (requestId == null) {
+                CompletableFuture.failedFuture(
+                    IOException("Cloud did not return a permission request id: ${body.take(120)}"),
+                )
+            } else {
+                pollPermission(requestId, trimmed, System.nanoTime() + PERMISSION_TIMEOUT.toNanos())
+            }
+        }
+    }
+
+    /** Polls the cloud for the answer to [requestId] on the shared dispatcher, never the caller. */
+    private fun pollPermission(requestId: String, node: String, deadlineNanos: Long): CompletableFuture<Boolean> {
+        val result = CompletableFuture<Boolean>()
+        val executor = VibeCloud.dispatcher
+        lateinit var attempt: Runnable
+        attempt = Runnable {
+            if (result.isDone) return@Runnable
+            val state = try {
+                cloud.permissionState(requestId)
+            } catch (failure: IOException) {
+                result.completeExceptionally(failure)
+                return@Runnable
+            }
+            when (state) {
+                PermissionState.GRANTED -> result.complete(true)
+                PermissionState.DENIED -> result.complete(false)
+                PermissionState.PENDING -> if (System.nanoTime() >= deadlineNanos) {
+                    result.completeExceptionally(
+                        IOException("Timed out waiting for the permission check of '$node' (cloud request $requestId)"),
+                    )
+                } else {
+                    CompletableFuture
+                        .delayedExecutor(PERMISSION_POLL_INTERVAL_MILLIS, TimeUnit.MILLISECONDS, executor)
+                        .execute(attempt)
+                }
+            }
+        }
+        CompletableFuture.runAsync(attempt, executor)
+        return result
+    }
 
     /** Re-reads the cloud state and returns the player if still online. */
     fun refresh(player: CloudPlayer): CloudPlayer? = findByName(player.name)
@@ -140,6 +232,27 @@ class CloudPlayerProvider internal constructor(
 
     private fun urlEncode(value: String): String =
         java.net.URLEncoder.encode(value, Charsets.UTF_8).replace("+", "%20")
+
+    private companion object {
+        const val MAX_PERMISSION_NODE_LENGTH = 128
+        const val PERMISSION_POLL_INTERVAL_MILLIS = 250L
+        val PERMISSION_TIMEOUT: java.time.Duration = java.time.Duration.ofSeconds(10)
+        val REQUEST_ID = Regex("\"request-id\"\\s*:\\s*\"([^\"]*)\"")
+    }
+}
+
+/**
+ * Matches an online player by UUID (dashes/case-insensitive), falling back to an exact name.
+ * Shared by the fresh and the cached providers so both resolve ids the same way.
+ */
+internal fun List<CloudPlayer>.resolveUniqueId(uniqueId: String): CloudPlayer? {
+    val wanted = uniqueId.trim()
+    if (wanted.isEmpty()) return null
+    val normalized = wanted.replace("-", "").lowercase()
+    val byId = firstOrNull { player ->
+        player.details?.uuid?.let { it.trim().replace("-", "").lowercase() == normalized } == true
+    }
+    return byId ?: firstOrNull { it.name.equals(wanted, ignoreCase = true) }
 }
 
 /**

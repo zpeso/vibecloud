@@ -41,10 +41,14 @@ import java.util.concurrent.atomic.AtomicBoolean
  *  - `GET  /bridge/console?service=<name>` → recent console output of one service
  *  - `POST /bridge/heartbeat` → agent heartbeat; requires `Authorization: Bearer <token>`;
  *    the response carries queued player/service commands for that service
- *  - `POST /bridge/players`  → queue a player action (`message`, `kick`, `transfer`). A transfer
- *    is written to the proxy console off the request thread and answers `202` at once, so the
- *    caller never waits on the service manager's stdin writer; `message`/`kick` are answered
- *    `202` immediately after they are queued for the player's agent
+ *  - `POST /bridge/players`  → queue a player action (`message`, `kick`, `inventory`,
+ *    `permission`, `transfer`). A transfer is written to the proxy console off the request
+ *    thread and answers `202` at once, so the caller never waits on the service manager's stdin
+ *    writer; `message`/`kick`/`inventory`/`permission` are answered `202` immediately after they
+ *    are queued for the player's agent
+ *  - `GET  /bridge/players/permission?request-id=` → answer of a queued permission check
+ *    (`pending`, `granted` or `denied`); the player's own server evaluates the node, so
+ *    LuckPerms (or any other backend permission provider) supplies the effective value
  *  - `POST /bridge/services/command` → queue a console command for one service
  *  - `POST /bridge/cloud`    → run a cloud command (the in-game `/cloud` command); form fields:
  *    repeated `arg` (the argument list, excluding `/cloud`), optional `player` (caller), and
@@ -144,6 +148,7 @@ class BridgeHttpServer(
             created.createContext("/bridge/heartbeat") { exchange -> safe(exchange, "heartbeat") { handleHeartbeat(it) } }
             created.createContext("/bridge/players") { exchange -> safe(exchange, "players") { handlePlayerAction(it) } }
             created.createContext("/bridge/players/inventory") { exchange -> safe(exchange, "player inventory") { handlePlayerInventory(it) } }
+            created.createContext("/bridge/players/permission") { exchange -> safe(exchange, "player permission") { handlePlayerPermission(it) } }
             created.createContext("/bridge/services/command") { exchange -> safe(exchange, "service command") { handleServiceAction(it) } }
             created.createContext("/bridge/cloud") { exchange -> safe(exchange, "cloud command") { handleCloudCommand(it) } }
             created.start()
@@ -260,6 +265,7 @@ class BridgeHttpServer(
                 logger.info("Bridge agent of ${serviceName} connected (v${fields["agent-version"]?.trim().orEmpty()})")
             }
             storeInventorySnapshots(serviceName, fields["inspections"])
+            storePermissionResults(fields["permission-results"])
             tracker.applyAgentReport(serviceName, players)
             // Piggyback queued commands for this service on the heartbeat response. The agent
             // executes them on the server's main thread and reports back on the next beat.
@@ -281,9 +287,10 @@ class BridgeHttpServer(
     }
 
     /**
-     * `POST /bridge/players` — dispatches a player action. `message`/`kick`/`inventory` are queued
-     * for the service the player is on and served by the agent's next heartbeat (typically within
-     * one interval), so an action for a player who just left is dropped instead of erroring. A
+     * `POST /bridge/players` — dispatches a player action. `message`/`kick`/`inventory`/
+     * `permission` are queued for the service the player is on and served by the agent's next
+     * heartbeat (typically within one interval), so an action for a player who just left is
+     * dropped instead of erroring. A
      * `transfer` is version-independent and goes straight to the proxy console; the write is
      * handed to [dispatchExecutor] so the response does not wait on the service manager, and the
      * caller gets `202` immediately.
@@ -379,6 +386,29 @@ class BridgeHttpServer(
                         payload = mapOf("request-id" to requestId),
                     )
                 }
+                "permission" -> {
+                    // Ask the player's own server whether the node is granted; the answer comes
+                    // back with the next heartbeat and is served by
+                    // GET /bridge/players/permission?request-id=…
+                    val node = fields["node"]?.trim().orEmpty()
+                    if (node.isEmpty() || node.length > MAX_PERMISSION_NODE_LENGTH) {
+                        respond(
+                            exchange,
+                            400,
+                            errorJson("'permission' requires 'node' (max $MAX_PERMISSION_NODE_LENGTH characters)"),
+                        )
+                        return
+                    }
+                    purgeExpiredPermissions()
+                    val requestId = UUID.randomUUID().toString().take(8)
+                    pendingPermissions[requestId] = PendingPermission(playerName, node, Instant.now(clock))
+                    BridgeCommand(
+                        id = backingQueue.nextId(),
+                        type = "permission",
+                        playerName = playerName,
+                        payload = mapOf("request-id" to requestId, "node" to node),
+                    )
+                }
                 else -> {
                     respond(exchange, 400, errorJson("unknown player action '$action'"))
                     return
@@ -389,6 +419,7 @@ class BridgeHttpServer(
                     tracker.playerNames(service.name).any { it.equals(playerName, ignoreCase = true) }
             }
             if (target == null) {
+                command.payload["request-id"]?.let(pendingPermissions::remove)
                 respond(exchange, 404, errorJson("player '$playerName' is not online"))
                 return
             }
@@ -1072,6 +1103,124 @@ class BridgeHttpServer(
         }
     }
 
+    /**
+     * `GET /bridge/players/permission?request-id=…` — answers a permission check queued through
+     * `POST /bridge/players` (`action=permission&node=…`). The player's own server evaluates the
+     * node (LuckPerms or any other permission provider installed there) and reports the result
+     * with its next heartbeat.
+     *
+     * Answers `202` + `"state":"pending"` until then, `200` + `"state":"granted"|"denied"` once
+     * the agent replied, `422` when the check could not be evaluated (the player left, the
+     * server errored) and `404` for an unknown or expired request id. Each answer is served once.
+     */
+    private fun handlePlayerPermission(exchange: HttpExchange) {
+        try {
+            if (exchange.requestMethod != "GET" && exchange.requestMethod != "HEAD") {
+                respond(exchange, 405, errorJson("method not allowed"))
+                return
+            }
+            if (!authorize(exchange)) return
+            val requestId = parseQuery(exchange.requestURI.rawQuery.orEmpty())["request-id"]?.trim().orEmpty()
+            if (requestId.isEmpty()) {
+                respond(exchange, 400, errorJson("requires 'request-id'"))
+                return
+            }
+            val outcome = permissionOutcomes.remove(requestId)
+            if (outcome != null) {
+                if (outcome.error != null) {
+                    respond(exchange, 422, errorJson(outcome.error))
+                    return
+                }
+                respond(
+                    exchange,
+                    200,
+                    JsonWriter.obj(
+                        "state" to JsonWriter.str(if (outcome.granted == true) "granted" else "denied"),
+                        "player" to JsonWriter.str(outcome.player),
+                        "node" to JsonWriter.str(outcome.node),
+                    ),
+                )
+                return
+            }
+            val pending = pendingPermissions[requestId]
+            if (pending != null &&
+                Duration.between(pending.requestedAt, Instant.now(clock)) <= PERMISSION_REQUEST_TTL
+            ) {
+                respond(
+                    exchange,
+                    202,
+                    JsonWriter.obj(
+                        "state" to JsonWriter.str("pending"),
+                        "player" to JsonWriter.str(pending.player),
+                        "node" to JsonWriter.str(pending.node),
+                    ),
+                )
+                return
+            }
+            pendingPermissions.remove(requestId)
+            respond(exchange, 404, errorJson("unknown or expired permission request"))
+        } catch (failure: IOException) {
+            logger.debug("Player permission request failed: ${failure.message}")
+        } finally {
+            exchange.close()
+        }
+    }
+
+    private data class PendingPermission(val player: String, val node: String, val requestedAt: Instant)
+
+    private data class PermissionOutcome(
+        val player: String,
+        val node: String,
+        val granted: Boolean?,
+        val error: String?,
+        val receivedAt: Instant,
+    )
+
+    /** Permission checks queued for agents (request id → request). */
+    private val pendingPermissions = java.util.concurrent.ConcurrentHashMap<String, PendingPermission>()
+
+    /** Evaluated permission checks waiting to be read (request id → outcome; served once). */
+    private val permissionOutcomes = java.util.concurrent.ConcurrentHashMap<String, PermissionOutcome>()
+
+    /**
+     * Decodes the agent's `permission-results` heartbeat field — `request-id\u0002<value>`
+     * records joined by `\u001e`, where `<value>` is `true`, `false`, `offline` or
+     * `error\u0002<reason>` — into [permissionOutcomes]. Records without a matching pending
+     * request (a duplicate or a stale replay) are dropped.
+     */
+    private fun storePermissionResults(raw: String?) {
+        if (raw.isNullOrBlank()) return
+        raw.split('\u001e').forEach { record ->
+            val separator = record.indexOf('\u0002')
+            if (separator <= 0) return@forEach
+            val requestId = record.substring(0, separator)
+            val value = record.substring(separator + 1)
+            val pending = pendingPermissions.remove(requestId) ?: return@forEach
+            val granted = value.toBooleanStrictOrNull()
+            val error = when {
+                value == "offline" -> "player is no longer online"
+                value.startsWith("error\u0002") ->
+                    value.substringAfter("error\u0002").ifBlank { "agent could not evaluate the permission" }
+                granted == null -> "agent returned an invalid permission result"
+                else -> null
+            }
+            permissionOutcomes[requestId] =
+                PermissionOutcome(pending.player, pending.node, granted, error, Instant.now(clock))
+        }
+        purgeExpiredPermissions()
+    }
+
+    /** Drops permission checks/results nobody can read any more; they are consumed once. */
+    private fun purgeExpiredPermissions() {
+        val now = Instant.now(clock)
+        pendingPermissions.entries.removeAll {
+            Duration.between(it.value.requestedAt, now) > PERMISSION_REQUEST_TTL
+        }
+        permissionOutcomes.entries.removeAll {
+            Duration.between(it.value.receivedAt, now) > PERMISSION_OUTCOME_TTL
+        }
+    }
+
     private data class StoredInventorySnapshot(
         val requestId: String,
         val document: String,
@@ -1221,6 +1370,13 @@ class BridgeHttpServer(
         const val MAX_ARG_LENGTH = 200
         const val MAX_PLAYER_NAME_LENGTH = 16
         const val MAX_KICK_REASON_LENGTH = 200
+        const val MAX_PERMISSION_NODE_LENGTH = 128
+
+        /** How long a permission check may sit in the queue before its request id expires. */
+        val PERMISSION_REQUEST_TTL: Duration = Duration.ofSeconds(15)
+
+        /** How long a finished permission answer stays readable (the caller polls promptly). */
+        val PERMISSION_OUTCOME_TTL: Duration = Duration.ofSeconds(30)
         const val MAX_COMMAND_LENGTH = 256
         const val MAX_SERVICE_NAME_LENGTH = 64
         const val MAX_LAST_ERROR_LENGTH = 200

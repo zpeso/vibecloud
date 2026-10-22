@@ -161,8 +161,15 @@ class VibeCloud private constructor(
      * unreachable`, a rejected token, or a 4xx/5xx response).
      */
     internal fun postAsync(path: String, form: String): CompletableFuture<Void> =
+        postAsyncJson(path, form).thenAccept { }
+
+    /** [postAsync] that keeps the bridge's response body (e.g. the queued request id). */
+    internal fun postAsyncJson(path: String, form: String): CompletableFuture<String> =
         CompletableFuture.supplyAsync({ send(postRequest(path, form)) { it } }, dispatcher)
-            .thenAccept { }
+
+    /** Asks the cloud whether a queued permission check has an answer yet. */
+    internal fun permissionState(requestId: String): PermissionState =
+        get("/bridge/players/permission?request-id=" + urlEncode(requestId)) { PermissionState.parse(it) }
 
     private fun postRequest(path: String, form: String): HttpRequest = HttpRequest.newBuilder()
         .uri(URI.create(baseUrl + path))
@@ -257,7 +264,7 @@ class VibeCloud private constructor(
          * one) while never blocking a caller; a bridge request is a sub-millisecond local round
          * trip, so one thread is far more throughput than plugins ever need.
          */
-        private val dispatcher: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
+        internal val dispatcher: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
             Thread(runnable, "vibecloud-bridge").apply { isDaemon = true }
         }
 

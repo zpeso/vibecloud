@@ -44,6 +44,9 @@ class VibeCloudAgentPlugin : JavaPlugin() {
 
     /** Finished inspect payloads (request-id → encoded snapshot) flushed on the next heartbeat. */
     private val completedInspections = java.util.concurrent.ConcurrentLinkedQueue<Pair<String, String>>()
+
+    /** Finished permission checks (request-id → `true`/`false`/`offline`/`error…`) for the next beat. */
+    private val completedPermissions = java.util.concurrent.ConcurrentLinkedQueue<Pair<String, String>>()
     private val http: HttpClient = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(3))
         .build()
@@ -181,6 +184,14 @@ class VibeCloudAgentPlugin : JavaPlugin() {
                     inspection = completedInspections.poll()
                 }
             }.joinToString(PlayerInspector.RECORD)
+            // Permission checks answered on the main thread since the last beat.
+            val permissionField = buildList {
+                var permission = completedPermissions.poll()
+                while (permission != null) {
+                    add(permission.first + "\u0002" + permission.second)
+                    permission = completedPermissions.poll()
+                }
+            }.joinToString(PlayerInspector.RECORD)
             val tpsField = runCatching { Bukkit.getTPS()[0] }.getOrNull()
             val memory = Runtime.getRuntime()
             val heapUsedMb = (memory.totalMemory() - memory.freeMemory()) / BYTES_PER_MB
@@ -199,6 +210,7 @@ class VibeCloudAgentPlugin : JavaPlugin() {
                 "players" to names.joinToString(","),
                 "player-meta" to playerMeta,
                 "inspections" to inspectionField,
+                "permission-results" to permissionField,
                 "max-players" to server.maxPlayers.toString(),
                 "agent-version" to description.version,
                 "tps" to (tpsField?.let { String.format(Locale.US, "%.2f", it) } ?: ""),
@@ -275,6 +287,29 @@ class VibeCloudAgentPlugin : JavaPlugin() {
                 if (requestId.isNotEmpty() && playerName.isNotEmpty()) {
                     pendingInspections.add(requestId to playerName)
                     Bukkit.getScheduler().runTask(this, Runnable(::drainPendingInspections))
+                }
+            }
+
+            "permission" -> {
+                // Evaluated here, on the player's own server, so the backend's permission system
+                // (LuckPerms or any other provider) answers with the effective value. Already on
+                // the main thread: executeCommand runs from the Bukkit scheduler.
+                val requestId = command.payload["request-id"].orEmpty()
+                val node = command.payload["node"].orEmpty()
+                val playerName = command.playerName.orEmpty()
+                if (requestId.isNotEmpty() && node.isNotEmpty() && playerName.isNotEmpty()) {
+                    val player = findPlayer(playerName)
+                    val value = if (player == null) {
+                        "offline"
+                    } else {
+                        runCatching { player.hasPermission(node) }.fold(
+                            onSuccess = { granted -> granted.toString() },
+                            onFailure = { failure ->
+                                "error\u0002" + (failure.message ?: failure::class.simpleName ?: "permission check failed")
+                            },
+                        )
+                    }
+                    completedPermissions.add(requestId to value)
                 }
             }
         }

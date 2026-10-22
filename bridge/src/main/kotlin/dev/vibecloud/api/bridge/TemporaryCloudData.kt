@@ -60,8 +60,15 @@ class TemporaryCloudPlayerProvider internal constructor(
     fun findByName(name: String): CloudPlayer? =
         all().firstOrNull { it.name.equals(name, ignoreCase = true) }
 
-    /** The status protocol reports names, not player IDs; this is a cached name lookup. */
-    fun findByUniqueId(uniqueId: String): CloudPlayer? = findByName(uniqueId)
+    /**
+     * Finds a player by UUID in the cached roster (dashes/case-insensitive), falling back to a
+     * name match. Players reported without an id can only be found by name.
+     */
+    fun findByUniqueId(uniqueId: String): CloudPlayer? = all().resolveUniqueId(uniqueId)
+
+    /** [hasPermission][dev.vibecloud.api.bridge.CloudPlayerProvider.hasPermission] for a cached player snapshot. */
+    fun hasPermission(player: CloudPlayer, node: String): CompletableFuture<Boolean> =
+        cloud.players().hasPermission(player, node)
 
     /** Cached network-wide player count. */
     fun playerCount(): Int = cache.snapshot().totalPlayersOnline

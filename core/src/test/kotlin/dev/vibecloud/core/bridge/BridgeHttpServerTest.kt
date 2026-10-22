@@ -617,6 +617,95 @@ class BridgeHttpServerTest {
     }
 
     @Test
+    fun `permission checks round-trip through the agent heartbeat`() {
+        val running = startServer(listOf(service("lobby-1", ServiceState.RUNNING)))
+        try {
+            val base = "http://127.0.0.1:${running.server.boundPort()}"
+            running.tracker.applyAgentReport("lobby-1", listOf("Steve"))
+
+            val queued = post(running, "$base/bridge/players", "player=Steve&action=permission&node=group.moderator")
+            assertEquals(202, queued.statusCode(), queued.body())
+            assertTrue("\"queued\":true" in queued.body(), queued.body())
+            val requestId = Regex("\"request-id\":\"([^\"]+)\"").find(queued.body())!!.groupValues[1]
+
+            // The agent has not answered yet: the endpoint reports the request as pending.
+            val pending = get(running, "$base/bridge/players/permission?request-id=$requestId")
+            assertEquals(202, pending.statusCode(), pending.body())
+            assertTrue("\"state\":\"pending\"" in pending.body(), pending.body())
+            assertTrue("\"node\":\"group.moderator\"" in pending.body(), pending.body())
+
+            // The next heartbeat drains the queued check and carries the evaluated result back.
+            val results = java.net.URLEncoder.encode(requestId + "\u0002" + "true", Charsets.UTF_8)
+            val heartbeat = post(
+                running,
+                "$base/bridge/heartbeat",
+                "service-id=id-lobby-1&service-name=lobby-1&players=Steve&max-players=20&permission-results=$results",
+            )
+            assertEquals(200, heartbeat.statusCode(), heartbeat.body())
+            assertTrue(requestId in heartbeat.body(), "the heartbeat must deliver the queued permission check")
+
+            val granted = get(running, "$base/bridge/players/permission?request-id=$requestId")
+            assertEquals(200, granted.statusCode(), granted.body())
+            assertTrue("\"state\":\"granted\"" in granted.body(), granted.body())
+            assertTrue("\"player\":\"Steve\"" in granted.body(), granted.body())
+            assertTrue("\"node\":\"group.moderator\"" in granted.body(), granted.body())
+
+            // Answers are consumed on read: a second read is a stale request.
+            assertEquals(404, get(running, "$base/bridge/players/permission?request-id=$requestId").statusCode())
+        } finally {
+            running.server.stop()
+        }
+    }
+
+    @Test
+    fun `permission checks report denials and evaluation failures`() {
+        val running = startServer(listOf(service("lobby-1", ServiceState.RUNNING)))
+        try {
+            val base = "http://127.0.0.1:${running.server.boundPort()}"
+            running.tracker.applyAgentReport("lobby-1", listOf("Steve"))
+
+            fun queue(): String {
+                val queued = post(running, "$base/bridge/players", "player=Steve&action=permission&node=group.admin")
+                assertEquals(202, queued.statusCode(), queued.body())
+                return Regex("\"request-id\":\"([^\"]+)\"").find(queued.body())!!.groupValues[1]
+            }
+
+            fun heartbeat(vararg records: Pair<String, String>) {
+                val encoded = java.net.URLEncoder.encode(
+                    records.joinToString("\u001e") { (id, value) -> id + "\u0002" + value },
+                    Charsets.UTF_8,
+                )
+                val response = post(
+                    running,
+                    "$base/bridge/heartbeat",
+                    "service-id=id-lobby-1&service-name=lobby-1&players=Steve&max-players=20&permission-results=$encoded",
+                )
+                assertEquals(200, response.statusCode(), response.body())
+            }
+
+            val denied = queue()
+            heartbeat(denied to "false")
+            val deniedResponse = get(running, "$base/bridge/players/permission?request-id=$denied")
+            assertEquals(200, deniedResponse.statusCode(), deniedResponse.body())
+            assertTrue("\"state\":\"denied\"" in deniedResponse.body(), deniedResponse.body())
+
+            val offline = queue()
+            heartbeat(offline to "offline")
+            val offlineResponse = get(running, "$base/bridge/players/permission?request-id=$offline")
+            assertEquals(422, offlineResponse.statusCode(), offlineResponse.body())
+            assertTrue("player is no longer online" in offlineResponse.body(), offlineResponse.body())
+
+            val missingNode = post(running, "$base/bridge/players", "player=Steve&action=permission")
+            assertEquals(400, missingNode.statusCode(), missingNode.body())
+
+            val unknown = get(running, "$base/bridge/players/permission?request-id=does-not-exist")
+            assertEquals(404, unknown.statusCode(), unknown.body())
+        } finally {
+            running.server.stop()
+        }
+    }
+
+    @Test
     fun `transfer without a running proxy is rejected`() {
         val running = startServer(listOf(service("lobby-1", ServiceState.RUNNING)))
         try {

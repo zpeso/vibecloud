@@ -71,9 +71,11 @@ val cloud = VibeCloud.instance()
 // players — network-wide
 val players: List<CloudPlayer> = cloud.players().all()
 val notch = cloud.players().findByName("Notch")
+val byId = cloud.players().findByUniqueId("d0f7d4b1-0e3f-4a4b-9f0e-2f2b5a1c3d4e")  // dashed or plain
 notch?.let {
     cloud.players().sendMessage(it, "§aWelcome to the network!")
     cloud.players().kick(it, "§cBye.")                       // optional reason
+    it.hasPermission("group.moderator")                       // async, never blocks
 }
 val lobby = cloud.services().findByGroup("lobby").firstOrNull()
 if (notch != null && lobby != null) cloud.players().connect(notch, lobby)  // via the proxy
@@ -120,6 +122,8 @@ request an immediate background refresh; it returns a `CompletableFuture<CloudSt
 | `VibeCloud.instance()` / `instanceOrNull()` | Access the singleton afterwards |
 | `VibeCloud.currentServiceName()` / `instance.currentService()` | Local service identity from the agent config (no HTTP; `null` outside the cloud) |
 | `cloud.players().all() / findByName(name) / refresh(player)` | Fresh roster/lookups (HTTP; use asynchronously) |
+| `cloud.players().findByUniqueId(uuid)` | UUID lookup (dashes/case-insensitive, name fallback); `CloudPlayer.uniqueId` / `uuid` come from the agent roster |
+| `cloud.players().hasPermission(player, node)` / `player.hasPermission(node)` | Effective permission check on the player's server (LuckPerms etc.); returns `CompletableFuture<Boolean>`, never blocks |
 | `cloud.temporary().players().all() / findByName(name)` | Cached player roster and details; never performs HTTP on the caller |
 | `cloud.temporary().playerCount()` / `cloud.players().playerCount()` | Cached network player count (background refresh, default 5s) |
 | `cloud.temporary().services() / groups()` | Cached service and group snapshots |
@@ -131,6 +135,30 @@ request an immediate background refresh; it returns a `CompletableFuture<CloudSt
 | `cloud.groups().all() / findByName(name)` | Group configuration |
 | `cloud.status()` | Full status document in one call |
 | `cloud.executeCloudCommand(args) / completeCloudCommand(args)` | The `/cloud` surface from code |
+
+### Player ids and permission checks
+
+`CloudPlayer.uniqueId` is the UUID the player's agent reports, and `CloudPlayer.uuid` is the same value parsed into a
+`java.util.UUID` (null instead of throwing when the agent reports none). `findByUniqueId` accepts the UUID with or
+without dashes in any letter case; if no online player has that id it falls back to an exact name match, so old
+name-based callers keep working.
+
+`hasPermission(player, node)` asks the **server the player is on** whether the node is granted, so the answer comes
+from that backend's permission system — LuckPerms (or any other provider installed there) evaluates it with its own
+group/luck data. Install LuckPerms on the backend servers (a shared MongoDB store keeps them in sync); a proxy-only
+LuckPerms install does not answer Bukkit permission checks on the backends.
+
+The check is a round trip: the cloud queues the node for the player's agent, the agent answers on its next heartbeat
+(executed on that server's main thread), and the SDK polls the cloud for the result. It is asynchronous like the
+actions above and fails with an `IOException` when the player left, the node could not be evaluated, or the answer
+took longer than ten seconds. Agents older than this feature ignore the request (the check then times out), so once
+the controller is upgraded, restart the backend services — the cloud reinstalls its bundled agent on every start.
+
+```kotlin
+player.hasPermission("group.moderator").thenAccept { granted ->
+    if (!granted) player.kick("§cStaff only")
+}
+```
 
 Actions are asynchronous: they return immediately with a `CompletableFuture` that completes when the cloud accepted
 the action, or fails with an `IOException` (bridge unreachable, rejected token, no running proxy, unknown target).
@@ -205,7 +233,8 @@ curl -H "Authorization: Bearer $(cat bridge.token)" http://127.0.0.1:25580/bridg
 | `GET /bridge/host` | Root-server CPU/memory/swap/uptime/load/OS/Java + per-process CPU |
 | `GET /bridge/activity` | Recent lifecycle events, newest first |
 | `GET /bridge/console?service=` | Last 200 console lines |
-| `POST /bridge/players` | `action=transfer&target=` → `202`, written to the proxy console off the request thread; `action=message|kick|inventory` → queued for the player's agent |
+| `POST /bridge/players` | `action=transfer&target=` → `202`, written to the proxy console off the request thread; `action=message|kick|inventory|permission` → queued for the player's agent (`permission` also needs `node=` and answers with a `request-id`) |
+| `GET /bridge/players/permission?request-id=` | Answer of a queued permission check: `202` + `pending`, `200` + `granted`/`denied`, `422` when it could not be evaluated, `404` for an unknown/expired id |
 | `POST /bridge/services/command` | Run a console command on a service |
 | `POST /bridge/cloud` | The `/cloud` command surface (`arg` repeated, `mode=execute|complete`) |
 | `POST /bridge/heartbeat` | Agent-only telemetry ingestion |

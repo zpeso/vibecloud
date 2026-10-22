@@ -259,11 +259,29 @@ class NetworkMessenger : Listener {
         player.kick("§cYou were removed from the network.")
     }
 
+    fun requireStaff(name: String) {
+        // Evaluated by the player's own server (LuckPerms or another provider installed there).
+        val player = cloud.players().findByName(name) ?: return
+        player.hasPermission("group.moderator").thenAccept { granted ->
+            if (!granted) player.kick("§cStaff only")
+        }
+    }
+
     fun restartCitybuild() {
         cloud.services().findByGroup("citybuild").forEach { it.executeCommand("say Restarting in 10s") }
     }
 }
 ```
+
+`CloudPlayer.uniqueId` is the agent-reported UUID and `CloudPlayer.uuid` the same value parsed into a
+`java.util.UUID` (null instead of throwing when no id was reported). `findByUniqueId` accepts a UUID with or without
+dashes in any case and falls back to an exact name match, so name-based callers keep working.
+
+`hasPermission(player, node)` asks the server the player is on, so the backend's permission system answers —
+LuckPerms installed on the backends (a shared MongoDB store keeps them in sync) supplies the effective value. The
+check is a heartbeat round trip: the SDK queues it, the agent evaluates the node on its main thread, and the future
+completes with the answer, or fails with an `IOException` when the player left, the node could not be evaluated, or
+it timed out after ten seconds.
 
 Actions run through the cloud: message/kick are queued for the target service's agent and executed on that server's
 main thread within one heartbeat interval (default 5s). `player.connect(...)` is dispatched through the proxy's
@@ -350,8 +368,9 @@ GET /bridge/host        → host system metrics: {cpu, process-cpu, cores, memor
 GET /bridge/activity    → {"events":[{t,kind,message},...]} newest first (service lifecycle)
 GET /bridge/console?service=<name> → {"lines":[...]}  (last 200 console lines)
 POST /bridge/players  action=transfer&target=<service|group#> → write `send <player> <server>` to the proxy console (202 {"transferred":true}, dispatched off the request thread)
-POST /bridge/players  action=message|kick|inventory → queue for the player's agent (202 {"queued":true,"request-id":...})
+POST /bridge/players  action=message|kick|inventory|permission → queue for the player's agent (202 {"queued":true,"request-id":...}); permission also needs node=
 GET /bridge/players/inventory?service=&player= → last snapshot {service,player,captured-at,items:[{slot,material,count,durability,name,lore[],enchantments[]}]}
+GET /bridge/players/permission?request-id= → 202 {"state":"pending"} | 200 {"state":"granted"|"denied",player,node} | 422 evaluation failed | 404 unknown/expired
 ```
 
 Player inspection wire notes: `slot` is `helmet`, `chestplate`, `leggings`, `boots`, `offhand` or a

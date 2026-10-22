@@ -164,6 +164,24 @@ enum class CloudCommandType(internal val wireName: String) {
     KICK("kick"),
     TRANSFER("transfer"),
     COMMAND("command"),
+    PERMISSION("permission"),
+}
+
+/** State of an asynchronous permission check, as answered by `GET /bridge/players/permission`. */
+internal enum class PermissionState(val wire: String) {
+    PENDING("pending"),
+    GRANTED("granted"),
+    DENIED("denied"),
+    ;
+
+    companion object {
+        fun parse(json: String): PermissionState {
+            val root = runCatching { MiniJson.parse(json) }.getOrNull() as? Map<*, *>
+            val state = root?.get("state") as? String
+            return entries.firstOrNull { it.wire == state }
+                ?: throw java.io.IOException("Unexpected permission response: ${json.take(120)}")
+        }
+    }
 }
 
 internal fun ServiceStatus.toCloudService(cloud: VibeCloud): CloudService = CloudService(
