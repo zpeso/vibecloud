@@ -1,6 +1,7 @@
 plugins {
     kotlin("jvm")
     `maven-publish`
+    id("com.gradleup.shadow") version "9.6.1"
 }
 
 // The agent runs inside Minecraft server JVMs. Java 21 covers every current Paper release
@@ -37,6 +38,26 @@ dependencies {
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
     testRuntimeOnly("org.junit.jupiter:junit-jupiter-engine:5.13.4")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher:1.13.4")
+}
+
+// Published SDK jar: plugin classes + the Redis transport + Jedis, so a plugin that bundles the
+// SDK needs exactly one dependency. The transport types are not part of the public surface; they
+// are shaded (and Jedis/its pool relocated) to keep the artifact self-contained — JitPack would
+// otherwise have to resolve a sibling module that is not published under `dev.vibecloud`.
+tasks.shadowJar {
+    archiveClassifier.set("")
+    archiveFileName.set("bridge-${project.version}.jar")
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    exclude("META-INF/*.SF", "META-INF/*.DSA", "META-INF/*.RSA")
+    exclude("META-INF/versions/**/module-info.class", "module-info.class")
+    exclude("META-INF/LICENSE*", "META-INF/NOTICE*")
+    relocate("redis.clients", "dev.vibecloud.api.bridge.libs.jedis")
+    relocate("org.apache.commons.pool2", "dev.vibecloud.api.bridge.libs.pool2")
+}
+
+// The unshaded jar keeps a classifier so build/libs never holds two jars with the same name.
+tasks.jar {
+    archiveClassifier.set("plain")
 }
 
 // Self-contained agent jar: plugin classes + SDK classes (same sourceSet) + kotlin-stdlib, so
@@ -78,7 +99,11 @@ tasks.test {
 publishing {
     publications {
         create<MavenPublication>("maven") {
-            from(components["java"])
+            // The shaded jar IS the library artifact, so the published POM declares no
+            // dependencies (everything it needs is inside). Publishing the java component
+            // instead would advertise `dev.vibecloud:transport`, which consumers cannot resolve.
+            artifact(tasks.shadowJar)
+            artifact(tasks.named("sourcesJar"))
             // The installable agent plugin jar is published alongside the library jar with an
             // 'agent' classifier so both can share the same coordinates.
             artifact(agentJar) { classifier = "agent" }

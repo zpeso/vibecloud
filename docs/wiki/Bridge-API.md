@@ -25,9 +25,10 @@ dependencies {
 }
 ```
 
-Alternatives: `./gradlew publishToMavenLocal` + `mavenLocal()`, or nothing at all — the agent jar that the cloud
-injects into every backend server already contains these SDK classes (and the Redis client they need), so on
-cloud-managed servers the classes are simply present.
+The published jar is self-contained: it bundles the Redis transport and client (relocated), so `implementation(...)`
+needs no other dependencies. Alternatives: `./gradlew publishToMavenLocal` + `mavenLocal()`, or nothing at all — the
+agent jar that the cloud injects into every backend server already contains these SDK classes, so on cloud-managed
+servers the classes are simply present.
 
 ### Connect once at startup
 

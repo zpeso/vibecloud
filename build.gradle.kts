@@ -75,9 +75,16 @@ fun runGit(vararg args: String): String {
     val proc = ProcessBuilder(listOf("git", *args))
         .directory(rootProject.projectDir)
         .start()
+    // Drain stderr concurrently: on Windows the pipe buffer is ~4 KiB, so reading stdout to EOF
+    // first deadlocks as soon as git writes enough warnings (e.g. the CRLF notices from
+    // `git add -A`) to fill the error pipe.
+    val err = StringBuilder()
+    val errDrain = Thread({
+        proc.errorStream.bufferedReader().useLines { lines -> lines.forEach { err.appendLine(it) } }
+    }, "git-stderr").apply { isDaemon = true; start() }
     val out = proc.inputStream.bufferedReader().readText()
-    val err = proc.errorStream.bufferedReader().readText()
     val code = proc.waitFor()
+    errDrain.join(1_000)
     check(code == 0) { "git ${args.joinToString(" ")} failed ($code):\n$err" }
     return out.trim()
 }

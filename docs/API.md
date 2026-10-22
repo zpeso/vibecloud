@@ -211,8 +211,9 @@ repositories { maven("https://jitpack.io") }
 dependencies { compileOnly("com.github.zpeso.vibecloud:bridge:<version>") }
 ```
 
-(The zero-dependency alternative: the agent jar already shades the `dev.vibecloud.api.bridge` SDK classes and the
-Redis client, so the classes are present on every cloud-managed server once the agent is installed.)
+The published jar is self-contained: it shades the Redis transport and client, so `implementation(...)` works with that
+single dependency. (The zero-dependency alternative: the agent jar already shades the same SDK classes and Redis
+client, so the classes are present on every cloud-managed server once the agent is installed.)
 
 ### The VibeCloud facade (recommended entry point)
 
