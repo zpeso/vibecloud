@@ -1,5 +1,6 @@
 package dev.vibecloud.api.bridge
 
+import dev.vibecloud.transport.BridgeProtocol
 import dev.vibecloud.transport.InMemoryRedisGateway
 import java.time.Duration
 import java.util.concurrent.atomic.AtomicInteger
@@ -75,6 +76,30 @@ class PlayerCountCacheTest {
             redis.publishStatus(statusJson(playerNames = listOf("NaaIhr"), group = "minigames"))
             temporary.refreshAsync().get(5, java.util.concurrent.TimeUnit.SECONDS)
             assertEquals("minigames", temporary.players().findByName("NaaIhr")?.group)
+        } finally {
+            redis.close()
+        }
+    }
+
+    @Test
+    fun `a pushed status change refreshes the cache without waiting for the interval`() {
+        val redis = InMemoryRedisGateway()
+        redis.publishStatus(statusJson(totalPlayersOnline = 2))
+        // Ten minutes: the interval cannot be what makes this test pass.
+        val cloud = testCloud(redis, refreshInterval = Duration.ofMinutes(10))
+        try {
+            val players = cloud.players()
+            players.playerCount()
+            awaitUntil("initial count cached") { players.playerCount() == 2 }
+            assertEquals(1, redis.subscriberCount(BridgeProtocol.STATUS_CHANNEL))
+
+            redis.publishStatus(statusJson(totalPlayersOnline = 7))
+            redis.publish(BridgeProtocol.STATUS_CHANNEL, BridgeProtocol.STATUS_UPDATED)
+            awaitUntil("the pushed change reaches the cache") { players.playerCount() == 7 }
+
+            redis.publishStatus(statusJson(playerNames = emptyList(), totalPlayersOnline = 0))
+            redis.publish(BridgeProtocol.STATUS_CHANNEL, BridgeProtocol.STATUS_UPDATED)
+            awaitUntil("a leave is pushed too") { players.playerCount() == 0 }
         } finally {
             redis.close()
         }

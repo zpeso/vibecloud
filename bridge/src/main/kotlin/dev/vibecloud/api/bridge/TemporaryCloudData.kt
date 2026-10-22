@@ -1,5 +1,6 @@
 package dev.vibecloud.api.bridge
 
+import dev.vibecloud.transport.RedisSubscription
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
 
@@ -117,7 +118,14 @@ class TemporaryCloudGroupProvider internal constructor(private val cache: CloudS
     fun findByName(name: String): CloudGroup? = all().firstOrNull { it.name.equals(name, ignoreCase = true) }
 }
 
-/** Shared status snapshot cache used by all `temporary()` accessors and playerCount(). */
+/**
+ * Shared status snapshot cache used by all `temporary()` accessors and playerCount().
+ *
+ * Two things keep it fresh: a refresh interval (fallback, default five seconds) and a
+ * subscription to the controller's change notification, which arrives the moment a join, leave,
+ * service start or service stop was recorded. The notification only carries a marker — the
+ * document itself is re-read with one `GET`, so every reader shares the same copy.
+ */
 internal class CloudStatusCache(
     private val cloud: VibeCloud,
     refreshInterval: Duration,
@@ -136,14 +144,34 @@ internal class CloudStatusCache(
     var lastUpdatedMillis: Long? = null
         private set
 
+    private val pushStarted = java.util.concurrent.atomic.AtomicBoolean(false)
+    @Volatile
+    private var pushSubscription: RedisSubscription? = null
+
     fun snapshot(): CloudStatus {
         refresh()
         return cachedStatus
     }
 
+    /** Subscribes to the controller's change notification once, on first use. */
+    private fun ensurePushUpdates() {
+        if (!pushStarted.compareAndSet(false, true)) return
+        pushSubscription = runCatching { cloud.subscribeStatusChanges { refresh(force = true) } }
+            .getOrElse {
+                // Polling still works without the push; retry the subscription on the next read.
+                pushStarted.set(false)
+                null
+            }
+    }
+
     @Synchronized
     fun refresh(force: Boolean = false): CompletableFuture<CloudStatus> {
-        inFlightFuture?.let { return it }
+        ensurePushUpdates()
+        inFlightFuture?.let { running ->
+            // A pushed change that arrives mid-refresh must not be swallowed by the older read.
+            if (force) running.whenComplete { _, _ -> refresh(force = true) }
+            return running
+        }
         val now = System.nanoTime()
         if (!force && now - lastRefreshAttemptNanos < refreshIntervalNanos) {
             return CompletableFuture.completedFuture(cachedStatus)
@@ -164,6 +192,13 @@ internal class CloudStatusCache(
             }
         }
         return future
+    }
+
+    /** Stops the change subscription (the gateway itself is closed by [VibeCloud.close]). */
+    fun close() {
+        pushSubscription?.close()
+        pushSubscription = null
+        pushStarted.set(false)
     }
 
     private companion object {

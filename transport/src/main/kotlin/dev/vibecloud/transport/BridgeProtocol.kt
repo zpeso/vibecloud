@@ -22,6 +22,16 @@ object BridgeProtocol {
     /** Agent heartbeats: every backend publishes here, the controller subscribes. */
     const val HEARTBEAT_CHANNEL = PREFIX + "heartbeat"
 
+    /**
+     * Change notification, published by the controller right after it rewrites [STATUS_KEY].
+     * The payload is a small marker; readers answer it with one `GET` of the status document, so
+     * caches learn about joins and leaves immediately instead of waiting for a poll interval.
+     */
+    const val STATUS_CHANNEL = PREFIX + "status-updated"
+
+    /** Payload of a [STATUS_CHANNEL] message (readers re-fetch [STATUS_KEY] on receipt). */
+    const val STATUS_UPDATED = "status"
+
     /** Player actions (message/kick/log/permission/inventory) broadcast to every agent. */
     const val ACTIONS_CHANNEL = PREFIX + "actions"
 

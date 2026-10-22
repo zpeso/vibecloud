@@ -4,6 +4,7 @@ import dev.vibecloud.transport.BridgeJson
 import dev.vibecloud.transport.BridgeProtocol
 import dev.vibecloud.transport.JedisRedisGateway
 import dev.vibecloud.transport.RedisGateway
+import dev.vibecloud.transport.RedisSubscription
 import dev.vibecloud.transport.strings
 import java.io.IOException
 import java.nio.file.Path
@@ -60,6 +61,20 @@ class VibeCloud private constructor(
 
     /** Access to the players online across the whole network. */
     fun players(): CloudPlayerProvider = players
+
+    /** Subscribes to the controller's status-change notification (used by the snapshot cache). */
+    internal fun subscribeStatusChanges(listener: () -> Unit): RedisSubscription =
+        redis.subscribe(BridgeProtocol.STATUS_CHANNEL) { listener() }
+
+    /**
+     * Releases the Redis connection and the change subscription. The static [instance] is cleared
+     * if it points at this facade, so a plugin disabling can drop its copy safely.
+     */
+    fun close() {
+        statusCache.close()
+        if (connected === this) connected = null
+        runCatching { redis.close() }
+    }
 
     /** Access to all cloud services (backends and proxies). */
     fun services(): CloudServiceProvider = services

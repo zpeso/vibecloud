@@ -64,7 +64,8 @@ class CloudPlayerNotFoundException(name: String) : IOException("Cloud player '$n
 /**
  * Players online across the whole network. The finders read the cloud status document from
  * Redis (one local round trip); use [VibeCloud.temporary] for cached roster lookups that never
- * touch Redis on the caller's thread. [playerCount] reads from that same cache.
+ * touch Redis on the caller's thread. [playerCount] reads from that same cache, which the
+ * controller keeps fresh by pushing a notification on every change.
  */
 class CloudPlayerProvider internal constructor(
     private val cloud: VibeCloud,
@@ -85,8 +86,10 @@ class CloudPlayerProvider internal constructor(
         }
 
     /**
-     * Number of players online across the whole network, read from an in-memory cache. A stale
-     * read starts one background refresh and immediately returns the last known value.
+     * Number of players online across the whole network, read from an in-memory cache. The cache
+     * is pushed by the controller whenever the status changes (join, leave, service start/stop),
+     * so the value catches up within a tick; a read that finds the cache stale also starts one
+     * background refresh and immediately returns the last known value.
      */
     fun playerCount(): Int = cache.snapshot().totalPlayersOnline
 

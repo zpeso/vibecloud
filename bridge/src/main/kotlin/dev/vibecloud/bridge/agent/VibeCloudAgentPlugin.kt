@@ -11,6 +11,11 @@ import dev.vibecloud.transport.RedisSubscription
 import dev.vibecloud.transport.text
 import org.bukkit.Bukkit
 import org.bukkit.entity.Player
+import org.bukkit.event.EventHandler
+import org.bukkit.event.EventPriority
+import org.bukkit.event.Listener
+import org.bukkit.event.player.PlayerJoinEvent
+import org.bukkit.event.player.PlayerQuitEvent
 import org.bukkit.plugin.java.JavaPlugin
 import java.nio.file.Files
 import java.nio.file.Path
@@ -35,7 +40,7 @@ import java.util.concurrent.atomic.AtomicReference
  * The cloud installs this plugin and its `agent.properties` automatically on service start; if
  * the file is missing (server started outside the cloud), the plugin disables itself quietly.
  */
-class VibeCloudAgentPlugin : JavaPlugin() {
+class VibeCloudAgentPlugin : JavaPlugin(), Listener {
     private var config: AgentConfig? = null
 
     /** Internal access for the command class without colliding with JavaPlugin.getConfig(). */
@@ -105,6 +110,10 @@ class VibeCloudAgentPlugin : JavaPlugin() {
         )
         subscribeToActions(loaded)
         startCommandConsumer(loaded)
+        // Roster changes are pushed the moment they happen (see onPlayerJoin/onPlayerQuit), so the
+        // heartbeat only has to cover vitals and act as a safety net.
+        runCatching { server.pluginManager.registerEvents(this, this) }
+            .onFailure { getLogger().warning("Could not register the roster listener: ${it.message}") }
         // Keep the roster snapshot (vitals for the cloud status) fresh on the main thread.
         Bukkit.getScheduler().runTaskTimer(this, Runnable(::refreshRosterSnapshot), 40L, 40L)
         getLogger().info(
@@ -135,6 +144,7 @@ class VibeCloudAgentPlugin : JavaPlugin() {
         }
         executor = null
         heartbeatTask = null
+        runCatching { VibeCloud.instanceOrNull()?.close() }
         runCatching { redis?.close() }
         redis = null
         config = null
@@ -188,6 +198,30 @@ class VibeCloudAgentPlugin : JavaPlugin() {
                 "${player.name}|${player.uniqueId}"
             }
         }
+    }
+
+    // -- event-driven roster pushes ------------------------------------------
+
+    /** A player joined: report the new roster now instead of at the next heartbeat. */
+    @EventHandler(priority = EventPriority.MONITOR)
+    fun onPlayerJoin(event: PlayerJoinEvent) = publishRosterNow()
+
+    /** A player left (or was kicked): report the roster once they are out of the online list. */
+    @EventHandler(priority = EventPriority.MONITOR)
+    fun onPlayerQuit(event: PlayerQuitEvent) {
+        // One tick later every supported version has dropped the player from getOnlinePlayers().
+        runCatching { Bukkit.getScheduler().runTask(this, Runnable(::publishRosterNow)) }
+    }
+
+    /**
+     * Rebuilds the roster on the main thread and publishes it immediately on the heartbeat thread,
+     * so the cloud status (and every SDK cache subscribed to it) reflects a join/leave within a
+     * tick. The Redis write never happens on the main thread.
+     */
+    private fun publishRosterNow() {
+        refreshRosterSnapshot()
+        val scheduler = executor ?: return
+        runCatching { scheduler.execute { sendHeartbeat() } }
     }
 
     // -- heartbeat -----------------------------------------------------------

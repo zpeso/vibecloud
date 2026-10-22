@@ -176,9 +176,11 @@ class LobbyScoreboard(plugin: JavaPlugin) {
 Notes:
 
 - Roster/lookup reads are synchronous Redis reads (local, sub-millisecond); use `cloud.temporary()` for scoreboards
-  that poll every tick — it reads an in-memory snapshot refreshed in the background every five seconds.
-- The agent reports every 5 seconds by default (`bridge.heartbeat-interval-seconds`), which is also how often the
-  status document's player lists are refreshed.
+  that poll every tick — it reads an in-memory snapshot that the controller pushes on every change (join, leave,
+  service start/stop), with a five-second background refresh as the safety net.
+- Player counts are event-driven: the agent reports a join or leave immediately and the controller republishes the
+  status document, so `playerCount()` catches up within a tick. The heartbeat
+  (`bridge.heartbeat-interval-seconds`, default 5) only carries TPS/RAM/CPU samples and the safety-net roster.
 - `agentOnline` tells you whether the report comes from the authoritative agent or the console-line fallback.
 - The status document also carries `totals.online`, per-service `state`/`port`/`players`, and the group definitions.
 - `status().services` entries expose `playerDetails` (`PlayerDetail`: `name`, `uuid`, `pingMs`, `world`,

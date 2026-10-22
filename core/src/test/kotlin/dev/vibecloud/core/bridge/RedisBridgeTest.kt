@@ -320,6 +320,32 @@ class RedisBridgeTest {
     }
 
     @Test
+    fun `status changes are announced so SDK caches refresh immediately`() {
+        val notices = CopyOnWriteArrayList<String>()
+        val subscription = redis.subscribe(BridgeProtocol.STATUS_CHANNEL) { notices += it }
+        try {
+            val bridge = bridge(listOf(lobby, proxy))
+            bridge.start()
+            awaitSubscriber()
+            // The initial document is announced too, so a plugin that starts later has it fresh.
+            awaitUntil("the initial document is announced") { notices.isNotEmpty() }
+
+            val afterStart = notices.size
+            redis.publish(BridgeProtocol.HEARTBEAT_CHANNEL, heartbeat())
+            awaitUntil("the join is announced") { notices.size > afterStart }
+            assertEquals(BridgeProtocol.STATUS_UPDATED, notices.last())
+
+            // A reconcile cycle that renders the same document must not wake every reader.
+            val afterJoin = notices.size
+            bridge.refreshStatus()
+            Thread.sleep(50)
+            assertEquals(afterJoin, notices.size)
+        } finally {
+            subscription.close()
+        }
+    }
+
+    @Test
     fun `a disabled bridge publishes nothing and accepts no commands`() {
         val bridge = bridge(listOf(lobby), settings = BridgeSettings(enabled = false))
         bridge.start()

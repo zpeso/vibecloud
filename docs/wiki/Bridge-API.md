@@ -118,10 +118,16 @@ Every blocking call has a non-blocking variant that runs it on a background thre
 
 ### Scoreboards and other frequent readers
 
-Use `cloud.temporary()` for frequent reads: the full status document is cached in memory and refreshed in the
-background every five seconds by default. Cached reads never touch Redis on the caller's thread, so they are safe
-for scoreboards, events, or checks that run every second. Before the first refresh, cached collections are empty and
-counts are zero; while Redis is unreachable, the last successful snapshot remains.
+Use `cloud.temporary()` for frequent reads: the full status document is cached in memory. Cached reads never touch
+Redis on the caller's thread, so they are safe for scoreboards, events, or checks that run every second. Before the
+first refresh, cached collections are empty and counts are zero; while Redis is unreachable, the last successful
+snapshot remains.
+
+The cache is **pushed, not only polled**. When a player joins or leaves, the agent reports the new roster at once
+(instead of at the next heartbeat), the controller rewrites `vibecloud:status` and publishes a one-word notification
+on `vibecloud:status-updated`; every SDK cache subscribed to it re-reads the document within milliseconds. Joins,
+leaves, kicks, service starts and stops therefore show up in `playerCount()` on the next tick, while the five-second
+refresh interval keeps acting as a safety net if a notification is ever missed.
 
 ```kotlin
 val cached = VibeCloud.instance().temporary()
@@ -131,9 +137,11 @@ val group = cloudPlayer?.group             // cached, no Redis read
 val services = cached.services().findByGroup("lobby")
 ```
 
-`cloud.players().playerCount()` uses the same cache. Configure its cadence with
-`temporaryRefreshInterval(Duration.ofSeconds(3))` on the builder. `cached.refreshAsync()` requests an immediate
-background refresh and returns a `CompletableFuture<CloudStatus>`.
+`cloud.players().playerCount()` uses the same cache. Configure the safety-net cadence with
+`temporaryRefreshInterval(Duration.ofSeconds(3))` on the builder — it no longer decides how fast a join or leave is
+visible. `cached.refreshAsync()` requests an immediate background refresh and returns a
+`CompletableFuture<CloudStatus>`, and `cached.isLoaded()` / `cached.lastUpdatedMillis()` tell you whether a status
+has arrived yet.
 
 ### API reference
 
@@ -147,7 +155,7 @@ background refresh and returns a `CompletableFuture<CloudStatus>`.
 | `cloud.players().findByUniqueId(uuid)` | UUID lookup (dashes/case-insensitive, name fallback); `CloudPlayer.uniqueId` / `uuid` come from the agent roster |
 | `cloud.players().hasPermission(player, node)` / `player.hasPermission(node)` | Effective permission check on the player's server (LuckPerms etc.); blocks until answered |
 | `cloud.temporary().players().all() / findByName(name)` | Cached player roster and details; never touches Redis on the caller |
-| `cloud.temporary().playerCount()` / `cloud.players().playerCount()` | Cached network player count (background refresh, default 5s) |
+| `cloud.temporary().playerCount()` / `cloud.players().playerCount()` | Cached network player count, updated by push on every change |
 | `cloud.temporary().services() / groups()` | Cached service and group snapshots |
 | `cloud.players().sendMessage(player, lines)` | Chat message (legacy `§` codes supported); returns immediately |
 | `cloud.players().kick(player, reason)` | Kick with reason; returns immediately |
@@ -241,6 +249,7 @@ Everything lives under the `vibecloud:` prefix:
 | Key / channel | Type | Contents |
 |---|---|---|
 | `vibecloud:status` | string | The cloud status document (JSON), written by the controller |
+| `vibecloud:status-updated` | channel | Change notification (`status`), published right after the document is rewritten |
 | `vibecloud:heartbeat` | channel | Agent heartbeats (JSON), consumed by the controller |
 | `vibecloud:actions` | channel | Player actions (message/kick/log/permission) broadcast by the SDK |
 | `vibecloud:commands:<service>` | list | Console commands for one service, popped by its agent |
@@ -266,7 +275,9 @@ The full message shapes live in [docs/API.md](../API.md).
   component of the network.
 - The facade throws `IOException` when Redis is unreachable, the token is rejected, no proxy is running, the target
   is unknown, or an answer timed out.
-- `bridge.heartbeat-interval-seconds` (default 5) controls how fresh player/TPS/CPU data is.
+- Player counts no longer depend on the heartbeat: joins and leaves are published the moment they happen
+  (`vibecloud:status-updated`). `bridge.heartbeat-interval-seconds` (default 5) only controls how often
+  TPS/RAM/CPU samples and the safety-net roster refresh arrive.
 - After upgrading the controller, restart the backend services: the cloud reinstalls its bundled agent jar on every
   start, and an older agent does not know the newer message types.
 

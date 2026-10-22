@@ -66,6 +66,10 @@ class RedisBridge(
     private val running = AtomicBoolean(false)
     @Volatile
     private var subscription: RedisSubscription? = null
+
+    /** Last document written to [BridgeProtocol.STATUS_KEY], to skip identical republishes. */
+    @Volatile
+    private var lastStatusDocument: String? = null
     @Volatile
     private var requestThread: Thread? = null
 
@@ -103,11 +107,20 @@ class RedisBridge(
 
     override fun close() = stop()
 
-    /** Re-renders and publishes the status document (called every reconcile cycle). */
+    /**
+     * Re-renders and publishes the status document (called every reconcile cycle, and on every
+     * heartbeat). Whenever the rendered document changes it also publishes a [BridgeProtocol.STATUS_CHANNEL]
+     * notification, so SDK caches holding `temporary()`/`players().playerCount()` pick the change
+     * up in milliseconds instead of waiting for their refresh interval.
+     */
     fun refreshStatus() {
         if (!running.get() || !settings.enabled) return
         try {
-            redis.set(BridgeProtocol.STATUS_KEY, document.render())
+            val rendered = document.render()
+            if (rendered == lastStatusDocument) return
+            redis.set(BridgeProtocol.STATUS_KEY, rendered)
+            lastStatusDocument = rendered
+            redis.publish(BridgeProtocol.STATUS_CHANNEL, BridgeProtocol.STATUS_UPDATED)
         } catch (failure: Exception) {
             logger.debug("Could not publish the cloud status to Redis: ${failure.message}")
         }
