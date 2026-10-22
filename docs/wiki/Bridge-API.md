@@ -21,9 +21,12 @@ published message. There is no HTTP endpoint and no dashboard.
 ```kotlin
 repositories { maven("https://jitpack.io") }
 dependencies {
-    compileOnly("com.github.zpeso.vibecloud:bridge:2.0.0")  // dev.vibecloud.api.bridge.*
+    compileOnly("com.github.zpeso.vibecloud:bridge:v2.0.1")  // dev.vibecloud.api.bridge.*
 }
 ```
+
+The version is the release **tag** (`v2.0.1`). JitPack also answers `2.0.1` once it has built the
+unprefixed name; if your build cannot resolve one form, try the other.
 
 The published jar is self-contained: it bundles the Redis transport and client (relocated), so `implementation(...)`
 needs no other dependencies. Alternatives: `./gradlew publishToMavenLocal` + `mavenLocal()`, or nothing at all — the

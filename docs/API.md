@@ -41,7 +41,7 @@ To depend on the API from another Gradle project, add this repository's publishe
 
 ```kotlin
 dependencies {
-    implementation("com.github.zpeso.vibecloud:api:1.0.7")
+    implementation("com.github.zpeso.vibecloud:api:v2.0.1")
 }
 ```
 
@@ -204,11 +204,11 @@ dependencies {
 ```
 
 For GitHub-based consumption without running a repository, tag a release and let **JitPack** build it on demand.
-JitPack publishes this repo's tags under the plain `X.Y.Z` version:
+The JitPack version is the tag name:
 
 ```kotlin
 repositories { maven("https://jitpack.io") }
-dependencies { compileOnly("com.github.zpeso.vibecloud:bridge:<version>") }
+dependencies { compileOnly("com.github.zpeso.vibecloud:bridge:v<version>") } // e.g. v2.0.1
 ```
 
 The published jar is self-contained: it shades the Redis transport and client, so `implementation(...)` works with that

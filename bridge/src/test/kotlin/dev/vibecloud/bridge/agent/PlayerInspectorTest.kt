@@ -73,6 +73,29 @@ class PlayerInspectorTest {
         assertEquals(listOf("saturation", "allowed-flight", "sneaking", "sprinting", "gliding", "sleeping", "in-vehicle"), ROSTER_FIELDS.drop(17))
     }
 
+    @Test
+    fun `an unsupported field never costs the entry its identity`() {
+        // Spigot has no Player#getClientBrandName (Paper-only): the field degrades to empty and
+        // the uuid must still be in position 1, otherwise the SDK reports uniqueId == null.
+        val entry = PlayerInspector.rosterEntry(
+            name = "Steve",
+            uuid = "d0f7d4b1-0e3f-4a4b-9f0e-2f2b5a1c3d4e",
+            fields = listOf(
+                { throw NoSuchMethodError("getClientBrandName") },
+                { 42 },
+            ),
+        )
+        assertEquals(
+            listOf("Steve", "d0f7d4b1-0e3f-4a4b-9f0e-2f2b5a1c3d4e", "", "42"),
+            entry.split("|"),
+        )
+    }
+
+    @Test
+    fun `absent optional values are empty, not dropped`() {
+        assertEquals("Alex|uuid||x", PlayerInspector.rosterEntry("Alex", "uuid", listOf({ null }, { "x" })))
+    }
+
     private companion object {
         /** Mirrors PlayerInspector.rosterEntry's documented order for a cheap contract check. */
         val ROSTER_FIELDS = listOf(

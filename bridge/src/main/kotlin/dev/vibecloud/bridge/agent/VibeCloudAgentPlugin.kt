@@ -20,6 +20,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -170,11 +171,23 @@ class VibeCloudAgentPlugin : JavaPlugin() {
     @Volatile
     private var rosterSnapshot: List<String> = emptyList()
 
+    private val rosterWarningShown = AtomicBoolean(false)
+
     /** Main-thread task: refreshes [rosterSnapshot] cheaply (vitals only, no inventory). */
     private fun refreshRosterSnapshot() {
-        rosterSnapshot = runCatching {
-            server.onlinePlayers.map { PlayerInspector.rosterEntry(it) }
-        }.getOrDefault(emptyList())
+        // Per player, so one unreadable player can never cost the cloud the whole roster (and
+        // with it every UUID). The fallback keeps the identity fields the status needs most.
+        rosterSnapshot = server.onlinePlayers.map { player ->
+            runCatching { PlayerInspector.rosterEntry(player) }.getOrElse { failure ->
+                if (rosterWarningShown.compareAndSet(false, true)) {
+                    getLogger().warning(
+                        "Could not read the full player roster (${failure.message}); " +
+                            "reporting name and UUID only.",
+                    )
+                }
+                "${player.name}|${player.uniqueId}"
+            }
+        }
     }
 
     // -- heartbeat -----------------------------------------------------------

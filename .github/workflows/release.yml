@@ -54,6 +54,11 @@ jobs:
       # build is queued, so a non-zero exit here is expected and not a failure.
       - name: Kick JitPack (API artifacts)
         run: |
-          curl -fsSL --max-time 60 \
-            "https://jitpack.io/com/github/zpeso/vibecloud/${GITHUB_REF_NAME#v}/build.log" \
-            -o /dev/null || echo "JitPack build requested — it completes asynchronously."
+          # JitPack keys builds by the name it is asked for, so request both forms: the tag
+          # (`v2.0.1`) and the unprefixed semver (`2.0.1`). Whichever it canonicalises, users can
+          # resolve the coordinate their build file names.
+          for version in "${GITHUB_REF_NAME}" "${GITHUB_REF_NAME#v}"; do
+            curl -fsSL --max-time 60 \
+              "https://jitpack.io/com/github/zpeso/vibecloud/${version}/build.log" \
+              -o /dev/null || echo "JitPack build for ${version} requested — it completes asynchronously."
+          done

@@ -24,32 +24,47 @@ internal object PlayerInspector {
      * 17 saturation, 18 allowed-flight, 19 sneaking, 20 sprinting, 21 gliding, 22 sleeping,
      * 23 in-vehicle
      */
-    fun rosterEntry(player: Player): String = listOf(
-        player.name,
-        player.uniqueId.toString(),
-        player.ping.toString(),
-        player.world.name,
-        player.gameMode.name,
-        round(player.health),
-        player.foodLevel.toString(),
-        player.level.toString(),
-        round(player.exp.toDouble()),
-        round(player.location.x),
-        round(player.location.y),
-        round(player.location.z),
-        player.clientBrandName ?: "",
-        player.firstPlayed.toString(),
-        player.address?.address?.hostAddress ?: "",
-        player.isOp.toString(),
-        player.isFlying.toString(),
-        round(player.saturation.toDouble()),
-        player.allowFlight.toString(),
-        player.isSneaking.toString(),
-        player.isSprinting.toString(),
-        player.isGliding.toString(),
-        player.isSleeping.toString(),
-        player.vehicle?.type?.name ?: "",
-    ).joinToString(FIELD)
+    fun rosterEntry(player: Player): String = rosterEntry(
+        name = player.name,
+        uuid = player.uniqueId.toString(),
+        fields = listOf(
+            { player.ping },
+            { player.world.name },
+            { player.gameMode.name },
+            { round(player.health) },
+            { player.foodLevel },
+            { player.level },
+            { round(player.exp.toDouble()) },
+            { round(player.location.x) },
+            { round(player.location.y) },
+            { round(player.location.z) },
+            { player.clientBrandName },
+            { player.firstPlayed },
+            { player.address?.address?.hostAddress },
+            { player.isOp },
+            { player.isFlying },
+            { round(player.saturation.toDouble()) },
+            { player.allowFlight },
+            { player.isSneaking },
+            { player.isSprinting },
+            { player.isGliding },
+            { player.isSleeping },
+            { player.vehicle?.type?.name },
+        ),
+    )
+
+    /**
+     * Joins the identity and the optional fields into one entry. Every optional field is read
+     * independently: an API the running server does not have (for example the Paper-only
+     * `clientBrandName` on Spigot) degrades to an empty field instead of failing the entry —
+     * without this, a single unsupported getter removed the whole roster, and with it every
+     * player's UUID, from the cloud status.
+     */
+    internal fun rosterEntry(name: String, uuid: String, fields: List<() -> Any?>): String =
+        (listOf(name, uuid) + fields.map { value -> safeField(value) }).joinToString(FIELD)
+
+    private fun safeField(value: () -> Any?): String =
+        runCatching { value()?.toString() ?: "" }.getOrDefault("")
 
     private fun round(value: Double): String = String.format(Locale.US, "%.1f", value)
 }
