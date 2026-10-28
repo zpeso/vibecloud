@@ -31,9 +31,12 @@ groups:
     min-services: 0
     max-services: 5
     always-running-services: 0
+    # Boot order: 1 starts first, then 2, ... Groups without a priority start last.
+    priority: 1
   proxy:
     type: VELOCITY
     version: "velocity-4.0.0-6"
     min-services: 0
     max-services: 2
     always-running-services: 0
+    priority: 2

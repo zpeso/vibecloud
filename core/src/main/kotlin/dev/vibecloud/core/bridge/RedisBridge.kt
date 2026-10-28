@@ -119,8 +119,11 @@ class RedisBridge(
             val rendered = document.render()
             if (rendered == lastStatusDocument) return
             redis.set(BridgeProtocol.STATUS_KEY, rendered)
-            lastStatusDocument = rendered
+            // Record the document only after both writes landed: if the notification fails, the
+            // next cycle retries it instead of considering the change already delivered and never
+            // notifying the SDK caches about this document at all.
             redis.publish(BridgeProtocol.STATUS_CHANNEL, BridgeProtocol.STATUS_UPDATED)
+            lastStatusDocument = rendered
         } catch (failure: Exception) {
             logger.debug("Could not publish the cloud status to Redis: ${failure.message}")
         }

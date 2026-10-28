@@ -10,6 +10,7 @@ import dev.vibecloud.api.server.ServerBuild
 import dev.vibecloud.api.server.ServerCatalog
 import dev.vibecloud.api.server.ServerType
 import dev.vibecloud.api.server.ServerVersion
+import dev.vibecloud.api.service.GroupRestartResult
 import dev.vibecloud.api.service.Service
 import dev.vibecloud.api.service.ServiceManager
 import dev.vibecloud.api.service.ServiceState
@@ -29,7 +30,7 @@ import kotlin.test.assertTrue
 
 class ConsoleCommandHandlerTest {
     @Test
-    fun `group name restart restarts the group's services`() = runBlocking {
+    fun `group name restart stops the whole group before starting it again`() = runBlocking {
         val services = RecordingServices()
         val cloud = TestCloud(services)
         val console = InteractiveConsole(cloud)
@@ -39,7 +40,9 @@ class ConsoleCommandHandlerTest {
 
             handler.execute("group lobby restart")
 
-            assertEquals(listOf("restart:lobby-1"), services.actions)
+            // The CLI must use the batch operation (stop everything, then start everything)
+            // rather than restarting the group's services one at a time.
+            assertEquals(listOf("group-restart:lobby"), services.actions)
         } finally {
             scope.cancel()
             console.close()
@@ -87,6 +90,11 @@ class ConsoleCommandHandlerTest {
         override suspend fun start(name: String, automatic: Boolean) { actions += "start:$name" }
         override suspend fun stop(name: String) { actions += "stop:$name" }
         override suspend fun restart(name: String) { actions += "restart:$name" }
+
+        override suspend fun restartGroup(groupName: String): GroupRestartResult {
+            actions += "group-restart:$groupName"
+            return GroupRestartResult(all().filter { it.groupName == groupName }.map { it.name })
+        }
         override suspend fun delete(name: String) { actions += "delete:$name" }
         override suspend fun stopAll() = Unit
         override fun get(name: String): Service? = service.takeIf { it.name == name }

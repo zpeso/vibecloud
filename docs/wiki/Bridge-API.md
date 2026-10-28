@@ -106,7 +106,7 @@ val suggestions = cloud.completeCloudCommand(listOf("group", ""))
 
 | Call | Blocks? | Why |
 |---|---|---|
-| `status()`, `players().all()`, `findByName`, `services()`, `groups()` | yes, milliseconds | one local `GET` |
+| `status()`, `players().all()`, `findByName`, `services()`, `groups()` | yes, milliseconds | one local `GET`, answered from the last snapshot if Redis is unwell (see below) |
 | `sendMessage`, `kick`, `CloudService.executeCommand` | no | one `PUBLISH`/`RPUSH` |
 | `hasPermission(...)` | yes, until the player's server answers (≤ `timeout`) | the check runs on that server |
 | `connect(...)` (transfer) | yes, until the controller wrote it to the proxy console | only the controller owns the proxy |
@@ -115,6 +115,26 @@ val suggestions = cloud.completeCloudCommand(listOf("group", ""))
 Every blocking call has a non-blocking variant that runs it on a background thread and returns a
 `CompletableFuture`: `hasPermissionAsync`, `sendMessageAsync`, `kickAsync`, `connectAsync`,
 `executeCommandAsync`, `executeCloudCommandAsync`. Prefer those on a server's main thread.
+
+### If Redis has a bad moment
+
+A bridge read never waits long and never throws just because Redis timed out. Connections have short timeouts, a
+dropped connection is retried once on a fresh one, and `status()` — and therefore `players().all()`,
+`services()`, `groups()` — serves the **last document that could be read** when Redis cannot answer. A command
+handler or scoreboard task keeps working through a Redis restart instead of failing:
+
+```kotlin
+val players = cloud.players().all()          // empty on the very first read, otherwise the last known roster
+if (cloud.isDegraded()) {
+    // values may be a few seconds old; log/log-skip/fall back — never a crash
+    getLogger().warning("Cloud data stale: ${cloud.lastStatusError()}")
+}
+```
+
+Actions that change something (`sendMessage`, `kick`, `connect`, `executeCommand`, `hasPermission`,
+`executeCloudCommand`) still report failure with an `IOException` — they did not happen — but each attempt is short
+and the next one succeeds as soon as Redis is back. Use the `…Async` variants where a failure must never block a
+server thread.
 
 ### Scoreboards and other frequent readers
 
@@ -273,8 +293,9 @@ The full message shapes live in [docs/API.md](../API.md).
 
 - The token grants command dispatch: distribute it like a password, and treat the Redis instance as a trusted
   component of the network.
-- The facade throws `IOException` when Redis is unreachable, the token is rejected, no proxy is running, the target
-  is unknown, or an answer timed out.
+- Reads survive a Redis hiccup (`isDegraded()` tells you the data is from the last good snapshot); actions and
+  blocking calls throw an `IOException` when Redis is unreachable, the token is rejected, no proxy is running, the
+  target is unknown, or an answer timed out.
 - Player counts no longer depend on the heartbeat: joins and leaves are published the moment they happen
   (`vibecloud:status-updated`). `bridge.heartbeat-interval-seconds` (default 5) only controls how often
   TPS/RAM/CPU samples and the safety-net roster refresh arrive.

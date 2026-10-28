@@ -113,34 +113,25 @@ class ConsoleCommandHandler(
         handleGroup(args)
     }
 
-    /** Restarts every provisioned service record in a group, continuing if an individual restart fails. */
+    /**
+     * Restarts a whole group as one batch: every service is stopped first, then they all come back
+     * (see [dev.vibecloud.api.service.ServiceManager.restartGroup]). One failed service never
+     * leaves its group-mates stopped.
+     */
     private suspend fun restartGroupServices(name: String, tag: Int) {
         val group = cloud.groups.get(name.trim().lowercase(Locale.ROOT))
             ?: throw NoSuchElementException("Group '$name' does not exist")
-        val services = cloud.services.all().filter { it.groupName == group.name }.sortedBy { it.name }
-        if (services.isEmpty()) {
+        val result = cloud.services.restartGroup(group.name)
+        if (result.total == 0) {
             println(commandTag(tag) + Cli.dim("Group '${group.name}' has no services to restart."))
             return
         }
 
-        val restarted = mutableListOf<String>()
-        val failed = mutableListOf<Pair<String, String>>()
-        for (service in services) {
-            try {
-                cloud.services.restart(service.name)
-                restarted += service.name
-            } catch (failure: CancellationException) {
-                throw failure
-            } catch (failure: Exception) {
-                failed += service.name to (failure.message ?: failure::class.simpleName.orEmpty())
-            }
-        }
-
-        if (failed.isEmpty()) {
-            println(commandTag(tag) + Cli.success("Restarted all ${restarted.size} service(s) in group '${group.name}'."))
+        if (result.succeeded) {
+            println(commandTag(tag) + Cli.success("Restarted all ${result.restarted.size} service(s) in group '${group.name}'."))
         } else {
-            println(commandTag(tag) + Cli.warn("Restarted ${restarted.size}/${services.size} service(s) in group '${group.name}'."))
-            failed.forEach { (service, reason) ->
+            println(commandTag(tag) + Cli.warn("Restarted ${result.restarted.size}/${result.total} service(s) in group '${group.name}'."))
+            result.failed.forEach { (service, reason) ->
                 println(commandTag(tag) + Cli.error("  $service: $reason"))
             }
         }

@@ -21,6 +21,9 @@ import kotlin.math.min
  * `desiredRunningServices` is a floor: the reconciler starts services until the group has at
  * least that many running, and it never stops services for running above it — extras an operator
  * started stay up until they are stopped explicitly. `maxServices` caps the provisioned records.
+ *
+ * Boot order follows [Group.priority]: priority 1 is started first, then 2, and so on, with
+ * unprioritized groups last.
  */
 class DesiredStateReconciler(
     private val scope: CoroutineScope,
@@ -46,31 +49,44 @@ class DesiredStateReconciler(
     }
 
     /**
-     * One reconciliation pass over every group. Groups are reconciled concurrently (bounded at
-     * [MAX_CONCURRENT_GROUP_PASSES]) so one group's slow start no longer delays the others — at
-     * boot this turns "sum of all startup times" into "slowest single startup". Each group's own
-     * reconciliation remains strictly sequential: at most one start/stop/create per group per pass.
+     * One reconciliation pass over every group, in priority tiers. Groups sharing a priority are
+     * reconciled concurrently (bounded at [MAX_CONCURRENT_GROUP_PASSES]) so one group's slow start
+     * does not delay its peers — within a tier this turns "sum of all startup times" into
+     * "slowest single startup". Tiers themselves run one after another: `services.start` only
+     * returns once the server reports ready, so priority 1's servers are online before any
+     * priority-2 group is touched. Groups without a priority share the last tier, which keeps an
+     * unprioritized network exactly as parallel as before. Each group's own reconciliation remains
+     * strictly sequential: at most one start/stop/create per group per pass.
      */
     suspend fun reconcileOnce() = mutex.withLock {
         val allGroups = groups.all().toList()
         if (allGroups.isEmpty()) return@withLock
-        val permits = Semaphore(min(MAX_CONCURRENT_GROUP_PASSES, allGroups.size))
-        coroutineScope {
-            allGroups.forEach { group ->
-                launch {
-                    permits.withPermit {
-                        try {
-                            reconcileGroup(group)
-                        } catch (failure: CancellationException) {
-                            throw failure
-                        } catch (failure: Exception) {
-                            scheduleRetry(group, failure)
+        allGroups
+            .sortedWith(compareBy<Group>({ startPriority(it) }, { it.name }))
+            .groupBy(::startPriority)
+            .values
+            .forEach { tier ->
+                val permits = Semaphore(min(MAX_CONCURRENT_GROUP_PASSES, tier.size))
+                coroutineScope {
+                    tier.forEach { group ->
+                        launch {
+                            permits.withPermit {
+                                try {
+                                    reconcileGroup(group)
+                                } catch (failure: CancellationException) {
+                                    throw failure
+                                } catch (failure: Exception) {
+                                    scheduleRetry(group, failure)
+                                }
+                            }
                         }
                     }
                 }
             }
-        }
     }
+
+    /** Lower numbers start first; an unprioritized group starts after every prioritized one. */
+    private fun startPriority(group: Group): Int = group.priority ?: Int.MAX_VALUE
 
     suspend fun stop() {
         val running = job

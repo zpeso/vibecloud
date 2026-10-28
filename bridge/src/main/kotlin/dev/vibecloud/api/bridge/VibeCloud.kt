@@ -45,6 +45,16 @@ import java.util.concurrent.Executors
  * it). Both have asynchronous variants (`…Async`) that run the wait on a background thread —
  * prefer those on a server's main thread. The synchronous variants keep working everywhere else
  * and never wait longer than [Builder.timeout].
+ *
+ * ## When Redis misbehaves
+ *
+ * Transport timeouts are short and self-healing: a dropped connection is retried once, and reads
+ * never take longer than a few seconds. Reads ([status] and everything built on it —
+ * `players()`, `services()`, `groups()`) additionally serve the **last snapshot that could be
+ * read** when Redis cannot answer, instead of throwing into a command handler or a tick loop;
+ * [isDegraded] tells you whether the values you are seeing are live. Actions
+ * ([CloudPlayerProvider.sendMessage], [CloudService.executeCommand], …) still report failure —
+ * they did not happen — but each attempt is short and the next one works as soon as Redis is back.
  */
 class VibeCloud private constructor(
     private val redis: RedisGateway,
@@ -58,6 +68,18 @@ class VibeCloud private constructor(
     private val services = CloudServiceProvider(this)
     private val groups = CloudGroupProvider(this)
     private val temporary = TemporaryCloudData(this, statusCache)
+
+    /** Last status document that was read successfully; served when Redis cannot answer. */
+    @Volatile
+    private var lastGoodStatus: CloudStatus? = null
+
+    /** Failure of the most recent status read; `null` while the API is live. */
+    @Volatile
+    private var lastStatusFailure: String? = null
+
+    /** When the next real status read may be attempted (`System.nanoTime`); 0 = immediately. */
+    @Volatile
+    private var nextReadAttemptNanos = 0L
 
     /** Access to the players online across the whole network. */
     fun players(): CloudPlayerProvider = players
@@ -104,18 +126,65 @@ class VibeCloud private constructor(
      * Overall cloud status: group/service totals, players online, per-service state. Kept for
      * scripts and tools that want the full document in one call.
      *
-     * @throws IOException when Redis is unreachable or the controller has not published a status
-     * document yet.
+     * When Redis cannot answer (timeout, restart, failover) this returns the last document that
+     * was read successfully rather than throwing, so a momentary transport problem never breaks a
+     * caller that only wants to display cloud data; see [isDegraded]. The very first read of a
+     * process has no earlier snapshot and can still fail.
+     *
+     * @throws IOException only when no status has ever been read and Redis cannot serve one.
      */
     @Throws(IOException::class)
-    fun status(): CloudStatus {
-        val json = read(BridgeProtocol.STATUS_KEY)
-            ?: throw IOException("VibeCloud status is unavailable (is the controller running with Redis access?)")
-        return try {
+    fun status(): CloudStatus = readStatus(allowStale = true)
+
+    /**
+     * `true` when the most recent status read failed and the values served by this facade (and by
+     * the cached `temporary()`/`playerCount()` snapshot) may be out of date. It clears itself on
+     * the next successful read — within a fraction of a second when Redis is back, because the
+     * read-side cooldown after a failure is deliberately short.
+     */
+    fun isDegraded(): Boolean = lastStatusFailure != null
+
+    /**
+     * The transport error behind [isDegraded], or `null` while reads succeed. Useful for logging
+     * why cloud data looks stale; it never contains player or service data.
+     */
+    fun lastStatusError(): String? = lastStatusFailure
+
+    /**
+     * One status read. [allowStale] is `false` for the background cache, which keeps its own
+     * last-good copy and must not treat a served-stale document as a fresh arrival.
+     */
+    internal fun readStatus(allowStale: Boolean): CloudStatus {
+        val stale = lastGoodStatus
+        // Short read-side cooldown: while Redis is failing, repeated calls (a scoreboard loop, a
+        // per-player event) are answered from the snapshot instantly instead of each paying the
+        // transport timeout again. The window is short so recovery is noticed right away.
+        if (allowStale && stale != null && System.nanoTime() < nextReadAttemptNanos) return stale
+        val json = try {
+            read(BridgeProtocol.STATUS_KEY)
+        } catch (failure: IOException) {
+            return degraded(failure, allowStale)
+        } ?: return degraded(
+            IOException("VibeCloud status is unavailable (is the controller running with Redis access?)"),
+            allowStale,
+        )
+        val parsed = try {
             CloudStatusParser.parse(json)
         } catch (failure: IllegalArgumentException) {
-            throw IOException("VibeCloud status document is malformed: ${failure.message}", failure)
+            return degraded(IOException("VibeCloud status document is malformed: ${failure.message}", failure), allowStale)
         }
+        lastGoodStatus = parsed
+        lastStatusFailure = null
+        nextReadAttemptNanos = 0L
+        return parsed
+    }
+
+    /** Keeps the stale snapshot path in one place: record the failure, then serve or throw. */
+    private fun degraded(failure: IOException, allowStale: Boolean): CloudStatus {
+        lastStatusFailure = failure.message ?: failure.toString()
+        nextReadAttemptNanos = System.nanoTime() + READ_RETRY_COOLDOWN_NANOS
+        if (allowStale) lastGoodStatus?.let { return it }
+        throw failure
     }
 
     /**
@@ -241,9 +310,7 @@ class VibeCloud private constructor(
     internal fun awaitResult(requestId: String, waitMillis: Long = timeout.toMillis()): String {
         val key = BridgeProtocol.resultKey(requestId)
         val answer = try {
-            redis.blpop((waitMillis / 1000).toInt().coerceAtLeast(1), key)
-        } catch (failure: Exception) {
-            throw IOException("VibeCloud Redis is unreachable: ${failure.message}", failure)
+            awaitList(key, Duration.ofMillis(waitMillis))
         } finally {
             runCatching { redis.del(key) }
         }
@@ -253,14 +320,36 @@ class VibeCloud private constructor(
     private fun awaitCloudResponse(requestId: String): Map<*, *> {
         val key = BridgeProtocol.cloudResultKey(requestId)
         val answer = try {
-            redis.blpop(timeout.seconds.toInt().coerceAtLeast(1), key)
-        } catch (failure: Exception) {
-            throw IOException("VibeCloud Redis is unreachable: ${failure.message}", failure)
+            awaitList(key, timeout)
         } finally {
             runCatching { redis.del(key) }
         } ?: throw IOException("Timed out waiting for the controller to answer request $requestId")
         return BridgeJson.parseObject(answer)
             ?: throw IOException("The controller returned a malformed answer: ${answer.take(120)}")
+    }
+
+    /**
+     * Blocks for up to [wait] for one list entry, in short `BLPOP` slices. A single long `BLPOP`
+     * would outlive the connection's socket timeout and be killed by it — reported as an
+     * "unreachable" Redis even though the server was healthy — so the wait is chunked and the
+     * caller's own deadline decides when to give up.
+     */
+    private fun awaitList(key: String, wait: Duration): String? {
+        val deadline = System.nanoTime() + wait.toNanos()
+        while (true) {
+            val remainingNanos = deadline - System.nanoTime()
+            if (remainingNanos <= 0) return null
+            val sliceSeconds = ((remainingNanos + NANOS_PER_SECOND - 1) / NANOS_PER_SECOND)
+                .coerceAtMost(POLL_SLICE_SECONDS.toLong())
+                .toInt()
+                .coerceAtLeast(1)
+            val value = try {
+                redis.blpop(sliceSeconds, key)
+            } catch (failure: Exception) {
+                throw IOException("VibeCloud Redis is unreachable: ${failure.message}", failure)
+            }
+            if (value != null) return value
+        }
     }
 
     internal fun newRequestId(): String = UUID.randomUUID().toString().take(8)
@@ -332,6 +421,21 @@ class VibeCloud private constructor(
         internal val dispatcher: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
             Thread(runnable, "vibecloud-api").apply { isDaemon = true }
         }
+
+        /**
+         * Dedicated daemon for status-cache refreshes. Separate from [dispatcher] so a permission
+         * check waiting on its answer can never hold up the snapshot that `temporary()` and
+         * `playerCount()` read.
+         */
+        internal val statusRefresher: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "vibecloud-status").apply { isDaemon = true }
+        }
+
+        private const val POLL_SLICE_SECONDS = 1
+        private const val NANOS_PER_SECOND = 1_000_000_000L
+
+        /** How long a failed status read is served stale without touching Redis again. */
+        private const val READ_RETRY_COOLDOWN_NANOS = 250_000_000L
 
         @Volatile
         private var connected: VibeCloud? = null

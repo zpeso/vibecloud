@@ -196,31 +196,24 @@ class BridgeCloudCommands(
         }
     }
 
-    /** Restarts every existing service in the selected group, continuing after individual failures. */
+    /**
+     * Restarts a whole group as one batch: every service is stopped first, then they all come back
+     * together. Per-service failures are reported but never leave group-mates stopped.
+     */
     private fun restartGroup(name: String?): List<String> {
         if (name == null) return listOf(error("Usage: /cloud group <name> restart"))
         return runBlocking {
             val group = groups.get(name.trim().lowercase())
                 ?: return@runBlocking listOf(error("Group '$name' does not exist"))
-            val groupServices = services.all().filter { it.groupName == group.name }.sortedBy { it.name }
-            if (groupServices.isEmpty()) return@runBlocking listOf(dim("Group '${group.name}' has no services to restart."))
+            val result = services.restartGroup(group.name)
+            if (result.total == 0) return@runBlocking listOf(dim("Group '${group.name}' has no services to restart."))
 
-            val failed = mutableListOf<Pair<String, String>>()
-            var restarted = 0
-            groupServices.forEach { service ->
-                try {
-                    services.restart(service.name)
-                    restarted++
-                } catch (failure: Exception) {
-                    failed += service.name to (failure.message ?: "Restart failed")
-                }
-            }
             buildList {
-                if (failed.isEmpty()) {
-                    add(success("Restarted all $restarted service(s) in group '${group.name}'."))
+                if (result.succeeded) {
+                    add(success("Restarted all ${result.restarted.size} service(s) in group '${group.name}'."))
                 } else {
-                    add(error("Restarted $restarted/${groupServices.size} service(s) in group '${group.name}'."))
-                    failed.forEach { (service, reason) -> add(error("  $service: $reason")) }
+                    add(error("Restarted ${result.restarted.size}/${result.total} service(s) in group '${group.name}'."))
+                    result.failed.forEach { (service, reason) -> add(error("  $service: $reason")) }
                 }
             }
         }

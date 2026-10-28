@@ -127,6 +127,7 @@ class CloudConfigRepository(configFile: Path) {
                         alwaysRunningServices = groupMap.int("always-running-services", 0),
                         static = groupMap.boolean("static", true),
                         maxMemoryMb = groupMap.intOrNull("max-memory-mb"),
+                        priority = groupMap.intIfSet("priority"),
                     )
                 } catch (failure: IllegalArgumentException) {
                     throw ConfigurationException("Invalid group '$name': ${failure.message}", failure)
@@ -235,6 +236,7 @@ class CloudConfigRepository(configFile: Path) {
                     "static" to group.static,
                 ).also { entry ->
                     group.maxMemoryMb?.let { entry["max-memory-mb"] = it }
+                    group.priority?.let { entry["priority"] = it }
                 }
             }
             val temporary = configFile.resolveSibling("${configFile.fileName}.tmp")
@@ -279,6 +281,13 @@ class CloudConfigRepository(configFile: Path) {
     /** Present-but-null YAML values (e.g. `max-memory-mb:` with nothing after it) read as absent. */
     private fun Map<String, Any?>.intOrNull(name: String): Int? =
         if (!containsKey(name) || this[name] == null) null else int(name, 0).takeIf { it != 0 }
+
+    /**
+     * Integer value of [name], or null when the key is absent or left empty. Unlike [intOrNull], a
+     * written `0` is returned as 0 so validation can reject it instead of silently dropping it.
+     */
+    private fun Map<String, Any?>.intIfSet(name: String): Int? =
+        if (!containsKey(name) || this[name] == null) null else int(name, 0)
 
     private fun Map<String, Any?>.int(name: String, default: Int): Int {
         if (!containsKey(name)) return default

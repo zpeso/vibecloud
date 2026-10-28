@@ -26,6 +26,13 @@ data class Group(
      * the services' next restart.
      */
     val maxMemoryMb: Int? = null,
+    /**
+     * Boot order of this group's servers, 1 = first: the reconciler starts lower numbers before
+     * higher ones, so priority 1's servers are running before any priority-2 server launches.
+     * Groups sharing the same priority still start concurrently; groups without a priority
+     * (`null`, the default) start only after every group that has one.
+     */
+    val priority: Int? = null,
 ) {
     init {
         require(name == name.lowercase(Locale.ROOT)) { "Group name must be lowercase: '$name'" }
@@ -44,6 +51,9 @@ data class Group(
         }
         require(maxMemoryMb == null || maxMemoryMb in 256..1_048_576) {
             "maxMemoryMb ($maxMemoryMb) must be between 256 and 1048576 MiB"
+        }
+        require(priority == null || priority >= 1) {
+            "priority ($priority) must be 1 or greater — 1 starts first"
         }
     }
 

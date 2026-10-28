@@ -55,6 +55,9 @@ bridge:
 #     # Per-group heap ceiling (-Xmx) in MiB; omit to use runtime.max-memory-mb.
 #     # Change at runtime with `group memory <name> <amount|default>` (e.g. 4G, 512m).
 #     max-memory-mb: 4096
+#     # Boot order: priority 1 starts first, then 2, 3, ... — the next priority only launches
+#     # once the previous one's servers are running. Groups that omit it start last, together.
+#     priority: 1
 #   proxy:
 #     type: VELOCITY
 #     version: "velocity-4.0.0-6"

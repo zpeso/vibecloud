@@ -179,12 +179,15 @@ internal class CloudStatusCache(
         lastRefreshAttemptNanos = now
         val future = CompletableFuture<CloudStatus>()
         inFlightFuture = future
-        CompletableFuture.supplyAsync {
-            cloud.status().also {
+        CompletableFuture.supplyAsync({
+            // allowStale = false: a document served from the last good snapshot must not be
+            // recorded as a fresh arrival (the cache already holds that very copy), otherwise a
+            // Redis outage would look like a healthy, constantly updating cache.
+            cloud.readStatus(allowStale = false).also {
                 cachedStatus = it
                 lastUpdatedMillis = System.currentTimeMillis()
             }
-        }.whenComplete { refreshed, failure ->
+        }, VibeCloud.statusRefresher).whenComplete { refreshed, failure ->
             // Retain the last good snapshot on connection/parse failures and retry next interval.
             future.complete(if (failure == null) refreshed else cachedStatus)
             synchronized(this) {

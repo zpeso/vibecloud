@@ -99,9 +99,40 @@ bridge:
   offline-timeout-seconds: 20
 
 # groups are managed by `group create/delete` and persisted here automatically
+#
+# Per-group keys (full commented example in config.example.yml):
+#   groups:
+#     lobby:
+#       type: PAPER
+#       version: "paper-26.2-129"
+#       min-services: 1
+#       max-services: 3
+#       always-running-services: 1
+#       max-memory-mb: 4096        # -Xmx for this group only; omit for runtime.max-memory-mb
+#       priority: 1                # boot order: 1 starts first, then 2, 3, ...; unset starts last
 ```
 
 `cloud reload` re-reads group definitions from disk. Directory, port, and runtime settings need a controller restart.
+
+Redis is the bridge's only dependency. The bridge uses short timeouts (1 s connect, 3 s socket), keeps blocking
+consumers on their own connections so they can never starve API reads, and retries a dropped connection once. If Redis
+restarts or briefly stops answering, plugin reads (`cloud.status()`, player/service/group lookups) serve the last
+published snapshot and report `cloud.isDegraded()` instead of throwing; heartbeats and commands resume on their own
+without a controller restart.
+
+### Boot order (`priority`)
+
+`priority` decides which group's servers start first when the cloud boots:
+
+- **Lower is earlier.** `priority: 1` comes before `priority: 2`, then 3, and so on.
+- **A priority waits for the one before it.** The next tier only launches once the previous tier's servers
+  report ready, so with `lobby: 1` and `proxy: 2` every lobby backend is online before the proxy starts.
+- **Same priority starts together,** concurrently, bounded at 8 groups per pass.
+- **No `priority` means last.** Unprioritized groups share the final tier and start together, after
+  every prioritized group.
+
+The reconcile interval still applies inside each tier: a group with several desired services starts one per
+pass, so a `min-services: 3` group takes three cycles (15 s at the default interval) to reach its floor.
 
 ## Updating
 

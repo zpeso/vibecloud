@@ -212,6 +212,85 @@ class LocalServiceManagerTest {
         }
     }
 
+    @Test
+    fun `group restart stops every service before starting any of them`() = runBlocking {
+        val root = Files.createTempDirectory("group-restart-test")
+        val logger = SilentLogger()
+        val events = RecordingEventBus()
+        val adapters = defaultServerAdapters()
+        val lifecycleLock = ReentrantLock()
+        val managerReference = AtomicReference<LocalServiceManager?>(null)
+        val group = Group(
+            name = "lobby",
+            type = ServerType.PAPER,
+            version = "1.0",
+            minServices = 0,
+            maxServices = 3,
+            alwaysRunningServices = 0,
+        )
+        val groupManager = LocalGroupManager(
+            initialGroups = listOf(group),
+            supportedType = adapters::supports,
+            persist = {},
+            groupHasServices = { name -> managerReference.get()?.hasServicesForGroup(name) == true },
+            lifecycleLock = lifecycleLock,
+            logger = logger,
+        )
+        val templateDirectory = root.resolve("templates/paper/1.0")
+        val serviceDirectory = root.resolve("services")
+        Files.createDirectories(templateDirectory)
+        Files.writeString(templateDirectory.resolve("server.jar"), "test-only placeholder")
+        val runtime = RuntimeSettings(
+            javaCommand = "java",
+            minMemoryMb = 128,
+            maxMemoryMb = 256,
+            jvmArgs = emptyList(),
+            startupTimeout = Duration.ofSeconds(2),
+            shutdownTimeout = Duration.ofSeconds(1),
+            minecraftEulaAccepted = true,
+        )
+        val serviceManager = LocalServiceManager(
+            groupManager = groupManager,
+            serviceDirectory = serviceDirectory,
+            templateManager = FileTemplateManager(root.resolve("templates"), serviceDirectory, adapters, runtime),
+            portAllocator = PortRangeAllocator(30020..30040, isBindable = { true }),
+            processManager = FakeProcessManager(),
+            adapters = adapters,
+            runtime = runtime,
+            events = events,
+            logger = logger,
+            lifecycleLock = lifecycleLock,
+            portInUse = { false },
+        )
+        managerReference.set(serviceManager)
+
+        try {
+            assertEquals(0, serviceManager.restartGroup("lobby").total, "an empty group has nothing to restart")
+
+            val names = (1..3).map { serviceManager.create("lobby").name }
+            names.forEach { serviceManager.start(it) }
+            assertEquals(3, serviceManager.all().count { it.state == ServiceState.RUNNING })
+
+            val beforeBatch = events.events.size
+            val result = serviceManager.restartGroup("lobby")
+
+            assertEquals(names.sorted(), result.restarted, "every service must come back")
+            assertTrue(result.failed.isEmpty(), "unexpected failures: ${result.failed}")
+            assertEquals(3, serviceManager.all().count { it.state == ServiceState.RUNNING })
+
+            val batch = events.events.drop(beforeBatch)
+            val lastStop = batch.indexOfLast { it is dev.vibecloud.api.event.ServiceStoppedEvent }
+            val firstStart = batch.indexOfFirst { it is dev.vibecloud.api.event.ServiceStartingEvent }
+            assertTrue(lastStop >= 0, "the batch must stop services")
+            assertTrue(
+                firstStart > lastStop,
+                "every service must be stopped before the first one starts again (events: $batch)",
+            )
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
     private class FakeProcessManager : ProcessManager {
         var latest: FakeManagedProcess? = null
 

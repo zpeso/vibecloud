@@ -5,7 +5,9 @@ import dev.vibecloud.api.server.ServerType
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class CloudConfigRepositoryTest {
@@ -39,6 +41,70 @@ class CloudConfigRepositoryTest {
             assertEquals("%service% is now running", reloaded.bridge.serviceLog.started)
             // The Redis bridge section is written with its default and round-trips unchanged.
             assertEquals("redis://127.0.0.1:6379", reloaded.redis.url)
+        } finally {
+            directory.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `group priority is read from yaml and persisted with the groups`() {
+        val directory = Files.createTempDirectory("cloud-config-test")
+        try {
+            val file = directory.resolve("config.yml")
+            Files.write(
+                file,
+                listOf(
+                    "groups:",
+                    "  lobby:",
+                    "    type: PAPER",
+                    "    version: 'paper-26.2-129'",
+                    "    priority: 1",
+                    "  proxy:",
+                    "    type: VELOCITY",
+                    "    version: 'velocity-4.0.0-6'",
+                    "  event:",
+                    "    type: PAPER",
+                    "    version: 'paper-26.2-129'",
+                    "    priority: 2",
+                ),
+            )
+            val loaded = CloudConfigRepository(file).loadOrCreate()
+            assertEquals(1, loaded.groups.first { it.name == "lobby" }.priority)
+            assertEquals(2, loaded.groups.first { it.name == "event" }.priority)
+            assertNull(loaded.groups.first { it.name == "proxy" }.priority, "an omitted priority stays unprioritized")
+
+            // A group edit (e.g. `group memory`) must not drop the priorities from the file.
+            CloudConfigRepository(file).saveGroups(loaded.groups)
+            val reloaded = CloudConfigRepository(file).loadOrCreate()
+            assertEquals(1, reloaded.groups.first { it.name == "lobby" }.priority)
+            assertEquals(2, reloaded.groups.first { it.name == "event" }.priority)
+            assertNull(reloaded.groups.first { it.name == "proxy" }.priority)
+            val document = Files.readString(file)
+            assertTrue("priority: 1" in document, "config must keep lobby's priority:\n$document")
+            assertTrue("priority: 2" in document, "config must keep event's priority:\n$document")
+        } finally {
+            directory.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `an out-of-range priority is rejected with the group name`() {
+        val directory = Files.createTempDirectory("cloud-config-test")
+        try {
+            val file = directory.resolve("config.yml")
+            Files.write(
+                file,
+                listOf(
+                    "groups:",
+                    "  lobby:",
+                    "    type: PAPER",
+                    "    version: 'paper-26.2-129'",
+                    "    priority: 0",
+                ),
+            )
+            val failure = assertFailsWith<ConfigurationException> { CloudConfigRepository(file).loadOrCreate() }
+            assertTrue("Invalid group 'lobby'" in (failure.message ?: ""), "message was ${failure.message}")
+            assertTrue("priority" in (failure.message ?: ""), "message was ${failure.message}")
         } finally {
             directory.toFile().deleteRecursively()
         }

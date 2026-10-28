@@ -60,6 +60,7 @@ val lobby1 = cloud.services.get("lobby-1")      // null if missing
 group?.type                 // ServerType: PAPER, SPIGOT, VELOCITY, BUNGEECORD
 group?.version              // pinned build key, e.g. "paper-26.2-129"
 group?.desiredRunningServices // max(minServices, alwaysRunningServices) — the floor the reconciler maintains
+group?.priority             // boot order: 1 starts first, null = starts last (see Installation#boot-order-priority)
 
 service?.state              // CREATED, STARTING, RUNNING, STOPPING, STOPPED, CRASHED
 service?.port               // allocated port
@@ -95,6 +96,7 @@ runBlocking {
     val service = cloud.services.create("lobby")   // provisions from the group's template + overlay
     cloud.services.start(service.name)             // or start(name, automatic = true) for reconciler-like starts
     cloud.services.restart(service.name)
+    cloud.services.restartGroup("lobby")           // batch: stop ALL of the group, then start them all
     cloud.services.stop(service.name)
     cloud.services.delete(service.name)            // stops, deletes the directory, frees the port
     cloud.services.stopAll()                       // administrative stop-everything
@@ -104,6 +106,10 @@ runBlocking {
 cloud.groups.create(Group(name = "event", type = ServerType.PAPER, version = "paper-26.2-129", minServices = 0, maxServices = 3))
 cloud.groups.delete("event")                       // only when no service records remain
 ```
+
+`restartGroup` returns a `GroupRestartResult` (`restarted`, `failed`, `total`) instead of throwing: one bad service
+never leaves the rest of its group stopped, and the local manager runs the batch concurrently — the group is down for
+one stop plus one boot rather than one stop-plus-boot per service.
 
 Errors are thrown as exceptions: `NoSuchElementException` for unknown names, `IllegalStateException` for invalid
 transitions (e.g. starting while stopping), and `dev.vibecloud.core.server.ServiceStartException` when a launch fails
@@ -295,7 +301,7 @@ interactive console. Output is branded with the cloud prefix (`ᴄʟᴏᴜᴅ »
 /cloud info                      Cloud overview: running/starting/crashed counts, players online
 /cloud groups                    Group table (type, version, desired/max/provisioned)
 /cloud group start <name>        Start another service of a group (reuses stopped records first)
-/cloud group <name> restart      Restart every provisioned service in a group
+/cloud group <name> restart      Stop every service of a group, then start them all again
 /cloud group delete <name>       Delete a group together with all of its services
 /cloud group version <n> <v>     Switch the group's version (same system only): downloads the build,
                                  re-pins every service record, and resyncs the proxy forwarding mode

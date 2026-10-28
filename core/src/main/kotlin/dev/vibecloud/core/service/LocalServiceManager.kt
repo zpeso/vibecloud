@@ -10,6 +10,7 @@ import dev.vibecloud.api.event.ServiceStoppedEvent
 import dev.vibecloud.api.event.ServiceStoppingEvent
 import dev.vibecloud.api.group.Group
 import dev.vibecloud.api.group.GroupManager
+import dev.vibecloud.api.service.GroupRestartResult
 import dev.vibecloud.api.service.Service
 import dev.vibecloud.api.service.ServiceManager
 import dev.vibecloud.api.service.ServiceState
@@ -33,7 +34,9 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.nio.file.*
@@ -592,6 +595,66 @@ class LocalServiceManager(
         startInternal(slot, automatic = false)
     }
 
+    /**
+     * Restarts a whole group as one batch: every service is stopped first (concurrently), then
+     * every service is started again (concurrently, bounded at [MAX_CONCURRENT_GROUP_STARTS]).
+     *
+     * Restarting service by service kept the group down for N × (stop + boot) and left it half
+     * old / half new while it worked through the list; this way the whole group is down for one
+     * stop plus one boot, and every server comes back at the same time. Failures are collected per
+     * service so one bad service never leaves its group-mates stopped.
+     */
+    override suspend fun restartGroup(groupName: String): GroupRestartResult = operationGate.withOperation {
+        val group = normalizeGroup(groupName)
+        val batch = all().filter { it.groupName == group }.sortedBy { it.name }
+        if (batch.isEmpty()) return@withOperation GroupRestartResult()
+
+        val failures = ConcurrentHashMap<String, String>()
+        logger.info("Restarting group $group (${batch.size} service(s)): stopping all first")
+        coroutineScope {
+            batch.forEach { service ->
+                launch {
+                    try {
+                        stopInternal(requireSlot(service.name))
+                    } catch (failure: CancellationException) {
+                        throw failure
+                    } catch (failure: Exception) {
+                        failures[service.name] = failure.message ?: "stop failed"
+                        logger.error("Could not stop ${service.name} while restarting group $group: ${failure.message}")
+                    }
+                }
+            }
+        }
+
+        val remaining = batch.filter { service -> !failures.containsKey(service.name) }
+        val restarted = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val permits = Semaphore(minOf(MAX_CONCURRENT_GROUP_STARTS, remaining.size).coerceAtLeast(1))
+        coroutineScope {
+            remaining.forEach { service ->
+                launch {
+                    permits.withPermit {
+                        try {
+                            startInternal(requireSlot(service.name), automatic = false)
+                            restarted += service.name
+                        } catch (failure: CancellationException) {
+                            throw failure
+                        } catch (failure: Exception) {
+                            failures[service.name] = failure.message ?: "start failed"
+                            logger.error("Could not start ${service.name} while restarting group $group: ${failure.message}")
+                        }
+                    }
+                }
+            }
+        }
+
+        val result = GroupRestartResult(restarted.sorted(), failures.toSortedMap())
+        logger.info(
+            "Group $group restart finished: ${result.restarted.size}/${result.total} service(s) running" +
+                if (result.failed.isEmpty()) "" else ", failed: ${result.failed.keys.joinToString()}",
+        )
+        result
+    }
+
     override suspend fun delete(name: String) = operationGate.withOperation {
         val slot = requireSlot(name)
         stopInternal(slot)
@@ -869,5 +932,14 @@ class LocalServiceManager(
         /** Fingerprint of the template last merged into this static service (refresh optimization). */
         @Volatile
         var appliedTemplateFingerprint: String? = null
+    }
+
+    private companion object {
+        /**
+         * How many servers of one group may boot at the same time. High enough that a normal
+         * group (:four or five instances) comes up together, low enough that a large group cannot
+         * starve the host of CPU and disk while every JVM initialises its world.
+         */
+        const val MAX_CONCURRENT_GROUP_STARTS = 4
     }
 }

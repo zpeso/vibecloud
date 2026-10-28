@@ -32,7 +32,7 @@ input line, **Ctrl+L** clears the screen. The prompt is `◆ vibecloud ❯`.
 | `group info <name>` | Details for one group incl. its instances and states |
 | `group create [name]` | Guided wizard (see below) |
 | `group start <name>` | Start another service of the group — reuses stopped/crashed records first |
-| `group <name> restart` | Restart every provisioned service in the group |
+| `group <name> restart` | Restart the whole group: stop every service, then start them all again (parallel) |
 | `group version <name> <version>` | Switch the group's version within its own system (paper → paper) |
 | `group delete <name>` | Stop + delete **every service of the group**, then delete the group |
 
@@ -52,7 +52,12 @@ forwarding mode follows automatically (e.g. 1.8 → 26.2 switches Velocity from 
 Cross-system switches are rejected by design (paper → paper, velocity → velocity).
 
 **`group delete`** runs asynchronously — the prompt returns immediately with a `[#1]` tag and the result appears when
-done, so you can keep typing.
+done, so you can keep typing. `group <name> restart` does too.
+
+**`group <name> restart` is a batch**, not a per-service loop: all services of the group are stopped first (at the
+same time), then all of them are started again (up to four boots in parallel). The group is down for roughly one stop
+plus one boot instead of one stop-plus-boot per service, and a service that fails to stop or start is reported
+without leaving the others stopped. `group restart` from the in-game `/cloud` command behaves identically.
 
 ## Console — services
 
@@ -100,8 +105,10 @@ the same surface programmatically — see the [Bridge API tab](Bridge-API.md#wha
 
 `min-services`/`always-running-services` is a **floor**: the reconciler restarts crashed services (bounded backoff)
 and reuses stopped ones to keep at least that many running — but it never stops the extras you started, so with
-`min 1 / max 2` you can happily run two. `max-services` caps the provisioned records. See the
-[Installation tab](Installation.md#config-reference-configyml) for the timing knobs.
+`min 1 / max 2` you can happily run two. `max-services` caps the provisioned records. At boot, groups start
+in `priority` order (`priority: 1` first, then 2, ...; unprioritized groups last). See the
+[Installation tab](Installation.md#boot-order-priority) for the ordering details and the
+timing knobs.
 
 ---
 

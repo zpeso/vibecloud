@@ -44,6 +44,83 @@ class DesiredStateReconcilerTest {
         }
     }
     @Test
+    fun `priority 1 group is ready before a priority 2 group starts`() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        // Declared out of order on purpose: priority, not the config order, decides the boot order.
+        val groups = MultiGroups(
+            listOf(
+                Group(name = "proxy", type = ServerType.VELOCITY, version = "4.0.0", minServices = 1, maxServices = 1, priority = 2),
+                Group(name = "lobby", type = ServerType.PAPER, version = "26.3", minServices = 1, maxServices = 1, priority = 1),
+            ),
+        )
+        val services = SequencedServices()
+        val reconciler = DesiredStateReconciler(scope, groups, services, 1000, SilentLogger())
+
+        try {
+            reconciler.reconcileOnce()
+            assertEquals(
+                listOf("start:lobby-1", "ready:lobby-1", "start:proxy-1", "ready:proxy-1"),
+                services.events,
+                "priority 1 must finish starting before priority 2 is touched",
+            )
+        } finally {
+            reconciler.stop()
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun `unprioritized groups start after every prioritized group`() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val groups = MultiGroups(
+            listOf(
+                Group(name = "event", type = ServerType.PAPER, version = "26.3", minServices = 1, maxServices = 1),
+                Group(name = "lobby", type = ServerType.PAPER, version = "26.3", minServices = 1, maxServices = 1, priority = 1),
+            ),
+        )
+        val services = SequencedServices()
+        val reconciler = DesiredStateReconciler(scope, groups, services, 1000, SilentLogger())
+
+        try {
+            reconciler.reconcileOnce()
+            assertEquals(
+                listOf("start:lobby-1", "ready:lobby-1", "start:event-1", "ready:event-1"),
+                services.events,
+            )
+        } finally {
+            reconciler.stop()
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun `groups sharing a priority still start concurrently`() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val groups = MultiGroups(
+            listOf(
+                Group(name = "lobby", type = ServerType.PAPER, version = "26.3", minServices = 1, maxServices = 1, priority = 1),
+                Group(name = "citybuild", type = ServerType.PAPER, version = "26.3", minServices = 1, maxServices = 1, priority = 1),
+            ),
+        )
+        val services = SequencedServices()
+        val reconciler = DesiredStateReconciler(scope, groups, services, 1000, SilentLogger())
+
+        try {
+            reconciler.reconcileOnce()
+            // Both starts overlap, so both start events precede both ready events.
+            assertEquals(4, services.events.size)
+            assertEquals(
+                listOf("start:citybuild-1", "start:lobby-1"),
+                services.events.take(2).sorted(),
+                "same-priority groups must launch together, got ${services.events}",
+            )
+        } finally {
+            reconciler.stop()
+            scope.cancel()
+        }
+    }
+
+    @Test
     fun `reconciles up to the desired floor and keeps operator-started extras`() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val groups = MutableGroups(
@@ -242,6 +319,62 @@ class DesiredStateReconcilerTest {
         override fun all(): Collection<Service> = created.values.toList()
 
         private val created = ConcurrentHashMap<String, Service>()
+    }
+
+    /** Records the order in which group passes start and finish their servers. */
+    private class SequencedServices : ServiceManager {
+        val events = java.util.concurrent.CopyOnWriteArrayList<String>()
+        private val created = ConcurrentHashMap<String, Service>()
+        private val counts = ConcurrentHashMap<String, Int>()
+
+        override suspend fun create(groupName: String): Service {
+            val index = counts.merge(groupName, 1) { previous, _ -> previous + 1 }!!
+            val name = "$groupName-$index"
+            val now = Instant.now()
+            val service = Service(
+                id = name,
+                name = name,
+                groupName = groupName,
+                type = ServerType.PAPER,
+                version = "26.3",
+                state = ServiceState.CREATED,
+                port = 25565 + created.size,
+                directory = Path.of("services", name),
+                createdAt = now,
+                updatedAt = now,
+            )
+            created[name] = service
+            return service
+        }
+
+        override suspend fun start(name: String, automatic: Boolean) {
+            events += "start:$name"
+            delay(50)
+            created[name] = requireNotNull(created[name]).copy(state = ServiceState.RUNNING)
+            events += "ready:$name"
+        }
+
+        override suspend fun stop(name: String) {
+            created[name] = requireNotNull(created[name]).copy(state = ServiceState.STOPPED)
+        }
+
+        override suspend fun restart(name: String) {
+            stop(name)
+            start(name, automatic = false)
+        }
+
+        override suspend fun delete(name: String) {
+            created.remove(name)
+        }
+
+        override suspend fun stopAll() = Unit
+
+        override suspend fun updateVersion(name: String, version: String) {
+            created[name] = requireNotNull(created[name]).copy(version = version)
+        }
+
+        override fun get(name: String): Service? = created[name]
+        override fun all(): Collection<Service> = created.values.toList()
     }
 
     private class SilentLogger : Logger {
