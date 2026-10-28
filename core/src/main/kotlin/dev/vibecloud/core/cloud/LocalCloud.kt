@@ -68,9 +68,12 @@ class LocalCloud internal constructor(
         groups.replaceAll(updated.groups)
         currentConfig.set(updated)
         if (previous.directories != updated.directories || previous.portRange != updated.portRange ||
-            previous.runtime != updated.runtime || previous.reconciliation != updated.reconciliation
+            previous.runtime != updated.runtime || previous.reconciliation != updated.reconciliation ||
+            previous.limbo != updated.limbo
         ) {
-            logger.warn("Runtime, directory, and port settings changed in YAML but are applied only after a cloud restart")
+            logger.warn(
+                "Runtime, directory, port, and limbo settings changed in YAML but are applied only after a cloud restart",
+            )
         }
         val changedTemplates = previous.groups.mapNotNull { old ->
             val new = updated.groups.firstOrNull { it.name == old.name }

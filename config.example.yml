@@ -42,6 +42,14 @@ bridge:
   heartbeat-interval-seconds: 5
   offline-timeout-seconds: 20
 
+# Last-resort backend ("limbo"). Name an existing Paper/Spigot service and the cloud keeps it
+# at the very end of the proxy's `try` list: when no other backend is reachable — the lobby is
+# down, everything is still booting, the server a player was on crashed — the player is sent
+# there instead of being refused. Leave empty to disable. What happens inside the limbo (sending
+# players back to a live server) is up to the limbo's own plugin.
+#   limbo: limbo-1
+limbo: ""
+
 # A fresh install starts with ZERO groups and services — a clean, empty cloud.
 # Create everything with `group create` (guided wizard) and `service create` in the console.
 # Example of what a configured groups block looks like afterwards:

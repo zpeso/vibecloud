@@ -165,6 +165,7 @@ class CloudConfigRepository(configFile: Path) {
                 ),
                 groups = groups,
                 redis = RedisSettings(redisMap.string("url", RedisSettings.DEFAULT_URL)),
+                limbo = rootMap.string("limbo", "").trim(),
             )
         } catch (failure: ConfigurationException) {
             throw failure
@@ -208,6 +209,8 @@ class CloudConfigRepository(configFile: Path) {
                 "redis" to linkedMapOf(
                     "url" to config.redis.url,
                 ),
+                // Kept next to the groups: it names one of their services.
+                "limbo" to config.limbo,
                 "bridge" to linkedMapOf(
                     "enabled" to config.bridge.enabled,
                     "heartbeat-interval-seconds" to config.bridge.heartbeatInterval.seconds,

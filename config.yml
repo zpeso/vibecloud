@@ -24,6 +24,10 @@ reconciliation:
 redis:
   url: "redis://127.0.0.1:6379"
 
+# Last-resort backend: name a Paper/Spigot service (e.g. limbo-1) and players fall back to it
+# whenever nothing else is reachable. Leave empty to disable.
+limbo: ""
+
 groups:
   lobby:
     type: PAPER

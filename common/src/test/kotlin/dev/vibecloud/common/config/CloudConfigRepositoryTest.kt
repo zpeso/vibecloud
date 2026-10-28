@@ -111,6 +111,64 @@ class CloudConfigRepositoryTest {
     }
 
     @Test
+    fun `limbo service name is read from yaml and survives group edits`() {
+        val directory = Files.createTempDirectory("cloud-config-test")
+        try {
+            val file = directory.resolve("config.yml")
+            Files.write(
+                file,
+                listOf(
+                    "limbo: limbo-1",
+                    "groups:",
+                    "  lobby:",
+                    "    type: PAPER",
+                    "    version: 'paper-26.2-129'",
+                    "  limbo:",
+                    "    type: PAPER",
+                    "    version: 'paper-26.2-129'",
+                ),
+            )
+            val loaded = CloudConfigRepository(file).loadOrCreate()
+            assertEquals("limbo-1", loaded.limbo)
+            assertEquals("limbo-1", loaded.limboService)
+
+            // A group edit rewrites the whole document; the limbo must not be dropped by it.
+            CloudConfigRepository(file).saveGroups(loaded.groups)
+            val reloaded = CloudConfigRepository(file).loadOrCreate()
+            assertEquals("limbo-1", reloaded.limbo, "a persisted group edit must keep the limbo setting")
+            assertTrue("limbo: limbo-1" in Files.readString(file))
+        } finally {
+            directory.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `an omitted limbo is disabled`() {
+        val directory = Files.createTempDirectory("cloud-config-test")
+        try {
+            val file = directory.resolve("config.yml")
+            val loaded = CloudConfigRepository(file).loadOrCreate()
+            assertEquals("", loaded.limbo)
+            assertNull(loaded.limboService, "no limbo configured means no fallback backend")
+        } finally {
+            directory.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `an invalid limbo name is rejected`() {
+        val directory = Files.createTempDirectory("cloud-config-test")
+        try {
+            val file = directory.resolve("config.yml")
+            Files.write(file, listOf("limbo: \"Limbo Server!\""))
+            val failure = assertFailsWith<ConfigurationException> { CloudConfigRepository(file).loadOrCreate() }
+            assertTrue("limbo" in (failure.message ?: ""), "message was ${failure.message}")
+        } finally {
+            directory.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
     fun `service log customizations round-trip and survive a reload`() {
         val directory = Files.createTempDirectory("cloud-config-test")
         try {

@@ -86,6 +86,9 @@ class CloudBootstrap(
                 // Live service view so a static proxy's freshly template-merged config can be
                 // re-synced immediately, before its process launches.
                 serviceProvider = { serviceManagerReference.get()?.all().orEmpty() },
+                // Last-resort backend (`limbo:` in config.yml): appended to the proxy's `try` list
+                // so players land there when nothing else is reachable.
+                limboServiceName = config.limboService,
             )
 
             val groupManager = LocalGroupManager(

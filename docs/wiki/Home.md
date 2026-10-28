@@ -11,6 +11,8 @@ for your own Minecraft plugins.
 - **Guided setup** — `group create` is a wizard that queries the live PaperMC/Fill catalog, verifies checksums, and pins exact builds.
 - **Desired-state reconciliation** — services that crash are restarted with backoff; stopped records are reused; ports are managed.
 - **Live network state over Redis** — agents publish their rosters, the controller publishes one status document, and plugins read it synchronously.
+- **Limbo fallback** — name a limbo service in `config.yml` and players land there whenever no other backend can take them
+  (lobby down, everything still booting), instead of being refused.
 - **Developer API** — talk to the cloud from your own plugins (`VibeCloud` facade) or embed the whole controller in your app.
 - **No shell anywhere** — processes launch through structured argument lists; cloud commands are written to a server's stdin.
 

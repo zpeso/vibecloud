@@ -13,10 +13,29 @@ data class CloudConfig(
     val groups: List<Group>,
     val bridge: BridgeSettings = BridgeSettings(),
     val redis: RedisSettings = RedisSettings(),
+    /**
+     * Last-resort backend service ("limbo"): the cloud appends it to the proxy's `try` list, so a
+     * player whose preferred backend is unreachable — lobby down, everything still booting, the
+     * server they were on crashed — lands there instead of being refused. Empty disables it.
+     *
+     * Only routing is managed here; what happens inside the limbo (sending players back to a live
+     * server) is up to the limbo's own plugin.
+     */
+    val limbo: String = "",
 ) {
     init {
         val names = groups.map { it.name }
         require(names.distinct().size == names.size) { "Group names must be unique" }
+        require(limbo.isBlank() || SERVICE_NAME_PATTERN.matches(limbo)) {
+            "limbo ('$limbo') must be a service name like 'limbo-1' — lowercase letters, digits, '_' or '-'"
+        }
+    }
+
+    /** The configured limbo service name, or `null` when the option is disabled. */
+    val limboService: String? get() = limbo.takeIf { it.isNotBlank() }
+
+    private companion object {
+        val SERVICE_NAME_PATTERN = Regex("[a-z0-9][a-z0-9_-]{0,63}")
     }
 }
 

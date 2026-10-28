@@ -98,6 +98,8 @@ bridge:
   heartbeat-interval-seconds: 5
   offline-timeout-seconds: 20
 
+limbo: ""                      # service name of your fallback backend, e.g. limbo-1 (empty = off)
+
 # groups are managed by `group create/delete` and persisted here automatically
 #
 # Per-group keys (full commented example in config.example.yml):
@@ -119,6 +121,28 @@ consumers on their own connections so they can never starve API reads, and retri
 restarts or briefly stops answering, plugin reads (`cloud.status()`, player/service/group lookups) serve the last
 published snapshot and report `cloud.isDegraded()` instead of throwing; heartbeats and commands resume on their own
 without a controller restart.
+
+### Limbo (last-resort backend)
+
+`limbo` names a service of your own — usually a Paper server running a limbo plugin — that players fall back to when
+no other backend can take them:
+
+```yaml
+limbo: limbo-1
+```
+
+- The cloud registers that service in the proxy's `[servers]` table and **appends it to the end of the `try` list**.
+  Velocity walks `try` in order and skips servers it cannot reach, so with `lobby-1` down and only `limbo-1` up, a
+  player who logs in lands in the limbo instead of being refused — and a player whose server crashed ends up there too
+  whenever nothing else is available.
+- It never displaces your own join order: `try = ["citybuild-1"]` becomes `try = ["citybuild-1", "limbo-1"]`, and a
+  limbo you once placed elsewhere is moved to the end rather than duplicated.
+- Only Paper/Spigot services can be a limbo (Velocity cannot route to anything else). A typo or a proxy group logs one
+  clear warning and leaves the fallback off.
+- Keep the limbo itself running — give its group `always-running-services: 1` (or start it by hand) so it is up when
+the rest is not.
+- The cloud only routes players there. Sending them back to a live server once one is up is the limbo plugin's job.
+- `limbo` takes effect after a controller restart (like `runtime`/`ports`); `cloud reload` warns if you changed it.
 
 ### Boot order (`priority`)
 

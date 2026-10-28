@@ -22,9 +22,17 @@ internal class VelocityBackendSynchronizer(
     private val forwardingProvider: () -> ProxyForwarding? = { null },
     /** Live view of all services; used to re-apply configs right after a template merge. */
     private val serviceProvider: (() -> Collection<Service>)? = null,
+    /**
+     * Last-resort backend service (`limbo` in config.yml). It is registered in the proxy's
+     * `[servers]` table and kept at the very end of the `try` list, so a player whose preferred
+     * backend is unavailable — everything crashed, still booting, or the lobby is down — is
+     * routed there instead of being refused. `null` disables the fallback.
+     */
+    private val limboServiceName: String? = null,
 ) {
     private val mutex = Mutex()
     private val pendingReloads = mutableSetOf<String>()
+    private val limboWarningShown = java.util.concurrent.atomic.AtomicBoolean(false)
 
     suspend fun synchronize(
         services: () -> Collection<Service>,
@@ -33,6 +41,7 @@ internal class VelocityBackendSynchronizer(
         val allServices = services().toList()
         val backends = allServices.filter { it.type == ServerType.PAPER || it.type == ServerType.SPIGOT }
         val servers = backendEntries(backends)
+        val limbo = resolveLimbo(allServices, servers)
         val defaultServer = defaultServerFor(backends, servers)
         val proxyServices = allServices.filter { it.type == ServerType.VELOCITY }
         val proxyNames = proxyServices.mapTo(mutableSetOf()) { it.name }
@@ -45,8 +54,28 @@ internal class VelocityBackendSynchronizer(
                 defaultServer = defaultServer,
                 legacyGroupAliases = backends.mapTo(mutableSetOf()) { it.groupName },
                 reloadProxy = reloadProxy,
+                limbo = limbo,
             )
         }
+    }
+
+    /**
+     * The limbo, when it names a registered backend (Velocity can only route to a `[servers]`
+     * entry, so a mistyped name or a proxy group would be silently useless — warn once instead).
+     */
+    private fun resolveLimbo(allServices: List<Service>, servers: Map<String, String>): String? {
+        val configured = limboServiceName?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        if (configured in servers.keys) return configured
+        if (limboWarningShown.compareAndSet(false, true)) {
+            val reason = allServices.firstOrNull { it.name == configured }?.let { service ->
+                "it is a ${service.type.name} service and only Paper/Spigot backends can be a limbo"
+            } ?: "no service with that name exists"
+            logger.warn(
+                "limbo '$configured' from config.yml cannot be used as the fallback backend: $reason. " +
+                    "Players have no fallback until this is fixed.",
+            )
+        }
+        return null
     }
 
     /**
@@ -73,6 +102,7 @@ internal class VelocityBackendSynchronizer(
                     legacyGroupAliases = backends.mapTo(mutableSetOf()) { it.groupName },
                     reloadProxy = null,
                     preservedTry = preservedTry,
+                    limbo = resolveLimbo(allServices, servers),
                 )
             } catch (failure: CancellationException) {
                 throw failure
@@ -89,6 +119,7 @@ internal class VelocityBackendSynchronizer(
         legacyGroupAliases: Set<String>,
         reloadProxy: (suspend (String) -> Boolean)?,
         preservedTry: List<String>? = null,
+        limbo: String? = null,
     ) {
         val config = proxy.directory.resolve("velocity.toml")
         if (!Files.isRegularFile(config)) {
@@ -104,6 +135,7 @@ internal class VelocityBackendSynchronizer(
                 defaultServer = defaultServer,
                 legacyGroupAliases = legacyGroupAliases,
                 preservedTry = preservedTry,
+                fallbackServer = limbo,
                 // The forwarding mode is proxy-global and derived from the backends' versions —
                 // a version switch (e.g. 1.8 → 26.2) must move the proxy between legacy and
                 // modern forwarding even though the proxy's own template never changed.
@@ -214,6 +246,8 @@ internal object VelocityTomlBackendTable {
         legacyGroupAliases: Set<String> = emptySet(),
         preservedTry: List<String>? = null,
         forwardingMode: VelocityConfigNormalizer.ProxyForwardingMode? = null,
+        /** Last-resort server, kept at the end of `try` so it never displaces a user's choice. */
+        fallbackServer: String? = null,
     ): Boolean {
         require(serverAddresses.isNotEmpty()) { "At least one Velocity backend entry is required" }
         require(defaultServer in serverAddresses) { "Default Velocity server '$defaultServer' is not registered" }
@@ -259,6 +293,13 @@ internal object VelocityTomlBackendTable {
         val effectiveDefault = (preservedTry?.takeIf { list ->
             list.isNotEmpty() && list.all { it in serverAddresses.keys }
         } ?: preservedTryValues(rawSection, serverAddresses.keys)) ?: listOf(defaultServer)
+        // The limbo is the LAST resort: it follows every entry the user picked and never replaces
+        // one. Filtering it out first keeps it last across repeated syncs and collapses a copy
+        // that was ever listed somewhere else.
+        val effectiveTry = (
+            effectiveDefault.filter { it != fallbackServer } +
+                listOfNotNull(fallbackServer?.takeIf { it in serverAddresses.keys })
+            ).ifEmpty { listOf(defaultServer) }
         val cleanedBody = removeManagedAssignments(body, managedKeys)
         while (cleanedBody.lastOrNull()?.isBlank() == true) cleanedBody.removeAt(cleanedBody.lastIndex)
 
@@ -269,7 +310,7 @@ internal object VelocityTomlBackendTable {
             }
             // Keep the preserved order verbatim; regenerating alphabetically would silently
             // reorder a user-chosen join priority.
-            add("try = [" + effectiveDefault.joinToString(", ") { quote(it) } + "]")
+            add("try = [" + effectiveTry.joinToString(", ") { quote(it) } + "]")
             add(END_MARKER)
         }
         val replacement = buildList {
