@@ -72,7 +72,10 @@ packets-per-second = -1
 
             var updated = Files.readString(config)
             assertTrue(updated.contains("\"lobby-1\" = \"127.0.0.1:25566\""))
-            assertTrue(updated.contains("\"citybuild-1\" = \"127.0.0.1:25567\""))
+            assertTrue(
+                updated.contains("\"citybuild-1\" = \"127.0.0.1:1\""),
+                "a service that is not running must be published at the closed port:\n$updated",
+            )
             assertTrue(updated.contains("try = [\"lobby-1\"]"))
             assertTrue(updated.contains("manual = \"127.0.0.1:25570\""))
             assertFalse(
@@ -284,6 +287,58 @@ try = ["lobby-1"]
                 updated.contains("try = [\"lobby-1\", \"limbo-1\"]"),
                 "the limbo must stay in the join list behind the dead lobby:\n$updated",
             )
+            assertTrue(
+                updated.contains("\"lobby-1\" = \"127.0.0.1:1\""),
+                "the stopped lobby must fail joins immediately so `try` reaches the limbo:\n$updated",
+            )
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `a booting backend fails joins immediately and gets its real port once running`() = runBlocking {
+        val root = Files.createTempDirectory("velocity-starting-backend-test")
+        try {
+            val proxyDirectory = root.resolve("services/proxy-1")
+            Files.createDirectories(proxyDirectory)
+            val config = proxyDirectory.resolve("velocity.toml")
+            Files.writeString(
+                config,
+                """[servers]
+lobby-1 = "127.0.0.1:25566"
+try = ["lobby-1"]
+""",
+            )
+            val now = Instant.now()
+            val proxy = service("proxy-1", "proxy", ServerType.VELOCITY, ServiceState.RUNNING, 25565, proxyDirectory, now)
+            val lobby = service("lobby-1", "lobby", ServerType.PAPER, ServiceState.STARTING, 25566, root.resolve("services/lobby-1"), now)
+            val synchronizer = VelocityBackendSynchronizer(SilentLogger())
+
+            // A booting backend has bound its port but does not accept players yet: routing to it
+            // would leave the attempt in flight ("already trying to connect").
+            var reloads = 0
+            synchronizer.synchronize({ listOf(proxy, lobby) }) { reloads++; true }
+            var updated = Files.readString(config)
+            assertTrue(
+                updated.contains("\"lobby-1\" = \"127.0.0.1:1\""),
+                "a starting backend must not be reachable through the proxy:\n$updated",
+            )
+            assertTrue(updated.contains("try = [\"lobby-1\"]"), "the name and join order stay registered:\n$updated")
+            assertEquals(1, reloads)
+
+            // The service reports ready: the real address is back and the route is reloaded.
+            val running = lobby.copy(state = ServiceState.RUNNING, updatedAt = Instant.now())
+            synchronizer.synchronize({ listOf(proxy, running) }) { reloads++; true }
+            updated = Files.readString(config)
+            assertTrue(updated.contains("\"lobby-1\" = \"127.0.0.1:25566\""), "the real port returns:\n$updated")
+            assertEquals(2, reloads)
+
+            // Crashed/stopped services are equally unjoinable.
+            val crashed = lobby.copy(state = ServiceState.CRASHED, updatedAt = Instant.now())
+            synchronizer.synchronize({ listOf(proxy, crashed) }) { reloads++; true }
+            assertTrue(Files.readString(config).contains("\"lobby-1\" = \"127.0.0.1:1\""))
+            assertEquals(3, reloads)
         } finally {
             root.toFile().deleteRecursively()
         }

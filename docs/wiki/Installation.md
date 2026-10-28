@@ -137,6 +137,11 @@ limbo: limbo-1
   whenever nothing else is available.
 - It never displaces your own join order: `try = ["citybuild-1"]` becomes `try = ["citybuild-1", "limbo-1"]`, and a
   limbo you once placed elsewhere is moved to the end rather than duplicated.
+- **A backend is only routed while it is running.** While a service boots — or drains, stops or crashes — its entry
+  points at a closed port instead of its real one, so a join attempt fails in a millisecond. The player is free to
+  pick another server right away (and `try` falls through to the limbo) instead of waiting out a connection attempt
+  that would answer every retry with *"You are already trying to connect to a server"*. The real port appears the
+  moment the server reports ready.
 - Only Paper/Spigot services can be a limbo (Velocity cannot route to anything else). A typo or a proxy group logs one
   clear warning and leaves the fallback off.
 - Keep the limbo itself running — give its group `always-running-services: 1` (or start it by hand) so it is up when

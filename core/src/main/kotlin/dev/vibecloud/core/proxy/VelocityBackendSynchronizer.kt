@@ -174,6 +174,25 @@ internal class VelocityBackendSynchronizer(
         }
     }
 
+    /**
+     * Where the proxy should reach [service]. Only a RUNNING service gets its real port; every
+     * other state is published at a closed loopback port instead.
+     *
+     * A booting backend binds its port long before it accepts players, so a join attempt routed
+     * at it stays in flight for the whole connect timeout. Velocity then refuses every further
+     * attempt with "You are already trying to connect to a server" and the player cannot reach
+     * any other server until that boot finishes. A closed port fails in a millisecond instead:
+     * the attempt is simply dropped, the player can pick another server, and `try` falls through
+     * to the next entry (the limbo, for example). The real port appears the moment the service
+     * reports ready, because every state change re-runs this sync.
+     *
+     * The name deliberately stays registered: hub menus, forced-hosts and plugins resolve
+     * servers by name, and a service vanishing from the proxy while it restarts would break
+     * them (and make Velocity reject the config).
+     */
+    private fun routeFor(service: Service): String =
+        if (service.state == ServiceState.RUNNING) "127.0.0.1:${service.port}" else UNAVAILABLE_ADDRESS
+
     private fun defaultServerFor(backends: List<Service>, servers: Map<String, String>): String =
         backends.sortedWith(backendPreference).firstNotNullOfOrNull { service ->
             service.name.takeIf { it in servers }
@@ -205,7 +224,7 @@ internal class VelocityBackendSynchronizer(
         val entries = linkedMapOf<String, String>()
         backends.sortedWith(compareBy<Service> { it.name }).forEach { service ->
             if (SERVER_NAME.matches(service.name)) {
-                entries[service.name] = "127.0.0.1:${service.port}"
+                entries[service.name] = routeFor(service)
             } else {
                 logger.warn("Skipping backend service '${service.name}' because it is not a valid Velocity server name")
             }
@@ -218,6 +237,13 @@ internal class VelocityBackendSynchronizer(
     }
 
     private companion object {
+        /**
+         * Placeholder address for a service that must not receive players right now: loopback
+         * port 1 is never used by VibeCloud (or anything else), so connecting to it is refused
+         * immediately instead of holding the player's connection open for a whole boot.
+         */
+        const val UNAVAILABLE_ADDRESS = "127.0.0.1:1"
+
         val SERVER_NAME = Regex("[A-Za-z0-9_-]{1,64}")
         val backendPreference = compareBy<Service> {
             when (it.state) {
