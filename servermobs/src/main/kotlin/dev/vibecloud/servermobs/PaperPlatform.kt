@@ -17,6 +17,7 @@ import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPl
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSpawnEntity
 import dev.vibecloud.servermobs.model.NpcEquipment
 import net.kyori.adventure.text.minimessage.MiniMessage
+import org.bukkit.Bukkit
 import org.bukkit.Location
 import org.bukkit.Material
 import org.bukkit.World
@@ -26,6 +27,10 @@ import org.bukkit.entity.ItemDisplay
 import org.bukkit.entity.Player
 import org.bukkit.entity.TextDisplay
 import org.bukkit.plugin.Plugin
+import org.bukkit.scheduler.BukkitTask
+import org.bukkit.util.Transformation
+import org.joml.Quaternionf
+import org.joml.Vector3f
 import java.util.EnumSet
 import java.util.UUID
 
@@ -75,25 +80,70 @@ class PaperPlatform(private val plugin: Plugin) : ServerMobsPlatform {
             entity.setItemStack(org.bukkit.inventory.ItemStack(material, 1))
             entity.setItemDisplayTransform(ItemDisplay.ItemDisplayTransform.GROUND)
             entity.setBillboard(Display.Billboard.FIXED)
-            entity.setInterpolationDuration(0)
+            // The spin is a transformation update every SPIN_PERIOD_TICKS; letting the client
+            // interpolate each step over exactly that period keeps the turn continuous instead
+            // of a 10 fps stutter.
+            entity.setInterpolationDuration(SPIN_PERIOD_TICKS)
             entity.setInterpolationDelay(0)
             entity.teleportDuration = 0
             entity.setGravity(false)
             entity.isPersistent = false
             entity.isInvulnerable = true
         }
-        return object : FloatingItem {
-            override fun showTo(player: org.bukkit.entity.Player) {
-                player.showEntity(plugin, display)
-            }
+        return SpinningItem(display)
+    }
 
-            override fun hideFrom(player: org.bukkit.entity.Player) {
-                player.hideEntity(plugin, display)
-            }
+    /**
+     * A floating item topper that turns about its vertical axis at the speed of a real dropped
+     * item (`ItemEntity` spins 0.05 rad per tick), while staying exactly where it was spawned.
+     *
+     * The rotation can only come from the display's own transformation: entity yaw is not
+     * rendered for display entities, and a client-side item cannot be pinned. Updating it every
+     * [SPIN_PERIOD_TICKS] (with matching interpolation) is what the client interpolates between,
+     * so the turn stays smooth without a packet per tick.
+     */
+    private inner class SpinningItem(private val display: ItemDisplay) : FloatingItem {
+        private var angle = 0f
+        private var task: BukkitTask? = Bukkit.getScheduler().runTaskTimer(
+            plugin,
+            Runnable(::advance),
+            SPIN_PERIOD_TICKS.toLong(),
+            SPIN_PERIOD_TICKS.toLong(),
+        )
 
-            override fun remove() {
-                display.remove()
+        private fun advance() {
+            if (!display.isValid) {
+                task?.cancel()
+                task = null
+                return
             }
+            angle += SPIN_STEP_RADIANS
+            if (angle >= FULL_TURN) angle -= FULL_TURN
+            runCatching {
+                display.transformation = Transformation(
+                    Vector3f(),
+                    Quaternionf().rotateY(angle),
+                    Vector3f(1f, 1f, 1f),
+                    Quaternionf(),
+                )
+            }.onFailure {
+                task?.cancel()
+                task = null
+            }
+        }
+
+        override fun showTo(player: Player) {
+            player.showEntity(plugin, display)
+        }
+
+        override fun hideFrom(player: Player) {
+            player.hideEntity(plugin, display)
+        }
+
+        override fun remove() {
+            task?.cancel()
+            task = null
+            display.remove()
         }
     }
 
@@ -186,5 +236,16 @@ class PaperPlatform(private val plugin: Plugin) : ServerMobsPlatform {
          */
         const val SKIN_PARTS_METADATA_INDEX = 17
 
+        /** How often the topper's rotation is advanced; the client interpolates between steps. */
+        const val SPIN_PERIOD_TICKS = 2
+
+        /**
+         * Radians per update. A dropped item turns 0.05 rad per tick, so this is two of its
+         * ticks — the same speed as the classic dropped-item spin, at one update every two ticks.
+         */
+        const val SPIN_STEP_RADIANS = 0.05f * SPIN_PERIOD_TICKS
+
+        /** Radians in one full revolution, used to keep [SPIN_STEP_RADIANS] from growing forever. */
+        const val FULL_TURN = (2.0 * Math.PI).toFloat()
     }
 }

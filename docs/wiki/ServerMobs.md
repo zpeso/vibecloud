@@ -207,10 +207,13 @@ The modern build uses the server's adventure API (Paper provides it) and `TextDi
 bundles its own adventure and falls back to invisible `ArmorStand` holograms, because 1.8 has neither. Behaviour,
 commands, persistence and the MiniMessage formatting are identical; only the shading and the hologram entity differ.
 
-A **floating item** (`hologram item set`) always looks like a dropped item and stays where it was put. Paper uses
-an `ItemDisplay`; 1.8 has no display entities, so the dropped item is a client-side item entity riding an invisible,
-gravity-less marker `ArmorStand` — a ridden entity never simulates its own movement (1.8 copies a rider's position
-from its vehicle every tick), which is what keeps it hovering instead of falling or being teleported back each tick.
+A **floating item** (`hologram item set`) always looks like a dropped item, turns like one and stays where it was
+put. Paper uses an `ItemDisplay` whose transformation is rotated 0.05 rad per tick — the speed a real dropped item
+spins — updated every two ticks and interpolated by the client, so the turn is smooth without a packet per tick. 1.8
+has no display entities, so the dropped item is a client-side item entity riding an invisible, gravity-less marker
+`ArmorStand` — a ridden entity never simulates its own movement (1.8 copies a rider's position from its vehicle every
+tick), which is what keeps it hovering instead of falling or being teleported back each tick, and the client's own
+dropped-item animation supplies its spin.
 
 **Player collision:** a fake player has no server-side body, so the plugin supplies the hitbox itself. A background
 task checks every tick whether a player overlaps an NPC (0.7 blocks from its centre, up to 1.8 blocks above its
