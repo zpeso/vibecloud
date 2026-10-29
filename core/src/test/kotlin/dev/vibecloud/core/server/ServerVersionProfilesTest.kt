@@ -160,6 +160,10 @@ class ServerVersionProfilesTest {
             val properties = Files.readString(directory.resolve("server.properties"))
             assertTrue(properties.contains("online-mode=false"))
             assertTrue(
+                properties.contains("server-ip=127.0.0.1"),
+                "a backend behind the proxy must not listen on a public interface"
+            )
+            assertTrue(
                 properties.contains("use-native-transport=false"),
                 "Paper 1.8.8 cannot boot with Netty's native epoll transport"
             )

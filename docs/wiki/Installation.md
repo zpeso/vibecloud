@@ -60,6 +60,9 @@ service create proxy && service proxy-1 start
 - Answer prompts one by one — type `exit` at any question to cancel without changes.
 - Prefer no prompts? Use flags: `group create lobby --type PAPER --version 26.2 --build 129 --min-services 1 --max-services 3`
 - The cloud wires the proxy automatically: shared forwarding secret, `online-mode`, backend table, forwarding mode.
+- Backends are bound to `127.0.0.1` (`server-ip` in `server.properties`) while a proxy exists, so only the proxy's port
+  is public. Joining a backend's own port is refused instead of answered with BungeeCord's IP-forwarding message, and
+  nobody can forge a handshake to bypass the proxy. The port itself stays cloud-managed — no template edit needed.
 
 ## 4. Accept the EULA (or not)
 

@@ -121,9 +121,36 @@ class ServiceConfigRepairerTest {
             val properties = Files.readString(serviceDirectory.resolve("server.properties"))
             assertTrue(properties.contains("online-mode=false"))
             assertTrue(properties.contains("server-port=25567"))
+            assertTrue(
+                properties.contains("server-ip=127.0.0.1"),
+                "the public port must be shut so nobody can join the backend directly",
+            )
             assertTrue(properties.contains("max-players=20"), "unrelated properties are preserved")
             assertTrue(Files.readString(serviceDirectory.resolve("eula.txt")).contains("eula=true"))
             assertTrue(Files.readString(serviceDirectory.resolve("config/paper-global.yml")).contains("enabled: true"))
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `without a proxy the operator bind address is left alone`() = runBlocking {
+        val root = Files.createTempDirectory("repair-no-proxy-test")
+        try {
+            val serviceDirectory = root.resolve("services/citybuild-1")
+            Files.createDirectories(serviceDirectory)
+            Files.writeString(
+                serviceDirectory.resolve("server.properties"),
+                "#Minecraft server properties\nserver-port=25567\nserver-ip=0.0.0.0\nonline-mode=true\n",
+            )
+            // A network without a proxy serves players directly, so backends must stay reachable.
+            val repairer = ServiceConfigRepairer(defaultServerAdapters(), runtime, SilentLogger()) { null }
+
+            repairer.repairAll(listOf(paperService(serviceDirectory)))
+
+            val properties = Files.readString(serviceDirectory.resolve("server.properties"))
+            assertTrue(properties.contains("server-ip=0.0.0.0"), "no proxy means no loopback pin")
+            assertTrue(properties.contains("online-mode=true"))
         } finally {
             root.toFile().deleteRecursively()
         }

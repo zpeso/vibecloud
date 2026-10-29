@@ -16,7 +16,7 @@ class PaperAdapter : ServerAdapter {
         configureProperties(
             directory.resolve("server.properties"),
             service.port,
-            disableOnlineMode = forwarding != null,
+            behindProxy = forwarding != null,
             disableNativeTransport = ServerVersionProfiles.profile(service.version).requiresNativeTransportDisabled,
         )
         writeEula(directory.resolve("eula.txt"), eulaAccepted)
@@ -49,7 +49,7 @@ class SpigotAdapter : ServerAdapter {
         configureProperties(
             directory.resolve("server.properties"),
             service.port,
-            disableOnlineMode = forwarding != null,
+            behindProxy = forwarding != null,
             disableNativeTransport = ServerVersionProfiles.profile(service.version).requiresNativeTransportDisabled,
         )
         writeEula(directory.resolve("eula.txt"), eulaAccepted)
@@ -166,13 +166,20 @@ private fun javaCommand(
 private fun configureProperties(
     file: Path,
     port: Int,
-    disableOnlineMode: Boolean,
+    behindProxy: Boolean,
     disableNativeTransport: Boolean = false,
 ) {
     // Legacy Paper (pre-1.12) cannot start with Netty's native epoll transport on current Linux hosts.
     val managed = buildMap {
         put("server-port", port.toString())
-        if (disableOnlineMode) put("online-mode", "false")
+        if (behindProxy) {
+            put("online-mode", "false")
+            // Only the proxy may reach a backend. Binding loopback shuts the public port, so a
+            // client cannot connect to it directly — which would answer with BungeeCord's "If you
+            // wish to use IP forwarding, please enable it in your BungeeCord config as well!" —
+            // and cannot forge a BungeeCord handshake to bypass the proxy's authentication.
+            put("server-ip", LOOPBACK_BIND_ADDRESS)
+        }
         if (disableNativeTransport) put("use-native-transport", "false")
     }
     if (!Files.exists(file)) {
@@ -195,6 +202,9 @@ private fun configureProperties(
     managed.forEach { (key, value) -> if (key !in seen) lines += "$key=$value" }
     Files.write(file, lines, StandardCharsets.UTF_8)
 }
+
+/** Address backends bind to while they are reachable only through the local proxy. */
+internal const val LOOPBACK_BIND_ADDRESS = "127.0.0.1"
 
 private fun writeEula(file: Path, accepted: Boolean) {
     Files.writeString(

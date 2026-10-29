@@ -4,6 +4,7 @@ import dev.vibecloud.api.service.Service
 import dev.vibecloud.common.config.RuntimeSettings
 import dev.vibecloud.common.logging.Logger
 import dev.vibecloud.core.proxy.VelocityConfigNormalizer
+import dev.vibecloud.core.server.LOOPBACK_BIND_ADDRESS
 import dev.vibecloud.core.server.ProxyForwarding
 import dev.vibecloud.core.server.ServerAdapterRegistry
 import dev.vibecloud.core.server.ServerVersionProfiles
@@ -112,7 +113,13 @@ internal class ServiceConfigRepairer(
     ) {
         val desired = buildMap {
             put("server-port", port.toString())
-            if (proxyPresent) put("online-mode", "false")
+            if (proxyPresent) {
+                put("online-mode", "false")
+                // Backends belong to the proxy alone: binding loopback keeps the public port shut,
+                // so nobody can join a server directly (Paper would answer with the BungeeCord
+                // IP-forwarding message) or forge a handshake to get around proxy authentication.
+                put("server-ip", LOOPBACK_BIND_ADDRESS)
+            }
             if (disableNativeTransport) put("use-native-transport", "false")
         }
         if (!Files.exists(file)) {

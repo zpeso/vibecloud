@@ -65,6 +65,10 @@ class FileTemplateManagerTest {
 
             assertTrue(Files.isRegularFile(serviceDirectory.resolve("server.jar")))
             assertTrue(Files.readString(serviceDirectory.resolve("server.properties")).contains("server-port=25567"))
+            assertTrue(
+                !Files.readString(serviceDirectory.resolve("server.properties")).contains("server-ip"),
+                "without a proxy the backend keeps accepting direct connections"
+            )
             assertTrue(Files.readString(serviceDirectory.resolve("eula.txt")).contains("eula=false"))
             assertFalse(Files.exists(serviceDirectory.resolve("velocity.toml")))
             assertEquals(listOf("26.3"), manager.availableVersions(ServerType.PAPER))
@@ -117,6 +121,10 @@ class FileTemplateManagerTest {
 
             val properties = Files.readString(serviceDirectory.resolve("server.properties"))
             assertTrue(properties.contains("online-mode=false"))
+            assertTrue(
+                properties.contains("server-ip=127.0.0.1"),
+                "a provisioned backend must bind loopback so it is reachable only through the proxy"
+            )
             val paperGlobal = Files.readString(serviceDirectory.resolve("config/paper-global.yml"))
             assertTrue(paperGlobal.contains("enabled: true"))
             assertTrue(paperGlobal.contains("secret: 'shared-secret'"))

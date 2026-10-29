@@ -24,6 +24,24 @@ Anything that depends on your deployment is called out explicitly.
   (`redis://127.0.0.1:6379/3`) or namespace and protect it with `requirepass`.
 - There is **no HTTP server and no dashboard**. Browsers are not part of the trust model.
 
+## Backend exposure
+
+Only the proxy is public. When a proxy is configured, the cloud writes `server-ip=127.0.0.1` and `online-mode=false`
+into every Paper/Spigot service's `server.properties`, so backends listen on loopback and are reachable only by the
+proxy on the same machine. The assigned port stays managed by the cloud — you do not pin the address in a template.
+
+This closes two holes that an open backend port leaves:
+
+- Players trying the backend port directly are no longer answered (Paper would reply with *"If you wish to use IP
+  forwarding, please enable it in your BungeeCord config as well!"*); the connection is refused before Minecraft
+  sees it.
+- With BungeeCord-style (pre-1.13) forwarding, a backend trusts any connection that carries a crafted BungeeCord
+  handshake — including the player's own name, UUID and IP. A remote client that can reach the port can therefore
+  skip the proxy and its authentication. Loopback binding removes that path entirely.
+
+Networks without a proxy are untouched: backends keep the bind address the operator set (`server-ip=` empty means all
+interfaces), because players connect to them directly.
+
 ## Authentication
 
 One shared secret, `bridge.token`, generated at first start next to `config.yml` (32 bytes of `SecureRandom`, file
